@@ -1,10 +1,10 @@
 import { Schema } from "effect"
-import { Count, IsoDateTime, Rarity, XpTier } from "./primitives.ts"
+import { Count, IsoDateTime, Probability, Rarity, XpTier } from "./primitives.ts"
 
 /** Scoring facts are derived by the server from client events and GitHub; quest goals use the same names. */
 export const ScoringFact = Schema.Literals([
-  "pr.merged",
-  "pr.opened",
+  "change.merged",
+  "change.opened",
   "commit.made",
   "review.acted_on",
   "issue.closed",
@@ -20,9 +20,9 @@ export const XpRule = Schema.Struct({
   xp: Count,
   tier: XpTier,
   dailyCap: Schema.NullOr(Count),
-  /** pr.merged: 120 in your own or your org's repo, 250 elsewhere. */
+  /** change.merged: 120 in your own or your org's repo, 250 elsewhere. */
   ownRepoXp: Schema.optionalKey(Count),
-  /** pr.merged: 25% under 3 changed lines. */
+  /** change.merged: 25% under 3 changed lines. */
   tinyDiffPct: Schema.optionalKey(Count),
 })
 export interface XpRule extends Schema.Schema.Type<typeof XpRule> {}
@@ -33,8 +33,6 @@ const Positive = Schema.Finite.pipe(Schema.check(Schema.isGreaterThan(0)))
 /** Total XP for level L = base * L^exponent. */
 export const LevelCurve = Schema.Struct({ base: Positive, exponent: Positive })
 export interface LevelCurve extends Schema.Schema.Type<typeof LevelCurve> {}
-
-const Probability = Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 1 })))
 
 /** The game's tuning. The mod never hard-codes a number from it. */
 export const RulesConfig = Schema.Struct({
@@ -54,6 +52,10 @@ export const RulesConfig = Schema.Struct({
     pity: Schema.Struct({ rareAfter: Count, epicAfter: Count }),
     gold: Schema.Record(Rarity, Count),
     shardsToCraft: Count,
+    /** Shards of its rarity one salvaged duplicate gives. */
+    salvageShards: Schema.Record(Rarity, Count),
+    /** Gold to re-roll a duplicate, by its rarity. */
+    rerollGold: Schema.Record(Rarity, Count),
   }),
   pet: Schema.Struct({
     moodDecayPerDay: Schema.Finite,

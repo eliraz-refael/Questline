@@ -1,13 +1,11 @@
 import { Schema } from "effect"
-import { Rarity, Slot, Ulid } from "./primitives.ts"
+import { Name, Rarity, Slot, Ulid } from "./primitives.ts"
 
 // Commands are player choices, answered synchronously. Like events they carry a ULID and are idempotent;
 // unlike events they can be refused.
 
 const command = <Type extends string, Data extends Schema.Struct.Fields>(type: Type, data: Data) =>
   Schema.Struct({ id: Ulid, type: Schema.Literal(type), data: Schema.Struct(data) })
-
-const Name = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(32)))
 
 export const PetHatch = command("pet.hatch", { species: Schema.String, name: Name })
 export const PetRename = command("pet.rename", { name: Name })
@@ -16,6 +14,10 @@ export const PetFeed = command("pet.feed", { entryId: Ulid })
 export const ItemEquip = command("item.equip", { entryId: Ulid, slot: Slot })
 export const ItemUnequip = command("item.unequip", { slot: Slot })
 export const ItemDye = command("item.dye", { entryId: Ulid, dye: Schema.String })
+/** A duplicate becomes shards of its rarity. */
+export const ItemSalvage = command("item.salvage", { entryId: Ulid })
+/** A duplicate, plus gold, becomes a random item of the same rarity. */
+export const ItemReroll = command("item.reroll", { entryId: Ulid })
 export const ShopBuy = command("shop.buy", { offerId: Schema.String })
 export const ShardsCraft = command("shards.craft", { rarity: Rarity, itemId: Schema.String })
 export const QuestAccept = command("quest.accept", { questId: Schema.String })
@@ -31,6 +33,8 @@ export const Command = Schema.Union([
   ItemEquip,
   ItemUnequip,
   ItemDye,
+  ItemSalvage,
+  ItemReroll,
   ShopBuy,
   ShardsCraft,
   QuestAccept,

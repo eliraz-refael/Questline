@@ -10,8 +10,8 @@ export const IsoDateTime = Schema.String.pipe(
 
 export const IsoDate = Schema.String.pipe(Schema.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u)))
 
-/** `owner/name` from the git remote, in GitHub's character set so a local path can't pass for one. */
-export const RepoSlug = Schema.String.pipe(
+/** `owner/name` of a GitHub repo, in GitHub's character set so a local path can't pass for one. */
+export const GitHubRepo = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/u)),
 )
 
@@ -19,6 +19,11 @@ export const RepoSlug = Schema.String.pipe(
 export const GitSha = Schema.String.pipe(Schema.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u)))
 
 export const Count = Schema.Natural
+
+export const Probability = Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 1 })))
+
+/** A character or pet name. */
+export const Name = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(32)))
 
 // Enums the mod reads are open on the wire: a newer server may send a value an older mod doesn't know, and the
 // mod renders it with a fallback. The schemas stay closed because the server validates what it accepts.

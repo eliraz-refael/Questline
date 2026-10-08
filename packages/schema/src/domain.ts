@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { CharacterSlot, Count, IsoDate, IsoDateTime, PetSlot, Rarity, Slot, Ulid } from "./primitives.ts"
+import { CharacterSlot, Count, IsoDate, IsoDateTime, Name, PetSlot, Rarity, Slot, Ulid } from "./primitives.ts"
 
 // The snapshot is everything the mod draws, sent whole when a session opens and kept current by server events.
 
@@ -33,7 +33,7 @@ export interface Streak extends Schema.Schema.Type<typeof Streak> {}
 
 export const Character = Schema.Struct({
   playerId: Ulid,
-  name: Schema.String,
+  name: Name,
   level: Count,
   xp: Xp,
   /** From the rules config's level bands. */
@@ -50,7 +50,7 @@ export interface Character extends Schema.Schema.Type<typeof Character> {}
 export const Pet = Schema.Struct({
   /** "fox" | "slime" | "robot" | "owl" in the starter config. */
   species: Schema.String,
-  name: Schema.String,
+  name: Name,
   /** Evolution stage, 0-3. */
   form: Schema.Int.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 3 }))),
   /** 0-100; drifts down by the config's rate, decayed when read. */
@@ -107,7 +107,7 @@ export const QuestState = Schema.Struct({
 })
 export interface QuestState extends Schema.Schema.Type<typeof QuestState> {}
 
-export const ClaimKind = Schema.Literals(["pr.merged", "review.submitted", "issue.closed"])
+export const ClaimKind = Schema.Literals(["change.merged", "review.submitted", "issue.closed"])
 export type ClaimKind = typeof ClaimKind.Type
 
 export const ClaimStatus = Schema.Literals(["pending", "verified", "needs_signin", "unverifiable", "expired"])

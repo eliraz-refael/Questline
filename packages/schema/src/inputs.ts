@@ -1,16 +1,16 @@
 import { Schema } from "effect"
 import { ClientEvent } from "./client-events.ts"
 import { Command } from "./commands.ts"
-import { Count, RepoSlug, Ulid } from "./primitives.ts"
+import { Count, Ulid } from "./primitives.ts"
+import { GitHubWork } from "./subjects.ts"
 
 // What the rules engine's `step(state, input, context)` consumes. Every input is stored in the event log as raw
 // JSON, so these schemas also decode year-old log rows (through upcasters once the shapes change).
 
-/** A merge, review or closed issue confirmed on GitHub, keyed like `facts`: kind + repo + number. */
+/** A merge, review or closed issue confirmed on GitHub, keyed like `facts`: kind + work (repo + number). */
 export const VerifiedFact = Schema.Struct({
-  kind: Schema.Literals(["pr.merged", "review.acted_on", "issue.closed"]),
-  repo: RepoSlug,
-  number: Count,
+  kind: Schema.Literals(["change.merged", "review.acted_on", "issue.closed"]),
+  work: GitHubWork,
 })
 export interface VerifiedFact extends Schema.Schema.Type<typeof VerifiedFact> {}
 
@@ -22,7 +22,7 @@ export const SystemEvent = Schema.Union([
     claimId: Ulid,
     status: Schema.Literals(["verified", "unverifiable", "expired"]),
   }),
-  /** Carries a rebalance's newly reached milestones. */
+  /** After a rebalance: grants what the replayed progress reached that the kept holdings don't record yet. */
   Schema.Struct({ type: Schema.Literal("rules.published"), version: Count }),
   Schema.Struct({ type: Schema.Literal("timezone.changed"), tz: Schema.String }),
 ])
