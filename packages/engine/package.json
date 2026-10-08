@@ -1,0 +1,27 @@
+{
+  "name": "@questline/engine",
+  "version": "0.0.0",
+  "description": "Questline rules engine: the pure step(state, input, context) function",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@questline/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "@questline/schema": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eliraz-refael/Questline.git",
+    "directory": "packages/engine"
+  },
+  "license": "MIT"
+}

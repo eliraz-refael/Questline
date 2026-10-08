@@ -1,0 +1,27 @@
+{
+  "name": "@questline/schema",
+  "version": "0.0.0",
+  "description": "Questline wire format: Effect Schemas for the API objects, events and commands",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@questline/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "effect": "4.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eliraz-refael/Questline.git",
+    "directory": "packages/schema"
+  }
+}

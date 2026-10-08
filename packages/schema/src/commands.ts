@@ -1,0 +1,56 @@
+import { Schema } from "effect"
+import { Rarity, Slot, Ulid } from "./primitives.ts"
+
+// Commands are player choices, answered synchronously. Like events they carry a ULID and are idempotent;
+// unlike events they can be refused.
+
+const command = <Type extends string, Data extends Schema.Struct.Fields>(type: Type, data: Data) =>
+  Schema.Struct({ id: Ulid, type: Schema.Literal(type), data: Schema.Struct(data) })
+
+const Name = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(32)))
+
+export const PetHatch = command("pet.hatch", { species: Schema.String, name: Name })
+export const PetRename = command("pet.rename", { name: Name })
+export const PetPet = command("pet.pet", {})
+export const PetFeed = command("pet.feed", { entryId: Ulid })
+export const ItemEquip = command("item.equip", { entryId: Ulid, slot: Slot })
+export const ItemUnequip = command("item.unequip", { slot: Slot })
+export const ItemDye = command("item.dye", { entryId: Ulid, dye: Schema.String })
+export const ShopBuy = command("shop.buy", { offerId: Schema.String })
+export const ShardsCraft = command("shards.craft", { rarity: Rarity, itemId: Schema.String })
+export const QuestAccept = command("quest.accept", { questId: Schema.String })
+export const QuestAbandon = command("quest.abandon", { questId: Schema.String })
+export const CharacterRename = command("character.rename", { name: Name })
+export const CharacterPrestige = command("character.prestige", {})
+
+export const Command = Schema.Union([
+  PetHatch,
+  PetRename,
+  PetPet,
+  PetFeed,
+  ItemEquip,
+  ItemUnequip,
+  ItemDye,
+  ShopBuy,
+  ShardsCraft,
+  QuestAccept,
+  QuestAbandon,
+  CharacterRename,
+  CharacterPrestige,
+])
+export type Command = typeof Command.Type
+export type CommandType = Command["type"]
+
+export const RefusalCode = Schema.Literals([
+  "not_allowed",
+  "invalid",
+  "not_owned",
+  "insufficient_gold",
+  "insufficient_shards",
+  "sold_out",
+  "taken",
+])
+export type RefusalCode = typeof RefusalCode.Type
+
+export const CommandRefusal = Schema.Struct({ code: RefusalCode, message: Schema.String })
+export interface CommandRefusal extends Schema.Schema.Type<typeof CommandRefusal> {}
