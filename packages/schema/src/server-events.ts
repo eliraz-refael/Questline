@@ -1,18 +1,12 @@
-import { Schema } from "effect"
+import { Schema, Tuple } from "effect"
 import { ClaimState, InventoryEntry, ItemDef, Pet, Pity } from "./domain.ts"
 import { Count, IsoDateTime, Ulid, XpTier } from "./primitives.ts"
 
-// Server events are the outcomes the mod renders, numbered by a per-player seq that only goes up.
+// Server events are the outcomes the mod renders, numbered by a per-player seq that only goes up. Each one below
+// is the draft the rules engine emits; the write path adds the envelope as it appends the draft to the stream.
 
 const serverEvent = <Type extends string, Data extends Schema.Struct.Fields>(type: Type, data: Data) =>
-  Schema.Struct({
-    seq: Count,
-    at: IsoDateTime,
-    type: Schema.Literal(type),
-    /** The client event or command id that led to it, if any; events sharing a cause play as one celebration. */
-    cause: Schema.NullOr(Ulid),
-    data: Schema.Struct(data),
-  })
+  Schema.Struct({ type: Schema.Literal(type), data: Schema.Struct(data) })
 
 /** Fills the XP bar, floats "+120 XP". */
 export const XpGranted = serverEvent("xp.granted", {
@@ -71,7 +65,7 @@ export const XpRecomputed = serverEvent("xp.recomputed", {
 /** A rebalance moved the level down; a quiet update, no banner. */
 export const LevelChanged = serverEvent("level.changed", { from: Count, to: Count, title: Schema.String })
 
-export const ServerEvent = Schema.Union([
+export const ServerEventDraft = Schema.Union([
   XpGranted,
   XpCapped,
   LevelUp,
@@ -88,5 +82,17 @@ export const ServerEvent = Schema.Union([
   XpRecomputed,
   LevelChanged,
 ])
+export type ServerEventDraft = typeof ServerEventDraft.Type
+
+export const ServerEvent = ServerEventDraft.mapMembers(
+  Tuple.map(
+    Schema.fieldsAssign({
+      seq: Count,
+      at: IsoDateTime,
+      /** The client event or command id that led to it, if any; events sharing a cause play as one celebration. */
+      cause: Schema.NullOr(Ulid),
+    }),
+  ),
+)
 export type ServerEvent = typeof ServerEvent.Type
 export type ServerEventType = ServerEvent["type"]
