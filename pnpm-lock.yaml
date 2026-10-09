@@ -26,6 +26,10 @@ importers:
       '@questline/schema':
         specifier: workspace:*
         version: link:../schema
+    devDependencies:
+      effect:
+        specifier: 4.0.0
+        version: 4.0.0
 
   packages/schema:
     dependencies:

@@ -23,5 +23,8 @@
     "url": "https://github.com/eliraz-refael/Questline.git",
     "directory": "packages/engine"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "effect": "4.0.0"
+  }
 }
