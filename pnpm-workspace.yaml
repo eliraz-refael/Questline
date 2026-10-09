@@ -1,2 +1,8 @@
 packages:
   - packages/*
+
+overrides:
+  # Temporary, until the registry mirror has the Effect 4.0.0 adapters: keep platform-node-shared on effect's own
+  # release (4.0.0), and use ws 8.21.3 because 4.0.0 asks for ^8.22.0, which the mirror lacks. No websockets are used.
+  "@effect/platform-node-shared": "4.0.0"
+  "@effect/platform-node-shared>ws": "8.21.3"

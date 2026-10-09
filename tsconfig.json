@@ -1,4 +1,4 @@
 {
   "files": [],
-  "references": [{ "path": "packages/schema" }, { "path": "packages/engine" }]
+  "references": [{ "path": "packages/schema" }, { "path": "packages/engine" }, { "path": "packages/server" }]
 }
