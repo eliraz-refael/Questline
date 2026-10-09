@@ -43,6 +43,8 @@ export const AchievementUnlocked = serverEvent("achievement.unlocked", {
   achievementId: Schema.String,
   title: Schema.String,
 })
+/** The egg hatches: the sprite appears. */
+export const PetHatched = serverEvent("pet.hatched", Pet.fields)
 /** Redraws the sprite. */
 export const PetChanged = serverEvent("pet.changed", {
   mood: Schema.optionalKey(Pet.fields.mood),
@@ -75,6 +77,7 @@ export const ServerEventDraft = Schema.Union([
   QuestProgress,
   QuestCompleted,
   AchievementUnlocked,
+  PetHatched,
   PetChanged,
   StreakChanged,
   RulesUpdated,
