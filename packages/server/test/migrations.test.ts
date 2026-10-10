@@ -8,6 +8,9 @@ import { describe, expect } from "vitest"
 import { migrate, migrations } from "../src/index.ts"
 import { profile, start } from "./fixtures.ts"
 
+// Each test starts a fresh PGlite and runs every migration: the first cold start can take seconds on a CI runner.
+const coldStart = 30_000
+
 describe("migrations", () => {
   it.effect("start a player saved before the player stats from zero, and leave a newer one's alone", () =>
     Effect.gen(function* () {
@@ -32,6 +35,7 @@ describe("migrations", () => {
       const states = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ state: PlayerState })))(rows)
       expect(states.map((row) => row.state.progress.stats)).toEqual([fresh.progress.stats, counted.progress.stats])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
   )
 
   it.effect("give celebrations stored before tiers the tier the engine now stages them at", () =>
@@ -60,6 +64,7 @@ describe("migrations", () => {
       `
       expect(tiers.map((row) => row.tier)).toEqual(["rare", "epic", "uncommon", "legendary"])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
   )
 
   it.effect("give level-ups stored before glyphs the starter's glyph for their level", () =>
@@ -96,6 +101,7 @@ describe("migrations", () => {
       `
       expect(glyphs.map((row) => row.glyph)).toEqual(["⚔", "🗡️", "🛡️", "👑", "🐉", "✦"])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
   )
 
   it("give drops stored before band looks an item with no look, and leave a look already there", () =>
@@ -127,5 +133,6 @@ describe("migrations", () => {
         { delta: 10, totalAfter: 10, reason: "drop" },
       ])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
   )
 })
