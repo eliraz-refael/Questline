@@ -29,3 +29,17 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+
+  # The Claude Code mod runs on the engine's own runtime, so its checks are the engine's: validate reads it as a
+  # session would, and the mod's tests run against the engine's test kit.
+  mod:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code && claude --version
+      - run: claude plugin validate packages/mod
+      - run: claude plugin test packages/mod
