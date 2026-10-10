@@ -3,7 +3,7 @@ import { clientEventTypes } from "@questline/schema"
 import { Effect, Fiber } from "effect"
 import { TestClock } from "effect/testing"
 import { describe, expect } from "vitest"
-import { client, commit, hatch, merged, session, withServer } from "./fixtures.ts"
+import { client, commandUsed, commit, contextMeasured, hatch, merged, prompt, session, withServer } from "./fixtures.ts"
 
 describe("POST /v1/sessions", () => {
   it.effect("opens on the snapshot, the rules and the event types this server takes", () =>
@@ -37,6 +37,36 @@ describe("POST /v1/events", () => {
         const opened = yield* api.openSession({ payload: { sessionId: session } })
         expect(opened.snapshot.cursor).toBe(3)
         expect(opened.snapshot.character.xp.reported).toBe(13)
+      }),
+    ),
+  )
+})
+
+describe("POST /v1/events: prompts and stats", () => {
+  it.effect("prices graded prompts, counts the stats, and the snapshot carries them", () =>
+    withServer(
+      Effect.gen(function* () {
+        const api = yield* client
+        const events = [prompt(10), prompt(10), commandUsed("/code-review"), contextMeasured(80)]
+        const response = yield* api.sendEvents({ payload: { events } })
+        expect(response.results.map((result) => result.status)).toEqual(["accepted", "accepted", "accepted", "accepted"])
+        const prompts = response.events.flatMap((event) =>
+          event.type === "xp.granted" && event.data.reason === "prompt.graded" ? [event.data.amount] : [],
+        )
+        // The same grade twice is two prompts, not one fact reported twice.
+        expect(prompts).toEqual([20, 20])
+        expect(response.events.filter((event) => event.type === "stats.changed")).toHaveLength(4)
+        const opened = yield* api.openSession({ payload: { sessionId: session } })
+        expect(opened.snapshot.character.xp.reported).toBe(10 + 40)
+        expect(opened.snapshot.stats).toEqual({
+          clears: 0,
+          compactions: { manual: 0, auto: 0 },
+          commands: { "/code-review": 1 },
+          contextCrossed: { pct50: 1, pct75: 1, pct100: 0 },
+          contextPeak: { lastSession: 80, average: 80 },
+          prompts: { graded: 2, gradedToday: 2, averageScore: 10, regretted: 2 },
+        })
+        expect(opened.rules.prompt.maxXp).toBe(20)
       }),
     ),
   )

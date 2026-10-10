@@ -1,6 +1,6 @@
 import { Schema } from "effect"
-import { Boost, ClaimKind, ClaimStatus, InventoryEntry, Pet, Pity } from "./domain.ts"
-import { Count, IsoDate, IsoDateTime, Name, Rarity, Slot, Ulid } from "./primitives.ts"
+import { Boost, ClaimKind, ClaimStatus, InventoryEntry, Pet, Pity, PlayerStats } from "./domain.ts"
+import { Count, IsoDate, IsoDateTime, Name, Percent, Rarity, Slot, Ulid } from "./primitives.ts"
 import { ScoringFact } from "./rules.ts"
 import { CheckoutRef, GitHubWork } from "./subjects.ts"
 
@@ -45,6 +45,32 @@ export const Claim = Schema.Struct({
 })
 export interface Claim extends Schema.Schema.Type<typeof Claim> {}
 
+/** A session's context peak, kept so a later measurement in the same session only raises it. */
+export const SessionPeak = Schema.Struct({ sessionId: Ulid, peak: Percent })
+export interface SessionPeak extends Schema.Schema.Type<typeof SessionPeak> {}
+
+const NonNegative = Schema.Finite.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))
+
+/** The counters the player stats are worked out from. */
+export const StatCounters = Schema.Struct({
+  clears: Count,
+  compactions: PlayerStats.fields.compactions,
+  /** Command name -> uses. */
+  commands: Schema.Record(Schema.String, Count),
+  context: Schema.Struct({
+    /** Sessions that crossed each context fill. */
+    crossed: PlayerStats.fields.contextCrossed,
+    /** Sessions measured, and the sum of their peaks: the average peak is one over the other. */
+    sessions: Count,
+    peakSum: NonNegative,
+    /** The latest sessions measured, latest last. */
+    recent: Schema.Array(SessionPeak),
+  }),
+  /** Graded prompts, the sum of their weighted quality grades (0-10 each), and those with a regret above 0. */
+  prompts: Schema.Struct({ graded: Count, scoreSum: NonNegative, regretted: Count }),
+})
+export interface StatCounters extends Schema.Schema.Type<typeof StatCounters> {}
+
 /** Everything a rebalance recomputes by replaying the log. */
 export const Progress = Schema.Struct({
   /** Level and title are derived from the total. */
@@ -63,6 +89,7 @@ export const Progress = Schema.Struct({
   boosts: Schema.Array(Boost),
   tests: Schema.Struct({ armed: Schema.Array(ArmedTestRun) }),
   claims: Schema.Array(Claim),
+  stats: StatCounters,
 })
 export interface Progress extends Schema.Schema.Type<typeof Progress> {}
 

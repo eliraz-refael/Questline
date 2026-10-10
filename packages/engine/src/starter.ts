@@ -27,6 +27,8 @@ export const starterRules: RulesConfig = {
     "tests.green": { xp: 20, tier: "reported", dailyCap: 5 },
     "repo.explored": { xp: 25, tier: "reported", dailyCap: 3 },
     "streak.day": { xp: 10, tier: "reported", dailyCap: 1 },
+    // The grade prices a prompt (see `prompt`); this rule gives its tier and cap. No cap: the day's bands taper it.
+    "prompt.graded": { xp: 20, tier: "reported", dailyCap: null },
   },
   loot: {
     chancePerTurn: 0.12,
@@ -40,6 +42,17 @@ export const starterRules: RulesConfig = {
   },
   pet: { moodDecayPerDay: 10, happyAbove: 70, happyXpBonusPct: 5, evolveAt: [10, 25, 50] },
   streak: { xpPerDay: 10, maxXp: 70, restDaysPerWeek: 1 },
+  prompt: {
+    rubricVersion: 1,
+    // Equal weights: the plain average of the quality scores, so a perfect grade earns maxXp.
+    weights: { clarity: 1, grammar: 1, specificity: 1, instructive: 1, context: 1, doneCriteria: 1, focus: 1 },
+    maxXp: 20,
+    perDay: [
+      { upTo: 20, pct: 100 },
+      { upTo: 40, pct: 50 },
+      { upTo: null, pct: 10 },
+    ],
+  },
   catalogVersion: 1,
   questPacks: [],
 }

@@ -22,6 +22,9 @@ export const Count = Schema.Natural
 
 export const Probability = Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 1 })))
 
+/** A share of something in percent, 0-100: how full the context is. */
+export const Percent = Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 100 })))
+
 /** A character or pet name. */
 export const Name = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(32)))
 
@@ -42,3 +45,19 @@ export type Slot = typeof Slot.Type
 
 export const XpTier = Schema.Literals(["verified", "reported"])
 export type XpTier = typeof XpTier.Type
+
+/** The scores that make a prompt's quality, and so its XP, each 0-10 against what the prompt needs. */
+export const QualityDimension = Schema.Literals([
+  "clarity",
+  "grammar",
+  "specificity",
+  "instructive",
+  "context",
+  "doneCriteria",
+  "focus",
+])
+export type QualityDimension = typeof QualityDimension.Type
+
+/** Everything the prompt grader scores: the quality, plus `regret`, which only the player stats count. */
+export const GradeDimension = Schema.Literals([...QualityDimension.literals, "regret"])
+export type GradeDimension = typeof GradeDimension.Type

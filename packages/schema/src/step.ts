@@ -16,11 +16,11 @@ export const RollRecord = Schema.Struct({
   /** Per player, from 0; draws from hash(rollSeed, number). */
   number: Count,
   /**
-   * turn: a finished agent turn; verified: a verified fact; reward: a quest or milestone that always drops;
-   * reroll: a duplicate traded in, which keeps its rarity.
+   * turn: a finished agent turn; prompt: a graded prompt; verified: a verified fact; reward: a quest or milestone
+   * that always drops; reroll: a duplicate traded in, which keeps its rarity.
    */
-  trigger: Schema.Literals(["turn", "verified", "reward", "reroll"]),
-  /** Chance of any drop; 1 for everything but a turn. */
+  trigger: Schema.Literals(["turn", "prompt", "verified", "reward", "reroll"]),
+  /** Chance of any drop; 1 for everything but a turn or a prompt. */
   chance: Probability,
   pityBefore: Pity,
   rulesVersion: Count,
@@ -36,7 +36,10 @@ export const RollRecord = Schema.Struct({
   ),
 }).check(
   Schema.makeFilter(
-    (roll) => roll.trigger === "turn" || roll.chance === 1 || { path: ["chance"], issue: "only a turn can miss" },
+    (roll) =>
+      roll.trigger === "turn" ||
+      roll.trigger === "prompt" ||
+      roll.chance === 1 || { path: ["chance"], issue: "only a turn or a prompt can miss" },
   ),
 )
 export interface RollRecord extends Schema.Schema.Type<typeof RollRecord> {}

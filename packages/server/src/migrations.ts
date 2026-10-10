@@ -83,5 +83,50 @@ const initial = Effect.gen(function* () {
   `
 })
 
+// The player stats joined the engine state: a player made before them starts counting from zero. The counters are
+// written out here rather than taken from the engine, so this migration means the same thing whatever the engine
+// later becomes.
+const playerStats = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  const stats = {
+    clears: 0,
+    compactions: { manual: 0, auto: 0 },
+    commands: {},
+    context: { crossed: { pct50: 0, pct75: 0, pct100: 0 }, sessions: 0, peakSum: 0, recent: [] },
+    prompts: { graded: 0, scoreSum: 0, regretted: 0 },
+  }
+  yield* sql`
+    UPDATE player_state
+    SET state = jsonb_set(state, '{progress,stats}', ${JSON.stringify(stats)}::jsonb)
+    WHERE state -> 'progress' -> 'stats' IS NULL
+  `
+})
+
+// Celebrations gained a `tier`: the stream and repeats decode stored events, so the ones written before it get the
+// tier the engine now gives them (a drop its rarity; a level up epic with a new title or evolution, else rare).
+const celebrationTiers = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    UPDATE server_events
+    SET data = data || jsonb_build_object('tier', data -> 'item' -> 'rarity')
+    WHERE type = 'loot.dropped' AND data -> 'tier' IS NULL
+  `
+  yield* sql`
+    UPDATE server_events
+    SET data = data || jsonb_build_object(
+      'tier',
+      CASE WHEN data -> 'title' IS NOT NULL OR data -> 'evolution' IS NOT NULL THEN 'epic' ELSE 'rare' END
+    )
+    WHERE type = 'level.up' AND data -> 'tier' IS NULL
+  `
+})
+
+/** Every migration, by the name the migrator records it under. */
+export const migrations = {
+  "0001_initial": initial,
+  "0002_player_stats": playerStats,
+  "0003_celebration_tiers": celebrationTiers,
+}
+
 /** Runs the migrations not applied yet, in order. */
-export const migrate = Migrator.make({})({ loader: Migrator.fromRecord({ "0001_initial": initial }) })
+export const migrate = Migrator.make({})({ loader: Migrator.fromRecord(migrations) })

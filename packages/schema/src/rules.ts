@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Count, IsoDateTime, Probability, Rarity, XpTier } from "./primitives.ts"
+import { Count, IsoDateTime, Probability, QualityDimension, Rarity, XpTier } from "./primitives.ts"
 
 /** Scoring facts are derived by the server from client events and GitHub; quest goals use the same names. */
 export const ScoringFact = Schema.Literals([
@@ -13,6 +13,7 @@ export const ScoringFact = Schema.Literals([
   "tests.green",
   "repo.explored",
   "streak.day",
+  "prompt.graded",
 ])
 export type ScoringFact = typeof ScoringFact.Type
 
@@ -34,6 +35,35 @@ const Positive = Schema.Finite.pipe(Schema.check(Schema.isGreaterThan(0)))
 export const LevelCurve = Schema.Struct({ base: Positive, exponent: Positive })
 export interface LevelCurve extends Schema.Schema.Type<typeof LevelCurve> {}
 
+/** A share of the day's prompt XP: prompts up to the `upTo`-th of a local day earn `pct`; null = every one after. */
+export const PromptBand = Schema.Struct({ upTo: Schema.NullOr(Count), pct: Count })
+export interface PromptBand extends Schema.Schema.Type<typeof PromptBand> {}
+
+/** How a graded prompt is priced: XP = maxXp * weighted average score / 10, then the day's band. */
+export const PromptRules = Schema.Struct({
+  /** The rubric the mod grades against. */
+  rubricVersion: Count,
+  /** How much each quality score counts toward XP; `regret` is a stat, never priced. */
+  weights: Schema.Record(QualityDimension, Schema.Finite.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))),
+  /** XP for a perfect weighted grade. */
+  maxXp: Count,
+  /** Diminishing returns over a local day, in order; past the last band a prompt earns nothing. */
+  perDay: Schema.Array(PromptBand),
+}).check(
+  Schema.makeFilter(
+    (prompt) =>
+      Object.values(prompt.weights).some((weight) => weight > 0) || { path: ["weights"], issue: "some score must count" },
+  ),
+  Schema.makeFilter((prompt) => {
+    const rising = prompt.perDay.every((band, i) => {
+      const next = prompt.perDay[i + 1]
+      return next === undefined || (band.upTo !== null && (next.upTo === null || band.upTo < next.upTo))
+    })
+    return rising || { path: ["perDay"], issue: "bands must rise, with an open one only last" }
+  }),
+)
+export interface PromptRules extends Schema.Schema.Type<typeof PromptRules> {}
+
 /** The game's tuning. The mod never hard-codes a number from it. */
 export const RulesConfig = Schema.Struct({
   /** Tuning version. */
@@ -46,6 +76,7 @@ export const RulesConfig = Schema.Struct({
   titles: Schema.Array(Schema.Struct({ fromLevel: Count, title: Schema.String })),
   xp: Schema.Record(ScoringFact, XpRule),
   loot: Schema.Struct({
+    /** Per finished turn and per graded prompt. */
     chancePerTurn: Probability,
     chanceOnVerified: Probability,
     weights: Schema.Record(Rarity, Count),
@@ -64,6 +95,7 @@ export const RulesConfig = Schema.Struct({
     evolveAt: Schema.Array(Count),
   }),
   streak: Schema.Struct({ xpPerDay: Count, maxXp: Count, restDaysPerWeek: Count }),
+  prompt: PromptRules,
   /** Item definitions to fetch if newer. */
   catalogVersion: Count,
   /** Active pack ids. */

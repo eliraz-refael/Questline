@@ -20,6 +20,13 @@ const fresh = {
     boosts: [],
     tests: { armed: [] },
     claims: [],
+    stats: {
+      clears: 0,
+      compactions: { manual: 0, auto: 0 },
+      commands: {},
+      context: { crossed: { pct50: 0, pct75: 0, pct100: 0 }, sessions: 0, peakSum: 0, recent: [] },
+      prompts: { graded: 0, scoreSum: 0, regretted: 0 },
+    },
   },
   holdings: {
     gold: 0,
@@ -95,6 +102,17 @@ describe("PlayerState", () => {
   })
 })
 
+describe("StatCounters", () => {
+  it("keeps each recent session's context peak, within 0-100", () => {
+    const context = { ...fresh.progress.stats.context, sessions: 1, peakSum: 80, recent: [{ sessionId: ulid, peak: 80 }] }
+    const measured = { ...fresh, progress: { ...fresh.progress, stats: { ...fresh.progress.stats, context } } }
+    expect(decodeState(measured)._tag).toBe("Success")
+    const over = { ...context, recent: [{ sessionId: ulid, peak: 120 }] }
+    const overfull = { ...fresh, progress: { ...fresh.progress, stats: { ...fresh.progress.stats, context: over } } }
+    expect(decodeState(overfull)._tag).toBe("Failure")
+  })
+})
+
 describe("ServerEventDraft", () => {
   const draft = { type: "xp.granted", data: { amount: 120, tier: "verified", reason: "change.merged", totalAfter: 120 } }
 
@@ -137,11 +155,12 @@ describe("Duplicates", () => {
     expect(Schema.decodeUnknownExit(RollRecord)(lost)._tag).toBe("Failure")
   })
 
-  it("can only miss on a turn: a re-roll or reward always drops", () => {
+  it("can only miss on a turn or a graded prompt: a re-roll or reward always drops", () => {
     const pityBefore = { sinceRare: 0, sinceEpic: 0 }
     const missable = { number: 12, trigger: "reroll", chance: 0.2, pityBefore, rulesVersion: 1, drop: null }
     expect(Schema.decodeUnknownExit(RollRecord)(missable)._tag).toBe("Failure")
     expect(Schema.decodeUnknownExit(RollRecord)({ ...missable, trigger: "turn" })._tag).toBe("Success")
+    expect(Schema.decodeUnknownExit(RollRecord)({ ...missable, trigger: "prompt" })._tag).toBe("Success")
   })
 
   it("salvage into shards tuned per rarity", () => {
