@@ -1,6 +1,6 @@
 import type { CharacterSlot, Context, PetSlot, Player, PlayerState, Slot, Snapshot } from "@questline/schema"
 import { isLater, localDay } from "./days.ts"
-import { levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
+import { glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import { statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
@@ -51,6 +51,7 @@ export const project = (
         forNextLevel: level.forNextLevel,
       },
       title: titleFor(rules, level.level),
+      glyph: glyphFor(rules, level.level),
       prestige: progress.prestige,
       gold: holdings.gold,
       shards: holdings.shards,

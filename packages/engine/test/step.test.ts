@@ -4,6 +4,7 @@ import { RulesConfig as RulesSchema, Step as StepSchema } from "@questline/schem
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {
+  glyphFor,
   initialState,
   levelOf,
   maxCommands,
@@ -160,7 +161,9 @@ describe("step: XP", () => {
   it("levels up once past the curve and never replays a level already reached", () => {
     const { state, events } = play([client("change.merged")])
     expect(levelOf(state, starterRules).level).toBe(1)
-    expect(events.filter((e) => e.type === "level.up")).toEqual([{ type: "level.up", data: { from: 0, to: 1, tier: "rare" } }])
+    expect(events.filter((e) => e.type === "level.up")).toEqual([
+      { type: "level.up", data: { from: 0, to: 1, tier: "rare", glyph: "⚔" } },
+    ])
     expect(state.holdings.peakLevel).toBe(1)
   })
 })
@@ -400,8 +403,46 @@ describe("step: celebration tiers", () => {
     }
     expect(play([client("change.merged")], starterRules, nearTen).events.find((e) => e.type === "level.up")).toEqual({
       type: "level.up",
-      data: { from: 9, to: 10, tier: "epic", title: "Adept" },
+      data: { from: 9, to: 10, tier: "epic", glyph: "🛡️", title: "Adept" },
     })
+  })
+})
+
+describe("level glyphs", () => {
+  const at = (level: number): PlayerState => {
+    const state = fresh()
+    const xp = { verified: 0, reported: xpForLevel(starterRules.levelCurve, level) }
+    return { ...state, progress: { ...state.progress, xp }, holdings: { ...state.holdings, peakLevel: level } }
+  }
+  const player = { id: session, githubUserId: null, githubLogin: null, displayName: "Player", createdAt: start }
+  const meta = { player, serverId: "local", streamEpoch: 1, cursor: 0 }
+
+  it("changes the icon before Lv every five levels, from the rules' bands", () => {
+    const glyphs = [0, 4, 5, 9, 10, 14, 15, 19, 20, 60].map((level) => glyphFor(starterRules, level))
+    expect(glyphs).toEqual(["⚔", "⚔", "🗡️", "🗡️", "🛡️", "🛡️", "👑", "👑", "🐉", "🐉"])
+  })
+
+  it("puts the character's glyph on the snapshot, under the rules in force", () => {
+    const context = { rules: starterRules, questPacks: [], now: start }
+    expect(project(at(15), context, meta).character).toMatchObject({ level: 15, glyph: "👑" })
+    const rules = { ...starterRules, glyphs: [{ fromLevel: 3, glyph: "✦" }, { fromLevel: 12, glyph: "★" }] }
+    expect(project(at(0), { ...context, rules }, meta).character.glyph).toBe("✦")
+    expect(project(at(12), { ...context, rules }, meta).character.glyph).toBe("★")
+  })
+
+  it("names the glyph reached on a level-up into a new band", () => {
+    const nearFive = at(4)
+    const xp = { verified: 0, reported: xpForLevel(starterRules.levelCurve, 5) - 100 }
+    const { events } = play([client("change.merged")], starterRules, { ...nearFive, progress: { ...nearFive.progress, xp } })
+    expect(events.find((e) => e.type === "level.up")).toMatchObject({ data: { from: 4, to: 5, glyph: "🗡️" } })
+  })
+
+  it("refuses glyph bands that don't rise, an empty glyph, and no bands at all", () => {
+    const decode = Schema.decodeUnknownExit(RulesSchema)
+    const glyphs = [{ fromLevel: 5, glyph: "🗡️" }, { fromLevel: 5, glyph: "🛡️" }]
+    expect(decode({ ...starterRules, glyphs })._tag).toBe("Failure")
+    expect(decode({ ...starterRules, glyphs: [{ fromLevel: 0, glyph: "" }] })._tag).toBe("Failure")
+    expect(decode({ ...starterRules, glyphs: [] })._tag).toBe("Failure")
   })
 })
 

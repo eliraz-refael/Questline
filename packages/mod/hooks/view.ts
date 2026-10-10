@@ -7,13 +7,14 @@ export const viewOf = (snapshot: Snapshot): BandView => ({
   name: snapshot.character.name,
   level: snapshot.character.level,
   title: snapshot.character.title,
+  // An older server's snapshot names no glyph: the band's first one stands in.
+  glyph: snapshot.character.glyph || '⚔',
   xp: {
     total: snapshot.character.xp.total,
     intoLevel: snapshot.character.xp.intoLevel,
     forNextLevel: snapshot.character.xp.forNextLevel,
   },
   gold: snapshot.character.gold,
-  streakDays: snapshot.character.streak.days,
   pet:
     snapshot.pet === null
       ? null

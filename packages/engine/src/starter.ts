@@ -4,8 +4,8 @@ import type { ItemDef, RulesConfig } from "@questline/schema"
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
 
 export const starterRules: RulesConfig = {
-  version: 2,
-  schemaVersion: 2,
+  version: 3,
+  schemaVersion: 3,
   appliesFrom: null,
   levelCurve: { base: 100, exponent: 1.6 },
   titles: [
@@ -15,6 +15,14 @@ export const starterRules: RulesConfig = {
     { fromLevel: 50, title: "Master" },
     { fromLevel: 75, title: "Grandmaster" },
     { fromLevel: 100, title: "Legend" },
+  ],
+  // The emoji carry their selector, so every terminal draws them two cells wide; the mod pads ⚔ to the same two.
+  glyphs: [
+    { fromLevel: 0, glyph: "⚔" },
+    { fromLevel: 5, glyph: "🗡️" },
+    { fromLevel: 10, glyph: "🛡️" },
+    { fromLevel: 15, glyph: "👑" },
+    { fromLevel: 20, glyph: "🐉" },
   ],
   xp: {
     "change.merged": { xp: 250, tier: "reported", dailyCap: null, ownRepoXp: 120, tinyDiffPct: 25 },

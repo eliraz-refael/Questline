@@ -25,6 +25,12 @@ export const Probability = Schema.Finite.pipe(Schema.check(Schema.isBetween({ mi
 /** A share of something in percent, 0-100: how full the context is. */
 export const Percent = Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 100 })))
 
+/**
+ * What stands before "Lv" in the band: a glyph one cell wide (`⚔`) or, as an emoji, two (`👑`, or `🛡️` with its
+ * emoji selector), so the mod can keep it in a two-cell slot.
+ */
+export const Glyph = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(8)))
+
 /** A character or pet name. */
 export const Name = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(32)))
 

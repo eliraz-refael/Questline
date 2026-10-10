@@ -16,6 +16,13 @@ export const titleFor = (rules: RulesConfig, level: number): string => {
   return title
 }
 
+/** The glyph of the highest band reached; below the first band, the first band's glyph. */
+export const glyphFor = (rules: RulesConfig, level: number): string => {
+  let glyph = rules.glyphs[0]?.glyph ?? ""
+  for (const band of rules.glyphs) if (band.fromLevel <= level) glyph = band.glyph
+  return glyph
+}
+
 /** Evolution stages a level unlocks: 0, then one more per `evolveAt` level reached. */
 export const formsFor = (rules: RulesConfig, level: number): ReadonlyArray<number> => [
   0,

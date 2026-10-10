@@ -1,6 +1,6 @@
 import { Schema, Struct, Tuple } from "effect"
 import { ClaimState, InventoryEntry, ItemDef, Pet, Pity, PlayerStats } from "./domain.ts"
-import { Count, IsoDateTime, Rarity, Ulid, XpTier } from "./primitives.ts"
+import { Count, Glyph, IsoDateTime, Rarity, Ulid, XpTier } from "./primitives.ts"
 
 // Server events are the outcomes the mod renders, numbered by a per-player seq that only goes up. Each one below
 // is the draft the rules engine emits; the write path adds the envelope as it appends the draft to the stream.
@@ -28,6 +28,8 @@ export const LevelUp = serverEvent("level.up", {
   from: Count,
   to: Count,
   tier,
+  /** The level glyph at `to`, which the celebration shows. */
+  glyph: Glyph,
   title: Schema.optionalKey(Schema.String),
   evolution: Schema.optionalKey(Count),
 })

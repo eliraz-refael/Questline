@@ -194,14 +194,21 @@ describe("ServerEvent", () => {
   })
 
   it("decodes a level-up with its optional fields left out", () => {
-    const event = { seq: 7, at, type: "level.up", cause: ulid, data: { from: 4, to: 5, tier: "rare" } }
+    const event = { seq: 7, at, type: "level.up", cause: ulid, data: { from: 4, to: 5, tier: "rare", glyph: "🗡️" } }
     expect(Schema.decodeUnknownSync(ServerEvent)(event)).toEqual(event)
   })
 
   it("names the celebration's tier on a level-up", () => {
-    const event = { seq: 7, at, type: "level.up", cause: ulid, data: { from: 4, to: 5 } }
+    const event = { seq: 7, at, type: "level.up", cause: ulid, data: { from: 4, to: 5, glyph: "🗡️" } }
     expect(Schema.decodeUnknownExit(ServerEvent)(event)._tag).toBe("Failure")
-    expect(Schema.decodeUnknownExit(ServerEvent)({ ...event, data: { from: 4, to: 5, tier: "huge" } })._tag).toBe("Failure")
+    expect(Schema.decodeUnknownExit(ServerEvent)({ ...event, data: { ...event.data, tier: "huge" } })._tag).toBe("Failure")
+  })
+
+  it("names the level's glyph on a level-up, one to eight characters", () => {
+    const event = { seq: 7, at, type: "level.up", cause: ulid, data: { from: 4, to: 5, tier: "rare" } }
+    expect(Schema.decodeUnknownExit(ServerEvent)(event)._tag).toBe("Failure")
+    expect(Schema.decodeUnknownExit(ServerEvent)({ ...event, data: { ...event.data, glyph: "" } })._tag).toBe("Failure")
+    expect(Schema.decodeUnknownExit(ServerEvent)({ ...event, data: { ...event.data, glyph: "🗡️" } })._tag).toBe("Success")
   })
 
   it("carries only the stats that changed on stats.changed", () => {
@@ -232,6 +239,7 @@ describe("Snapshot", () => {
       level: 0,
       xp: { total: 0, verified: 0, reported: 0, intoLevel: 0, forNextLevel: 100 },
       title: "Apprentice",
+      glyph: "⚔",
       prestige: 0,
       gold: 0,
       shards: { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 },
