@@ -58,12 +58,16 @@ export type LookFrame = {
   marks?: ReadonlyArray<LookMark>
 }
 
-/** A band style's look, as the server sends it: glyphs and colors by part, and a loop's frames and rate. */
+/** A soft-edged light that travels a slot's track: colors from its dim tail to its bright head, and frames of rest. */
+export type LookSheen = { colors: ReadonlyArray<string>; rest: number }
+
+/** A band style's look, as the server sends it: glyphs and colors by part, and a loop's frames, rate and sheen. */
 export type BandLook = {
   glyphs: Readonly<Record<string, string>>
   colors: Readonly<Record<string, string>>
   frames: ReadonlyArray<LookFrame> | null
   fps: number | null
+  sheen?: LookSheen
 }
 
 /** One owned item, its definition beside its entry. */
@@ -81,8 +85,11 @@ export type OwnedItem = {
 /** What the player owns and what is equipped where (slot -> entry id). */
 export type Wardrobe = { items: ReadonlyArray<OwnedItem>; equipped: Readonly<Record<string, string>> }
 
-/** The loops' clock: frames since they started, at `rate` a second. Null while they rest, which draws still looks. */
-export type Loop = { tick: number; rate: number }
+/**
+ * The loops' clocks: frames played at each rate a worn look loops at (by the rate, as text), so every look steps
+ * evenly at its own. Null while they rest, which draws still looks.
+ */
+export type Loop = { ticks: Readonly<Record<string, number>> }
 
 /** The `/questline` pane's tabs. */
 export type PaneTab = 'inventory' | 'stats' | 'missions'
@@ -97,7 +104,8 @@ declare module 'claude-code' {
       /** The celebrations still to play, the one playing first, so a reload of the mod plays them again. */
       queue: ReadonlyArray<Celebration>
       wardrobe: Wardrobe | null
-      loop: Loop | null
+      /** Under a new key: a copy of the mod from before kept `{ tick, rate }` under `loop`. */
+      loops: Loop | null
       tab: PaneTab
     }
   }

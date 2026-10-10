@@ -2,7 +2,7 @@ import type { BandLook, BandView, Loop } from '../types'
 import type { Cell, Row, Run, Style } from './cells'
 import { cellsOf, glyphSlot, runsOf } from './cells'
 import type { Parts } from './looks'
-import { markCell, partsOf } from './looks'
+import { markCell, partsOf, sheenCells } from './looks'
 import { bar } from './view'
 
 // The band's pieces, each drawn from a look: the XP bar, the level, the top edge and the gold. The band and the pane's
@@ -19,6 +19,16 @@ const markTrack = (cells: Array<Cell>, from: number, length: number, parts: Part
     const glyph = mark.glyph !== undefined && cellsOf(mark.glyph) === 1 ? mark.glyph : cell.char
     const style = mark.color === undefined ? styleOfCell(cell) : { color: mark.color }
     cells[from + at] = { char: glyph, ...style, bold: true }
+  }
+}
+
+/** Lights the first `span` cells of a track with the look's sheen where it is now, keeping their glyphs. */
+const sheenTrack = (cells: Array<Cell>, from: number, span: number, parts: Parts): void => {
+  if (parts.sheen === null) return
+  for (const lit of sheenCells(parts.sheen.sheen, parts.sheen.tick, span)) {
+    const cell = cells[from + lit.at]
+    if (cell === undefined) continue
+    cells[from + lit.at] = { char: cell.char, color: lit.color, ...(lit.isHead ? { bold: true } : {}) }
   }
 }
 
@@ -52,6 +62,8 @@ export const barCells = (view: BandView, columns: number, look: BandLook | null,
     else cells.push(cellOf(empty, parts.style('empty')))
   }
   if (right !== undefined) cells.push(cellOf(right, parts.style('right')))
+  // The sheen lights the XP earned, not the bar still to fill.
+  sheenTrack(cells, from, filled, parts)
   markTrack(cells, from, width, parts)
   return { cells, from, width, filled, full }
 }
@@ -110,6 +122,7 @@ export const edgeRow = (columns: number, look: BandLook | null, loop: Loop | nul
   const motif = [...Array.from({ length: 10 }, () => line), dot, cellOf(glyph('knot', '✧'), parts.style('knot')), dot]
   const from = cells.length
   for (let i = 0; cells.length < columns; i++) cells.push(motif[i % motif.length] ?? line)
+  sheenTrack(cells, from, columns - from, parts)
   markTrack(cells, from, columns - from, parts)
   return runsOf(cells)
 }

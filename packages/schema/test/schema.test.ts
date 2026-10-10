@@ -270,6 +270,22 @@ describe("ItemDef: band styles", () => {
     const gold = { ...style, slot: "goldDisplay", look: { glyphs: {}, colors: {}, frames: [{ marks: marks(1) }, {}], fps: 4 } }
     expect(decode(gold)._tag).toBe("Failure")
   })
+
+  it("may carry a sheen in a loop on a slot with a track, its cells counted in the budget", () => {
+    const head = { glyphs: { head: "✦" } }
+    const sheen = { colors: ["#7b2cbf", "#c77dff", "#e0aaff", "#ffffff"], rest: 6 }
+    const sheened = (frames: ReadonlyArray<object>, fps: number | null = 6) => ({ ...style, look: { ...look, frames, fps, sheen } })
+    expect(decode(sheened([head, head]))._tag).toBe("Success")
+    // Without a sheen, a look from before stays valid.
+    expect(decode(loop([head, head]))._tag).toBe("Success")
+    expect(decode({ ...style, look: { ...look, sheen } })._tag).toBe("Failure")
+    expect(decode(sheened([{ ...head, marks: marks(8) }, head]))._tag).toBe("Failure")
+    expect(decode(sheened([{ ...head, marks: marks(7) }, head]))._tag).toBe("Success")
+    const gold = { ...style, slot: "goldDisplay", look: { glyphs: {}, colors: {}, frames: [{}, {}], fps: 4, sheen } }
+    expect(decode(gold)._tag).toBe("Failure")
+    const oneColor = { ...style, look: { ...look, frames: [head, head], fps: 6, sheen: { colors: ["#ffffff"], rest: 0 } } }
+    expect(decode(oneColor)._tag).toBe("Failure")
+  })
 })
 
 describe("CommandResponse", () => {
