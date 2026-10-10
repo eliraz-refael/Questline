@@ -1,4 +1,5 @@
-import type { BandLook, BandSlot, PaneTab, Tier, Wardrobe } from '../types'
+import type { BandLook, BandSlot, BandView, PaneTab, Tier, Wardrobe } from '../types'
+import { cellsOf } from './cells'
 import { bandSlots, equippedIn, loops } from './looks'
 
 // The `/questline` pane: a hub of tabs, each a view of the game. This file says what the tabs are and what the
@@ -13,6 +14,55 @@ export const tabs: ReadonlyArray<{ id: PaneTab; label: string; isReady: boolean 
   { id: 'stats', label: 'Stats', isReady: false },
   { id: 'missions', label: 'Missions', isReady: false },
 ]
+
+/** The pane's title, which opens its header. */
+export const brand = '✦ QUESTLINE ✦'
+
+/** Cells between the title and the character beside it. */
+export const headerGap = 2
+
+/**
+ * The character beside the title, as much of it as `columns` leaves: the player's name goes first, then the level's
+ * title, then the gold, so the header never wraps. Empty when not even the level fits.
+ */
+export const headerOf = (view: Pick<BandView, 'name' | 'level' | 'title' | 'gold'>, columns: number): string => {
+  const room = columns - cellsOf(brand) - headerGap
+  const { name, level, title, gold } = view
+  const tries = [
+    `${name} · Lv ${level} ${title} · ◈ ${gold}`,
+    `Lv ${level} ${title} · ◈ ${gold}`,
+    `Lv ${level} · ◈ ${gold}`,
+    `Lv ${level}`,
+  ]
+  return tries.find((one) => cellsOf(one) <= room) ?? ''
+}
+
+/** One tab in the bar: the one shown, one to switch to, or one still to come (`soon` when there is room to say). */
+export type TabChip = { id: PaneTab; text: string; kind: 'shown' | 'ready' | 'later'; soon: boolean }
+
+/**
+ * The tab bar as it fits `columns` on one row: first the gaps close up, then the `soon` labels go, then the tabs
+ * still to come.
+ */
+export const tabBarOf = (shown: PaneTab, columns: number): { gap: number; chips: Array<TabChip> } => {
+  const chipsOf = (soon: boolean, withLater: boolean): Array<TabChip> =>
+    tabs.flatMap((tab): Array<TabChip> => {
+      const kind = tab.id === shown ? 'shown' : tab.isReady ? 'ready' : 'later'
+      if (kind === 'later' && !withLater) return []
+      const text = `${kind === 'shown' ? '◆' : '◇'} ${tab.label}`
+      return [{ id: tab.id, text, kind, soon: soon && kind === 'later' }]
+    })
+  const widthOf = (bar: { gap: number; chips: ReadonlyArray<TabChip> }) =>
+    bar.chips.reduce((sum, chip) => sum + cellsOf(chip.text) + (chip.soon ? ' soon'.length : 0), 0) +
+    bar.gap * Math.max(0, bar.chips.length - 1)
+  const tries = [
+    { gap: 3, chips: chipsOf(true, true) },
+    { gap: 2, chips: chipsOf(true, true) },
+    { gap: 2, chips: chipsOf(false, true) },
+    { gap: 1, chips: chipsOf(false, true) },
+  ]
+  return tries.find((bar) => widthOf(bar) <= columns) ?? { gap: 1, chips: chipsOf(false, false) }
+}
 
 /** A tab the pane can show: the one asked for when it is ready, else the first that is. */
 export const tabOf = (asked: PaneTab | null): PaneTab =>

@@ -5,7 +5,7 @@ import { Context, Effect, Layer, Option, Result, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
 import type { Admitted } from "./edge.ts"
-import { catalog, inputSchemaVersion, rules } from "./game.ts"
+import { catalog, DevMode, inputSchemaVersion, rules } from "./game.ts"
 import { StreamHub } from "./hub.ts"
 
 // Every change to a player goes through `apply`, in one transaction that holds the player's row: client events,
@@ -54,6 +54,7 @@ const make = (stepper: Stepper) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     const hub = yield* StreamHub
+    const devMode = yield* DevMode
 
     const lock = SqlSchema.findOne({
       Request: Schema.String,
@@ -150,6 +151,7 @@ const make = (stepper: Stepper) =>
             catalog,
             questPacks: [],
             mode: { kind: "live" },
+            ...(devMode.isOn ? { dev: true } : {}),
           }
           const ran = yield* Effect.result(Effect.try(() => stepper(state, item.input, context)))
 

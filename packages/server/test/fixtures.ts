@@ -94,9 +94,9 @@ export const contextMeasured = (pct: number, id = nextId()): typeof ContextMeasu
 
 export const hatch = (id = nextId()): typeof PetHatch.Type => ({ id, type: "pet.hatch", data: { species: "fox", name: "Pixel" } })
 
-/** The services behind the routes, over a fresh in-memory database, with the clock at `start`. */
-export const testServices = (stepper?: Stepper) =>
-  Layer.mergeAll(services({}, profile, stepper), HttpServer.layerServices).pipe(
+/** The services behind the routes, over a fresh in-memory database, with the clock at `start`; `dev`: dev mode. */
+export const testServices = (stepper?: Stepper, dev = false) =>
+  Layer.mergeAll(services({}, profile, stepper, dev), HttpServer.layerServices).pipe(
     Layer.provideMerge(Layer.effectDiscard(TestClock.setTime(Date.parse(start)))),
   )
 
@@ -104,5 +104,5 @@ export const testServices = (stepper?: Stepper) =>
 export const client = HttpApiTest.groups(QuestlineApi, ["mod"])
 
 /** Runs a test against a fresh server: the handlers and the services behind them, over one database. */
-export const withServer = <A, E, R>(effect: Effect.Effect<A, E, R>, stepper?: Stepper) =>
-  effect.pipe(Effect.provide(ModHandlers.pipe(Layer.provideMerge(testServices(stepper)))))
+export const withServer = <A, E, R>(effect: Effect.Effect<A, E, R>, stepper?: Stepper, dev = false) =>
+  effect.pipe(Effect.provide(ModHandlers.pipe(Layer.provideMerge(testServices(stepper, dev)))))

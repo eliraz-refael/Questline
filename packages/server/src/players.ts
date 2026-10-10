@@ -5,7 +5,7 @@ import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
 import { randomBytes } from "node:crypto"
-import { catalog, minClientVersion, rules } from "./game.ts"
+import { catalog, DevMode, minClientVersion, rules } from "./game.ts"
 
 // Reads of a player that never change one: who the player is, the snapshot the mod draws, and the stream after a
 // cursor. Writes go through the PlayerWriter.
@@ -46,6 +46,7 @@ export const serverIdOf = (player: PlayerType): string => `local-${player.id}`
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const devMode = yield* DevMode
 
   const playerColumns = sql`
     id, github_user_id::float8 AS "githubUserId", github_login AS "githubLogin",
@@ -108,7 +109,13 @@ const make = Effect.gen(function* () {
       return project(
         row.state,
         { rules, catalog, questPacks: [], now },
-        { player, serverId: serverIdOf(player), streamEpoch: row.stream_epoch, cursor: row.server_seq },
+        {
+          player,
+          serverId: serverIdOf(player),
+          streamEpoch: row.stream_epoch,
+          cursor: row.server_seq,
+          dev: devMode.isOn,
+        },
       )
     })
 

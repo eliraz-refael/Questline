@@ -5,6 +5,8 @@ import type { BandSlot, BandView, Celebration, Gain, Link, Motion, PaneTab, Stag
 import { goldRow, labelRun, edgeRow, levelRow } from './band'
 import { celebrationOf, chimeOf, chimeWav, gapMs, idleMs, joinQueue, motionOf, queueOf, scriptOf } from './celebrate'
 import type { Row } from './cells'
+import type { DevAsk, ServerKind } from './dev'
+import { devAskOf, devCommandOf, devUsage, previewEvents, previews, serverOf, startHint, toNextLevel } from './dev'
 import { barRow, rarityColors, slotRow, stageRows } from './frames'
 import {
   answerTail,
@@ -33,8 +35,8 @@ import type { Repo } from './observe'
 import { answerOf, initOf, isCommand, isEvents, isSession, isStream, ServerDown, socketPathOf, urlOf } from './server'
 import { ownedLooks, rateOf, wornLooks } from './looks'
 import type { Choice } from './pane'
-import { lookSections, otherItems, paneId, tabOf, tabs } from './pane'
-import { announce, canHatch, hearts, sprite, viewOf, wardrobeOf } from './view'
+import { brand, headerGap, headerOf, lookSections, otherItems, paneId, tabBarOf, tabOf } from './pane'
+import { batchesOf, batchGainOf, canHatch, fadeMs, hearts, sprite, toastOf, toastsOf, viewOf, wardrobeOf } from './view'
 
 // Questline's mod: it reports what happens in the session to the local game server, keeps one long-poll open for
 // what the server decides, draws the character in a band above the prompt in the looks the player equipped, and
@@ -56,10 +58,11 @@ const load = Math.random()
 const inset = 2
 const ownRows = 4
 
-const toneColor: Record<Gain['tone'], 'text' | 'suggestion' | 'claude'> = {
+const toneColor: Record<Gain['tone'], 'text' | 'suggestion' | 'claude' | 'warning'> = {
   xp: 'text',
   level: 'claude',
   loot: 'suggestion',
+  gold: 'warning',
   quiet: 'text',
 }
 
@@ -70,6 +73,11 @@ const flushEveryMs = 30_000
 const retryMs = 5_000
 
 // Module memory: a reload runs session.start again, which sets it all anew.
+/** The `toasts` and `server` options. */
+let toasts = true
+let server: ServerKind = 'default'
+/** Takes the gain's line down once it has stood a minute. */
+let fadeTimer: Timer | null = null
 let sessionId = ''
 let socket = ''
 let secret = ''
@@ -181,19 +189,44 @@ const flush = async ($: EngineInterface): Promise<void> => {
   }
 }
 
-const show = async ($: EngineInterface, event: ServerEvent) => {
-  const said = announce(event)
-  if (said.gain !== undefined) {
-    const next = said.gain
-    await update($, gain, () => next)
+/**
+ * What one cause earned, as its events arrive together: a celebration for each, then one line at the end of the band
+ * (its biggest moment, for a minute) and one toast for the lot.
+ */
+const showBatch = async ($: EngineInterface, events: ReadonlyArray<ServerEvent>) => {
+  const line = batchGainOf(events)
+  if (line !== null) {
+    const until = (await $.clock.now()) + fadeMs
+    await update($, gain, () => ({ ...line, until }))
+    fadeAt($, fadeMs, until)
   }
-  if (said.toast !== undefined) $.ui.toast(said.toast)
-  const celebration = motion === 'off' ? null : celebrationOf(event, (await read($, view))?.glyph ?? '')
-  if (celebration !== null) {
-    lineup = joinQueue(lineup, celebration)
-    await saveQueue($)
-    playSoon($, 0)
-  }
+  const toast = toasts ? toastOf(events) : null
+  if (toast !== null) $.ui.toast(toast)
+  const glyph = (await read($, view))?.glyph ?? ''
+  const celebrations = motion === 'off' ? [] : events.flatMap((event) => celebrationOf(event, glyph) ?? [])
+  if (celebrations.length === 0) return
+  lineup = celebrations.reduce(joinQueue, lineup)
+  await saveQueue($)
+  playSoon($, 0)
+}
+
+/** Takes the gain's line down in `ms`, unless a newer line has taken its place by then. */
+const fadeAt = ($: EngineInterface, ms: number, until: number) => {
+  fadeTimer?.cancel()
+  fadeTimer = $.clock.after(Math.max(0, ms), () => {
+    fadeTimer = null
+    update($, gain, (shown) => (shown?.until === until ? null : shown)).catch(() => undefined)
+  })
+}
+
+/** A fresh copy of the mod fades the line the last one left, when its minute is up; one with no time fades now. */
+const resumeFade = async ($: EngineInterface) => {
+  fadeTimer?.cancel()
+  fadeTimer = null
+  const shown = await read($, gain)
+  if (shown === null) return
+  const left = Number.isFinite(shown.until) ? shown.until - (await $.clock.now()) : 0
+  fadeAt($, left, shown.until)
 }
 
 /** Keeps what waits to play, the one playing first, in the session's state, where a reload of the mod finds it. */
@@ -334,7 +367,8 @@ const poll = async ($: EngineInterface): Promise<void> => {
     if (answer.resync === true) {
       await refresh($, true)
     } else if (answer.events.length > 0) {
-      for (const event of answer.events) if (event.seq > cursor) await show($, event)
+      const fresh = answer.events.filter((event) => event.seq > cursor)
+      for (const batch of batchesOf(fresh)) await showBatch($, batch)
       cursor = answer.cursor
       await refresh($, false)
     }
@@ -449,6 +483,43 @@ const wear = async ($: EngineInterface, slot: BandSlot, entryId: string | null) 
   }
 }
 
+/**
+ * Runs what dev mode was asked for: a dev command on the dev server, or a celebration preview here, which plays
+ * stand-in events and sends nothing. Only a snapshot from a dev server lets either through.
+ */
+const runDev = async ($: EngineInterface, ask: DevAsk): Promise<{ text: string; isDone: boolean }> => {
+  const current = await read($, view)
+  if (current === null || !current.isDev) {
+    const how = `set the mod's server option to dev, and start it with ${startHint('dev')}`
+    return { text: `Dev mode needs the dev server: ${how}`, isDone: false }
+  }
+  const { id, occurredAt } = await stamp($)
+  const command = devCommandOf(ask, id)
+  if (command === null) {
+    if (ask.kind !== 'celebrate') return { text: devUsage, isDone: false }
+    await showBatch($, previewEvents(ask.what, current, occurredAt, id))
+    return { text: `Playing a ${ask.what} preview.`, isDone: true }
+  }
+  try {
+    const answer = await runCommand($, command)
+    if (answer.status === 'refused') return { text: answer.message, isDone: false }
+    // What it made arrives on the stream too, with its celebrations and toast.
+    await refresh($, false)
+    return { text: 'Done.', isDone: true }
+  } catch (error) {
+    // Only a server that can't be reached is offline; one that answered oddly is still there.
+    if (!(error instanceof ServerDown)) return { text: 'The dev server answered something unexpected.', isDone: false }
+    await update($, link, () => 'offline')
+    return { text: 'The dev server is not answering.', isDone: false }
+  }
+}
+
+/** A dev button in the pane: a toast says why, when it did nothing. */
+const pressDev = async ($: EngineInterface, ask: DevAsk) => {
+  const ran = await runDev($, ask)
+  if (!ran.isDone) $.ui.toast(ran.text)
+}
+
 /** Opens the pane, and its previews loop while it stays open. */
 const openPane = async ($: EngineInterface) => {
   await $.ui.open({ id: paneId, title: 'Questline' })
@@ -496,7 +567,7 @@ const begin = async ($: EngineInterface, cwd: string) => {
   lastAnswer = ''
   turnPeak = null
   sessionId = ulid(await $.clock.now())
-  socket = socketPathOf(await $.env.get('QUESTLINE_HOME'), await $.env.get('HOME'))
+  socket = socketPathOf(await $.env.get('QUESTLINE_HOME'), await $.env.get('HOME'), server === 'dev')
   secret = await machineSecret($)
   $.clock.after(0, async () => {
     await findRepo($, cwd)
@@ -508,10 +579,13 @@ const begin = async ($: EngineInterface, cwd: string) => {
 export const register: Register = (on, options) => {
   const minWords = minWordsOf(options)
   motion = motionOf(options)
+  toasts = toastsOf(options)
+  server = serverOf(options)
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     await resumeCelebrations($)
+    await resumeFade($)
     await begin($, e.cwd)
     flushTimer?.cancel()
     flushTimer = $.clock.every(flushEveryMs, () => void flush($))
@@ -522,14 +596,21 @@ export const register: Register = (on, options) => {
     loopRate = 0
     await syncLoop($)
     await $.command
-      .register({ name: 'questline', description: 'Open the Questline pane: your inventory and band styles' })
+      .register({
+        name: 'questline',
+        description: 'Open the Questline pane: your inventory and band styles (`dev …` on the dev server)',
+      })
       .catch(() => undefined)
     return result
   })
 
-  on('command.run', { command: 'questline' }, async ($) => {
-    await openPane($)
-    return { text: 'Questline pane opened.' }
+  on('command.run', { command: 'questline' }, async ($, e) => {
+    const ask = devAskOf(e.args)
+    if (ask === null) {
+      await openPane($)
+      return { text: 'Questline pane opened.' }
+    }
+    return { text: typeof ask === 'string' ? ask : (await runDev($, ask)).text }
   })
 
   on('ui.close', { id: paneId }, async ($, e, next) => {
@@ -679,7 +760,7 @@ export const register: Register = (on, options) => {
             <Text color="claude" bold>
               ⚔ Questline{' '}
             </Text>
-            <Text dimColor>offline · start the server: pnpm --filter @questline/server start</Text>
+            <Text dimColor>offline · start the server: {startHint(server)}</Text>
           </Box>
         </Box>
       )
@@ -742,48 +823,55 @@ export const register: Register = (on, options) => {
     const owned = await read($, wardrobe)
     const moving = await read($, loop)
     const shownTab = tabOf(await read($, tab))
-    const width = Math.max(20, e.props.bodyColumns - 2)
+    // Inside the pane's padding: the header and the tab bar fit it on one row each, at any width.
+    const columns = Math.max(0, e.props.bodyColumns - 2)
+    const width = Math.max(20, columns)
     const preview = Math.max(20, Math.min(width - 4, 56))
 
+    const bar = tabBarOf(shownTab, columns)
     const tabBar = (
-      <Box key="tabs" flexWrap="wrap" columnGap={3}>
-        {tabs.map((one) =>
-          one.id === shownTab ? (
-            <Text key={one.id} bold color="claude">
-              ◆ {one.label}
+      <Box key="tabs" columnGap={bar.gap}>
+        {bar.chips.map((chip) =>
+          chip.kind === 'shown' ? (
+            <Text key={chip.id} bold color="claude" wrap="truncate">
+              {chip.text}
             </Text>
-          ) : one.isReady ? (
-            <Button key={`tab:${one.id}`} plain label={`◇ ${one.label}`} onPress={() => void showTab($, one.id)} />
+          ) : chip.kind === 'ready' ? (
+            <Button key={`tab:${chip.id}`} plain label={chip.text} onPress={() => void showTab($, chip.id)} />
           ) : (
-            <Text key={one.id} dimColor>
-              ◇ {one.label} <Text italic>soon</Text>
+            <Text key={chip.id} dimColor wrap="truncate">
+              {chip.text}
+              {chip.soon ? <Text italic> soon</Text> : null}
             </Text>
           ),
         )}
       </Box>
     )
+    const beside = current === null ? '' : headerOf(current, columns)
     const header = (
       <Box flexDirection="column">
-        <Text>
+        <Text key="header" wrap="truncate">
           <Text bold color="claude">
-            ✦ QUESTLINE ✦
+            {brand}
           </Text>
-          {current === null ? null : (
+          {beside === '' ? null : (
             <Text dimColor>
-              {'  '}
-              {current.name} · Lv {current.level} {current.title} · ◈ {current.gold}
+              {' '.repeat(headerGap)}
+              {beside}
             </Text>
           )}
         </Text>
         <Text> </Text>
         {tabBar}
-        <Text dimColor>{'─'.repeat(width)}</Text>
+        <Text dimColor wrap="truncate">
+          {'─'.repeat(columns)}
+        </Text>
       </Box>
     )
     if (current === null || owned === null) {
       const why =
         status === 'offline'
-          ? 'The Questline server is not answering. Start it: pnpm --filter @questline/server start'
+          ? `The Questline server is not answering. Start it: ${startHint(server)}`
           : 'Connecting to the Questline server…'
       return (
         <Box flexDirection="column" paddingX={1}>
@@ -889,6 +977,47 @@ export const register: Register = (on, options) => {
             </Text>
           ))
         )}
+        {/* Dev mode's controls, only while the mod plays on a dev server. */}
+        {current.isDev ? (
+          <Box key="dev" flexDirection="column" marginTop={1}>
+            <Text>
+              <Text bold color="warning">
+                Dev
+              </Text>
+              <Text dimColor> the sandbox save: whatever this makes is marked dev</Text>
+            </Text>
+            <Box flexWrap="wrap" columnGap={2} marginLeft={2}>
+              <Button
+                key="dev:styles"
+                label="Grant all band styles"
+                onPress={() => void pressDev($, { kind: 'styles' })}
+              />
+              <Button
+                key="dev:level"
+                label="XP to the next level"
+                onPress={() => void pressDev($, { kind: 'xp', amount: toNextLevel(current) })}
+              />
+              <Button key="dev:xp" label="+1000 XP" onPress={() => void pressDev($, { kind: 'xp', amount: 1000 })} />
+              <Button
+                key="dev:gold"
+                label="Gold 10000"
+                onPress={() => void pressDev($, { kind: 'gold', gold: 10_000 })}
+              />
+              <Button key="dev:gold-0" label="Gold 0" onPress={() => void pressDev($, { kind: 'gold', gold: 0 })} />
+            </Box>
+            <Box flexWrap="wrap" columnGap={2} marginLeft={2}>
+              <Text dimColor>Celebrate</Text>
+              {previews.map((what) => (
+                <Button
+                  key={`dev:celebrate:${what}`}
+                  plain
+                  label={what}
+                  onPress={() => void pressDev($, { kind: 'celebrate', what })}
+                />
+              ))}
+            </Box>
+          </Box>
+        ) : null}
       </Box>
     )
   })

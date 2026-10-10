@@ -72,6 +72,8 @@ export const Context = Schema.Struct({
   /** Item definitions at the rules' catalogue version. */
   catalog: Schema.Array(ItemDef),
   questPacks: Schema.Array(QuestPack),
+  /** True only on a local server in dev mode: the dev commands run, in a live run or a replay, only then. */
+  dev: Schema.optionalKey(Schema.Boolean),
   /** A live run makes rolls and decides commands; a replay takes both from the log. */
   mode: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("live") }),

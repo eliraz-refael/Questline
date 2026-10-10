@@ -137,12 +137,20 @@ describe("PromptRules", () => {
       { upTo: 40, pct: 50 },
       { upTo: null, pct: 10 },
     ],
+    regretAt: 5,
   }
   const valid = Schema.is(PromptRules)
 
   it("accepts the starter's bands and weights", () => {
     expect(valid(rules)).toBe(true)
     expect(valid({ ...rules, perDay: [{ upTo: 5, pct: 100 }] })).toBe(true)
+  })
+
+  it("needs a regret threshold on the score's 0-10 scale", () => {
+    const { regretAt: _regretAt, ...noThreshold } = rules
+    expect(valid(noThreshold)).toBe(false)
+    expect(valid({ ...rules, regretAt: 11 })).toBe(false)
+    expect(valid({ ...rules, regretAt: -1 })).toBe(false)
   })
 
   it("refuses weights that count no score, and a weight for regret, which only the stats count", () => {

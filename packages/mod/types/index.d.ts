@@ -12,11 +12,16 @@ export type BandView = {
   glyph: string
   xp: { total: number; intoLevel: number; forNextLevel: number }
   gold: number
+  /** A local server in dev mode, which takes the dev commands: the pane shows its dev controls. */
+  isDev: boolean
   pet: { species: string; name: string; form: number; mood: number } | null
 }
 
-/** The last thing the stream brought, shown at the end of the band until the next one. */
-export type Gain = { text: string; tone: 'xp' | 'level' | 'loot' | 'quiet' }
+/** A line at the end of the band for what the stream brought. */
+export type GainLine = { text: string; tone: 'xp' | 'level' | 'loot' | 'gold' | 'quiet' }
+
+/** The last line the stream brought, shown until the next one or until `until` (clock ms), when it fades. */
+export type Gain = GainLine & { until: number }
 
 /** How big a celebration is, as the server's events name it. */
 export type Tier = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary'

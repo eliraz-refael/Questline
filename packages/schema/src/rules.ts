@@ -52,6 +52,8 @@ export const PromptRules = Schema.Struct({
   maxXp: Count,
   /** Diminishing returns over a local day, in order; past the last band a prompt earns nothing. */
   perDay: Schema.Array(PromptBand),
+  /** A prompt counts as regretted from this regret score on: the grader gives small regrets as noise. */
+  regretAt: Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 10 }))),
 }).check(
   Schema.makeFilter(
     (prompt) =>

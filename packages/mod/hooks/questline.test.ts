@@ -15,6 +15,8 @@ import { joinQueue, queueOf } from './celebrate'
 import { cellsOf, glyphSlot } from './cells'
 import { hmac } from './ids'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
+import { headerOf, tabBarOf } from './pane'
+import { socketPathOf } from './server'
 
 // A fake local server beneath the mod: it answers the four routes, records what the mod sends, and holds the
 // stream until the test's clock passes 25 seconds, as the real one does.
@@ -24,7 +26,8 @@ type Sent = { path: string; body: unknown }
 /** What the player owns in the fake server: entries, their definitions, and what is equipped where. */
 type Owned = { inventory: Array<{ id: string; itemId: string }>; items: Array<unknown>; equipped: Record<string, string> }
 
-const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔', owned?: Owned) => ({
+const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔', owned?: Owned, isDev = false) => ({
+  ...(isDev ? { dev: true } : {}),
   serverId: 'local-test',
   streamEpoch: 1,
   cursor,
@@ -57,6 +60,12 @@ const ran = (exitCode: number, stdout: string) => ({
 const engineBeneath = (on: On) => {
   const registered: Array<string> = []
   const opened: Array<string> = []
+  const toasts: Array<string> = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.status', () => ({ value: undefined }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
@@ -77,7 +86,7 @@ const engineBeneath = (on: On) => {
     return { value: { isPlaced: true } }
   })
   on('ui.close', () => ({ value: undefined }))
-  return { registered, opened }
+  return { registered, opened, toasts }
 }
 
 /** The commands the session lists: a built-in, a plugin's, and the player's own. */
@@ -98,12 +107,22 @@ const until = async (clock: Clock, check: () => boolean | Promise<boolean>) => {
   throw new Error('the mod never got there')
 }
 
-type ServerOptions = { level?: number; glyph?: string; isDown?: boolean; stream?: Array<{ seq: number }>; owned?: Owned }
+type ServerOptions = {
+  level?: number
+  glyph?: string
+  isDown?: boolean
+  stream?: Array<{ seq: number }>
+  owned?: Owned
+  /** A dev server: its snapshot says so, and it takes the dev commands. */
+  isDev?: boolean
+  /** The status the command route answers with, when not 200. */
+  commandStatus?: number
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
 /** What the fake server answers a command: an equip or unequip changes what it owns, anything else is refused. */
-const commandAnswer = (body: unknown, owned: Owned | undefined) => {
+const commandAnswer = (body: unknown, owned: Owned | undefined, isDev: boolean) => {
   const data = isRecord(body) && isRecord(body['data']) ? body['data'] : {}
   const slot = typeof data['slot'] === 'string' ? data['slot'] : ''
   const entryId = typeof data['entryId'] === 'string' ? data['entryId'] : ''
@@ -115,22 +134,26 @@ const commandAnswer = (body: unknown, owned: Owned | undefined) => {
     delete owned.equipped[slot]
     return { status: 'ok', events: [] }
   }
+  // What the dev commands make arrives on the stream; the answer needn't repeat it.
+  if (isDev && isRecord(body) && typeof body['type'] === 'string' && body['type'].startsWith('dev.')) return { status: 'ok', events: [] }
   return { status: 'refused', code: 'not_allowed', message: 'The egg hatches at level 1' }
 }
 
 const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
   const sent: Array<Sent> = []
   const tried: Array<string> = []
-  const { registered, opened } = engineBeneath(on)
+  const sockets = new Set<string>()
+  const { registered, opened, toasts } = engineBeneath(on)
   on('http.fetch', async ($, e) => {
     tried.push(new URL(e.url).pathname)
+    sockets.add(e.init?.socketPath ?? '')
     if (options.isDown === true) throw new Error('connect ENOENT /home/player/.questline/server.sock')
     const path = new URL(e.url).pathname
     const body: unknown = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
     sent.push({ path, body })
     if (path === '/v1/sessions')
       return reply(200, {
-        snapshot: snapshot(options.level ?? 0, null, 0, options.glyph, options.owned),
+        snapshot: snapshot(options.level ?? 0, null, 0, options.glyph, options.owned, options.isDev === true),
         rules: {},
         minClientVersion: '0.0.0',
         acceptedEventTypes: [],
@@ -144,7 +167,10 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
           : { id: event.id, status: 'accepted' }
       return reply(200, { results: events.map(resultOf), events: [] })
     }
-    if (path === '/v1/commands') return reply(200, commandAnswer(body, options.owned))
+    if (path === '/v1/commands') {
+      if (options.commandStatus !== undefined) return reply(options.commandStatus, { error: 'internal' })
+      return reply(200, commandAnswer(body, options.owned, options.isDev === true))
+    }
     // The stream answers as soon as the test hands it events, or after 25 seconds with none.
     const stream = options.stream ?? []
     if (options.stream === undefined) await clock.sleep(25_000)
@@ -160,7 +186,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     if (args === 'git rev-parse --abbrev-ref HEAD') return ran(0, 'main\n')
     return ran(1, '')
   })
-  return { sent, tried, registered, opened }
+  return { sent, tried, registered, opened, toasts, sockets }
 }
 
 const start: SessionStartInput = { cwd: '/work/widgets', surface: 'terminal', isInteractive: true }
@@ -527,13 +553,16 @@ describe('the link', () => {
 
 // Server events as the stream carries them, numbered in order.
 let seq = 0
-const serverEvent = (type: string, data: Record<string, unknown>) => ({
+const serverEvent = (type: string, data: Record<string, unknown>, cause: string | null = null) => ({
   seq: ++seq,
   at: '2026-10-09T08:00:00.000Z',
-  cause: null,
+  cause,
   type,
   data,
 })
+/** The same event as one input caused it, with the others that input caused. */
+const causedBy = <E extends { cause: string | null }>(cause: string, ...events: Array<E>) =>
+  events.map((event) => ({ ...event, cause }))
 const drop = (tier: string, name: string, gold = 0) =>
   serverEvent('loot.dropped', {
     entry: { id: '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', itemId: name, acquiredAt: '2026-10-09T08:00:00Z', source: { kind: 'drop', ref: '1' }, dye: null },
@@ -552,19 +581,20 @@ const band = async ($: Parameters<TestBody>[0], maxRows = 20) => {
   // The gain's own line names the latest drop the whole time; what plays is the rest.
   const texts = (await ui.findAll({ type: 'Text' }))
     .map((one) => one.text)
-    .filter((text) => !/^(Common|Uncommon|Rare|Epic|Legendary) drop: /.test(text))
+    .filter((text) => !/ · (common|uncommon|rare|epic|legendary)$/.test(text))
   const grown = (await ui.find({ type: 'Box', key: 'stage' }))?.children.length ?? 0
   await ui.unmount()
   return { all: texts.join('\n'), grown }
 }
 
 /** A session with the server up and its stream open, which hands the mod `events` when `send` is called. */
-const streaming = async ($: Parameters<TestBody>[0], on: On, owned?: Owned) => {
+const streaming = async ($: Parameters<TestBody>[0], on: On, owned?: Owned, isDev = false, more: ServerOptions = {}) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
   mock.store(on, { explored: ['acme/widgets'] })
   mock.env(on, { HOME: '/home/player' })
   const stream: Array<{ seq: number }> = []
-  const { sent, registered, opened } = fakeServer(on, clock, { level: 4, stream, ...(owned === undefined ? {} : { owned }) })
+  const options = { ...more, level: 4, stream, isDev, ...(owned === undefined ? {} : { owned }) }
+  const { sent, registered, opened, toasts, sockets } = fakeServer(on, clock, options)
   const played: Array<string> = []
   on('audio.play', ($, e) => {
     played.push(e.clip.mime ?? e.clip.asset ?? '')
@@ -578,7 +608,7 @@ const streaming = async ($: Parameters<TestBody>[0], on: On, owned?: Owned) => {
     await until(clock, () => stream.length === 0)
     await clock.settle()
   }
-  return { clock, send, played, sent, registered, opened }
+  return { clock, send, played, sent, registered, opened, toasts, sockets }
 }
 
 /** Samples the band every 100 ms for `ms`, keeping which of `names` it draws at each sample, without repeats. */
@@ -993,6 +1023,232 @@ describe('review fixes: the pane', () => {
     await ui.press({ key: 'unequip:xpBar' })
     expect(sent.filter((one) => one.path === '/v1/commands').at(-1)?.body).toMatchObject({ type: 'item.unequip' })
     await ui.unmount()
+  })
+})
+
+const grant = (amount: number, reason: string, more: Record<string, unknown> = {}) =>
+  serverEvent('xp.granted', { amount, tier: 'reported', reason, totalAfter: 150, ...more })
+const goldChanged = (delta: number, reason = 'drop') => serverEvent('gold.changed', { delta, totalAfter: 25 + delta, reason })
+/** The gain's line at the end of the band, if one shows. */
+const gainLine = async ($: Parameters<TestBody>[0]) => {
+  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
+  const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
+  await ui.unmount()
+  return texts.find((text) => / · |!$/.test(text) && !text.includes('QUESTLINE')) ?? null
+}
+
+describe('the gain line', () => {
+  test('names every reason in words, and a graded prompt by the grade the server priced it at', async ($, on) => {
+    const { send } = await streaming($, on)
+    const events = [
+      grant(9, 'prompt.graded', { grade: 4.66 }),
+      grant(9, 'prompt.graded'),
+      grant(10, 'streak.day'),
+      grant(15, 'commit.made'),
+      grant(20, 'tests.green'),
+      grant(30, 'change.opened'),
+      grant(120, 'change.merged'),
+      grant(40, 'issue.closed'),
+      grant(25, 'repo.explored'),
+      grant(50, 'review.acted_on'),
+      grant(60, 'bug.fixed'),
+      grant(80, 'first.contribution'),
+      grant(500, 'dev'),
+      grant(5, 'future.side_quest'),
+      serverEvent('xp.capped', { eventType: 'commit.made', cap: 20 }),
+      goldChanged(10),
+      goldChanged(-5, 'dev'),
+      drop('uncommon', 'Knit Scarf', 10),
+      levelUp(1, 2, 'rare'),
+    ]
+    const lines: Array<string | null> = []
+    for (const event of events) {
+      await send(event)
+      lines.push(await gainLine($))
+    }
+    expect(lines).toEqual([
+      '+9 XP · prompt graded 4.7',
+      '+9 XP · prompt graded',
+      '+10 XP · daily streak',
+      '+15 XP · commit',
+      '+20 XP · tests back to green',
+      '+30 XP · pull request opened',
+      '+120 XP · pull request merged',
+      '+40 XP · issue closed',
+      '+25 XP · new repo explored',
+      '+50 XP · review acted on',
+      '+60 XP · bug fixed',
+      '+80 XP · first contribution',
+      '+500 XP · dev grant',
+      '+5 XP · future side quest',
+      'commit · daily XP cap reached',
+      '+10 gold · loot',
+      '−5 gold · dev grant',
+      'Knit Scarf · uncommon',
+      'Level 2!',
+    ])
+  })
+
+  test("names a batch's biggest moment, and fades a minute after it came", async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(...causedBy('01K6ZQ8W3J0000000000000C01', grant(9, 'prompt.graded', { grade: 4.7 }), drop('uncommon', 'Knit Scarf', 10), goldChanged(10)))
+    expect(await gainLine($)).toBe('Knit Scarf · uncommon')
+    await send(grant(10, 'streak.day'))
+    expect(await gainLine($)).toBe('+10 XP · daily streak')
+    await clock.advance(59_000)
+    expect(await gainLine($)).toBe('+10 XP · daily streak')
+    await clock.advance(1_500)
+    expect(await gainLine($)).toBeNull()
+  })
+
+  test('a newer line restarts the minute', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(grant(10, 'streak.day'))
+    await clock.advance(40_000)
+    await send(grant(15, 'commit.made'))
+    await clock.advance(40_000)
+    expect(await gainLine($)).toBe('+15 XP · commit')
+    await clock.advance(21_000)
+    expect(await gainLine($)).toBeNull()
+  })
+})
+
+describe('reward toasts', () => {
+  test('one toast per cause, summing what it earned, level-ups and drops included', async ($, on) => {
+    const { send, toasts } = await streaming($, on)
+    await send(
+      ...causedBy('01K6ZQ8W3J0000000000000C01', grant(9, 'prompt.graded', { grade: 4.7 }), drop('uncommon', 'Knit Scarf', 10), goldChanged(10)),
+      ...causedBy('01K6ZQ8W3J0000000000000C02', grant(10, 'streak.day'), serverEvent('streak.changed', { days: 3, restDaysLeftThisWeek: 1 }), grant(15, 'commit.made')),
+      ...causedBy('01K6ZQ8W3J0000000000000C03', grant(120, 'change.merged'), levelUp(4, 5, 'epic', { title: 'Journeyman' }), drop('rare', 'Wizard Hat', 70), goldChanged(70)),
+      ...causedBy('01K6ZQ8W3J0000000000000C04', serverEvent('xp.capped', { eventType: 'commit.made', cap: 20 })),
+    )
+    expect(toasts).toEqual([
+      '+9 XP · Knit Scarf (uncommon) · +10 gold',
+      '+25 XP',
+      '+120 XP · Level 5! New title: Journeyman · Wizard Hat (rare) · +70 gold',
+    ])
+  })
+
+  test('counts the drops past the first few', async ($, on) => {
+    const { send, toasts } = await streaming($, on)
+    const names = ['Plain Cap', 'Paper Scarf', 'Trail Mix', 'Knit Scarf', 'Bead String']
+    await send(...causedBy('01K6ZQ8W3J0000000000000C01', ...names.map((name) => drop('common', name))))
+    expect(toasts).toEqual(['Plain Cap (common) · Paper Scarf (common) · 3 more items'])
+  })
+
+  test('off sends none, and the band still celebrates', { options: { toasts: false } }, async ($, on) => {
+    const { send, toasts } = await streaming($, on)
+    await send(...causedBy('01K6ZQ8W3J0000000000000C01', drop('common', 'Plain Cap', 10), goldChanged(10)))
+    expect((await band($)).all).toMatch(/[◐◓◑◒] Plain Cap/)
+    expect(toasts).toEqual([])
+  })
+})
+
+/** The pane's texts at `columns` across its body. */
+const paneTexts = async ($: Parameters<TestBody>[0], bodyColumns: number) => {
+  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: { ...paneProps(), bodyColumns } })
+  const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
+  const tabs = await ui.find({ type: 'Box', key: 'tabs' })
+  await ui.unmount()
+  return { texts, tabs }
+}
+
+describe('the pane fits its width', () => {
+  test('a narrow pane drops the name, then the "soon" labels, so neither row wraps', async ($, on) => {
+    await streaming($, on, ownedOf())
+    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    const narrow = await paneTexts($, 40)
+    const header = narrow.texts.find((text) => text.startsWith('✦ QUESTLINE ✦')) ?? ''
+    expect(header).toBe('✦ QUESTLINE ✦  Lv 4 Apprentice · ◈ 25')
+    expect(cellsOf(header)).toBeLessThanOrEqual(38)
+    expect(narrow.texts.join('\n')).not.toContain('soon')
+    expect(narrow.tabs?.props['columnGap']).toBe(2)
+    expect(narrow.tabs?.props['flexWrap']).toBeUndefined()
+
+    const wide = await paneTexts($, 120)
+    expect(wide.texts).toContain('✦ QUESTLINE ✦  Player · Lv 4 Apprentice · ◈ 25')
+    expect(wide.texts.join('\n')).toContain('◇ Stats soon')
+    expect(wide.tabs?.props['columnGap']).toBe(3)
+  })
+
+  test('the tab bar and the header give way in steps, and always fit', () => {
+    const widthOf = (bar: ReturnType<typeof tabBarOf>) =>
+      bar.chips.reduce((sum, chip) => sum + cellsOf(chip.text) + (chip.soon ? 5 : 0), 0) + bar.gap * (bar.chips.length - 1)
+    for (const columns of [20, 28, 32, 38, 44, 60]) expect(widthOf(tabBarOf('inventory', columns))).toBeLessThanOrEqual(Math.max(columns, 11))
+    expect(tabBarOf('inventory', 60)).toMatchObject({ gap: 3, chips: [{ kind: 'shown' }, { soon: true }, { soon: true }] })
+    expect(tabBarOf('inventory', 20).chips.map((chip) => chip.text)).toEqual(['◆ Inventory'])
+    const view = { name: 'Player', level: 12, title: 'Adept', gold: 1500 }
+    expect(headerOf(view, 80)).toBe('Player · Lv 12 Adept · ◈ 1500')
+    expect(headerOf(view, 30)).toBe('Lv 12 · ◈ 1500')
+    expect(headerOf(view, 10)).toBe('')
+  })
+})
+
+describe('dev mode', () => {
+  const run = ($: Parameters<TestBody>[0], args: string) => $.command.run({ command: 'questline', args, origin: composer, presentation })
+  const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+
+  test('needs a dev server: on the real one it sends nothing and shows no dev controls', async ($, on) => {
+    const { sent } = await streaming($, on, ownedOf())
+    expect((await run($, 'dev xp 50')).text).toContain('QUESTLINE_DEV=1 pnpm --filter @questline/server start')
+    expect((await run($, 'dev celebrate rare')).text).toContain('needs the dev server')
+    expect(commandsOf(sent)).toEqual([])
+    expect((await band($)).grown).toBe(0)
+    expect((await paneTexts($, 72)).texts).not.toContain('Dev')
+  })
+
+  test('sends each dev command to a dev server, and answers a bad one with the usage', async ($, on) => {
+    const { sent } = await streaming($, on, ownedOf(), true)
+    for (const args of ['dev styles', 'dev item wizard-hat', 'dev xp 500', 'dev gold 7']) expect((await run($, args)).text).toBe('Done.')
+    expect(commandsOf(sent)).toMatchObject([
+      { type: 'dev.grantStyles', data: {} },
+      { type: 'dev.grantItem', data: { itemId: 'wizard-hat' } },
+      { type: 'dev.grantXp', data: { amount: 500 } },
+      { type: 'dev.setGold', data: { gold: 7 } },
+    ])
+    for (const args of ['dev', 'dev xp', 'dev xp 0', 'dev xp lots', 'dev gold -1', 'dev celebrate huge', 'dev item', 'dev styles now']) {
+      expect((await run($, args)).text).toMatch(/^Dev mode: \/questline dev styles/)
+    }
+    expect(commandsOf(sent)).toHaveLength(4)
+  })
+
+  test('celebrate plays a preview in the band, with its toast, and sends nothing', async ($, on) => {
+    const { sent, toasts, clock } = await streaming($, on, ownedOf(), true)
+    expect((await run($, 'dev celebrate rare')).text).toBe('Playing a rare preview.')
+    await clock.advance(100)
+    const playing = await band($)
+    expect(playing.grown).toBe(4)
+    expect(playing.all).toContain('R A R E   D R O P')
+    expect(toasts).toEqual(['Rare Preview (rare)'])
+    expect(commandsOf(sent)).toEqual([])
+  })
+
+  test('the pane shows the dev controls on a dev server, and they send the same commands', async ($, on) => {
+    const { sent, clock } = await streaming($, on, ownedOf(), true)
+    await run($, '')
+    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+    expect((await ui.findAll({ type: 'Text' })).map((one) => one.text)).toContain('Dev')
+    await ui.press({ key: 'dev:styles' })
+    await ui.press({ key: 'dev:level' })
+    await ui.press({ key: 'dev:celebrate:levelup' })
+    await ui.unmount()
+    await clock.settle()
+    // 30 of 203 XP into level 4: 173 more reach level 5.
+    expect(commandsOf(sent)).toMatchObject([{ type: 'dev.grantStyles' }, { type: 'dev.grantXp', data: { amount: 173 } }])
+    expect((await band($)).all).toContain('L E V')
+  })
+
+  test('a dev command the server answers oddly says so, and leaves the band online', async ($, on) => {
+    await streaming($, on, ownedOf(), true, { commandStatus: 500 })
+    expect((await run($, 'dev xp 50')).text).toBe('The dev server answered something unexpected.')
+    expect((await band($)).all).not.toContain('offline')
+  })
+
+  test('the server option points the mod at the dev socket', { options: { server: 'dev' } }, async ($, on) => {
+    const { sockets } = await streaming($, on)
+    expect([...sockets]).toEqual(['/home/player/.questline-dev/server.sock'])
+    expect(socketPathOf(undefined, '/home/player')).toBe('/home/player/.questline/server.sock')
+    expect(socketPathOf('/tmp/ql', '/home/player', true)).toBe('/tmp/ql/server.sock')
   })
 })
 

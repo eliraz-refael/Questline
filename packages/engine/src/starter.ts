@@ -4,8 +4,8 @@ import type { BandFrame, BandLook, BandMark, BandSlot, ItemDef, Rarity, RulesCon
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
 
 export const starterRules: RulesConfig = {
-  version: 4,
-  schemaVersion: 3,
+  version: 5,
+  schemaVersion: 4,
   appliesFrom: null,
   levelCurve: { base: 100, exponent: 1.6 },
   titles: [
@@ -63,6 +63,8 @@ export const starterRules: RulesConfig = {
       { upTo: 40, pct: 50 },
       { upTo: null, pct: 10 },
     ],
+    // Haiku scores a regret of 1 or 2 on many a prompt that walks nothing back.
+    regretAt: 5,
   },
   catalogVersion: 2,
   questPacks: [],

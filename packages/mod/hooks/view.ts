@@ -1,5 +1,6 @@
-import type { ServerEvent, Snapshot } from '@questline/schema'
-import type { BandView, Gain, OwnedItem, Wardrobe } from '../types'
+import type { ScoringFact, ServerEvent, Snapshot } from '@questline/schema'
+import type { PluginOptions } from 'claude-code'
+import type { BandView, GainLine, OwnedItem, Wardrobe } from '../types'
 import { tierOf } from './celebrate'
 
 // What the band draws, worked out from the server's snapshot and stream; no game rule is computed here.
@@ -16,6 +17,7 @@ export const viewOf = (snapshot: Snapshot): BandView => ({
     forNextLevel: snapshot.character.xp.forNextLevel,
   },
   gold: snapshot.character.gold,
+  isDev: snapshot.dev === true,
   pet:
     snapshot.pet === null
       ? null
@@ -67,29 +69,126 @@ export const sprite = (pet: NonNullable<BandView['pet']>): string => {
 
 export const hearts = (mood: number): string => (mood > 70 ? '♥♥♥' : mood > 40 ? '♥♥' : '♥')
 
-const capitalised = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
+/** What each XP reason the engine names means to a player; the type keeps a word for every scoring fact. */
+const xpWords: Record<ScoringFact | 'dev', string> = {
+  'prompt.graded': 'prompt graded',
+  'streak.day': 'daily streak',
+  'commit.made': 'commit',
+  'change.opened': 'pull request opened',
+  'change.merged': 'pull request merged',
+  'review.acted_on': 'review acted on',
+  'issue.closed': 'issue closed',
+  'bug.fixed': 'bug fixed',
+  'first.contribution': 'first contribution',
+  'tests.green': 'tests back to green',
+  'repo.explored': 'new repo explored',
+  dev: 'dev grant',
+}
+const goldWords: Record<string, string> = { drop: 'loot', dev: 'dev grant' }
+const xpReasons = new Map<string, string>(Object.entries(xpWords))
+const goldReasons = new Map<string, string>(Object.entries(goldWords))
 
-/** What one server event shows: a line at the end of the band, and for the big moments a toast. */
-export const announce = (event: ServerEvent): { gain?: Gain; toast?: string } => {
+/** A reason this mod has no words for yet (a newer server's) reads as its code with the dots spaced out. */
+const wordsFor = (words: ReadonlyMap<string, string>, reason: string): string =>
+  words.get(reason) ?? reason.replace(/[._]+/g, ' ')
+
+/** A grade as the player reads it: to one decimal, 4.7, or a whole 10. */
+const gradeText = (grade: number): string => String(Math.round(grade * 10) / 10)
+
+const signed = (amount: number): string => (amount < 0 ? `−${-amount}` : `+${amount}`)
+
+/** The line one server event puts at the end of the band, if any. */
+export const gainOf = (event: ServerEvent): GainLine | null => {
   switch (event.type) {
-    case 'xp.granted':
-      return { gain: { text: `+${event.data.amount} xp · ${event.data.reason}`, tone: 'xp' } }
+    case 'xp.granted': {
+      const { amount, reason, grade } = event.data
+      // An older server names no grade on a prompt's grant.
+      const why =
+        reason === 'prompt.graded' && grade !== undefined ? `prompt graded ${gradeText(grade)}` : wordsFor(xpReasons, reason)
+      return { text: `+${amount} XP · ${why}`, tone: 'xp' }
+    }
     case 'xp.capped':
-      return { gain: { text: `${event.data.eventType}: daily cap reached`, tone: 'quiet' } }
-    case 'level.up': {
-      const title = event.data.title === undefined ? '' : ` · ${event.data.title}`
-      return { gain: { text: `Level ${event.data.to}!`, tone: 'level' }, toast: `⬆ Level ${event.data.to}${title}` }
-    }
-    case 'loot.dropped': {
-      const { item, gold } = event.data
-      const text = `${capitalised(item.rarity)} drop: ${item.name}`
-      return { gain: { text, tone: 'loot' }, toast: `✦ ${text}${gold > 0 ? ` (+${gold} gold)` : ''}` }
-    }
+      return { text: `${wordsFor(xpReasons, event.data.eventType)} · daily XP cap reached`, tone: 'quiet' }
+    case 'level.up':
+      return { text: `Level ${event.data.to}!`, tone: 'level' }
+    case 'loot.dropped':
+      return { text: `${event.data.item.name} · ${event.data.item.rarity}`, tone: 'loot' }
+    case 'gold.changed':
+      if (event.data.delta === 0) return null
+      return { text: `${signed(event.data.delta)} gold · ${wordsFor(goldReasons, event.data.reason)}`, tone: 'gold' }
     case 'pet.hatched':
-      return { toast: `🥚 ${event.data.name} hatched!` }
+      return { text: `${event.data.name} hatched!`, tone: 'loot' }
     case 'streak.changed':
-      return event.data.days > 1 ? { gain: { text: `${event.data.days}-day streak`, tone: 'xp' } } : {}
+      return event.data.days > 1 ? { text: `${event.data.days}-day streak`, tone: 'xp' } : null
     default:
-      return {}
+      return null
   }
 }
+
+/** The stream's events by what caused them, each cause where it first appears; an event with no cause stands alone. */
+export const batchesOf = <E extends { cause: string | null }>(events: ReadonlyArray<E>): Array<Array<E>> => {
+  const byCause = new Map<string, Array<E>>()
+  const batches: Array<Array<E>> = []
+  for (const event of events) {
+    const batch = event.cause === null ? undefined : byCause.get(event.cause)
+    if (batch !== undefined) {
+      batch.push(event)
+      continue
+    }
+    const fresh = [event]
+    batches.push(fresh)
+    if (event.cause !== null) byCause.set(event.cause, fresh)
+  }
+  return batches
+}
+
+const toneRank: Record<GainLine['tone'], number> = { level: 4, loot: 3, xp: 2, gold: 1, quiet: 0 }
+
+/** A batch's line names its biggest moment: a level-up, else a drop, else XP, else gold; the latest among equals. */
+export const batchGainOf = (events: ReadonlyArray<ServerEvent>): GainLine | null =>
+  events.reduce<GainLine | null>((best, event) => {
+    const gain = gainOf(event)
+    return gain !== null && (best === null || toneRank[gain.tone] >= toneRank[best.tone]) ? gain : best
+  }, null)
+
+/** Drops a toast names one by one; past them it counts the rest. */
+const toastItems = 3
+
+/**
+ * One toast for everything one cause earned, as `+9 XP · Level 2! · Knit Scarf (uncommon) · +10 gold`; null when it
+ * earned nothing.
+ */
+export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
+  let xp = 0
+  let gold = 0
+  const levels: Array<string> = []
+  const items: Array<string> = []
+  const hatched: Array<string> = []
+  for (const event of events) {
+    if (event.type === 'xp.granted') xp += event.data.amount
+    if (event.type === 'gold.changed') gold += event.data.delta
+    if (event.type === 'level.up') {
+      const { to, title } = event.data
+      levels.push(title === undefined ? `Level ${to}!` : `Level ${to}! New title: ${title}`)
+    }
+    if (event.type === 'loot.dropped') items.push(`${event.data.item.name} (${event.data.item.rarity})`)
+    if (event.type === 'pet.hatched') hatched.push(`🥚 ${event.data.name} hatched!`)
+  }
+  const more = items.length - toastItems
+  const parts = [
+    // Grants run to the thousandth; their sum is rounded back, so float error never shows.
+    ...(xp > 0 ? [`+${xp} XP`] : []),
+    ...levels,
+    ...items.slice(0, more > 0 ? toastItems - 1 : toastItems),
+    ...(more > 0 ? [`${more + 1} more items`] : []),
+    ...(gold !== 0 ? [`${signed(gold)} gold`] : []),
+    ...hatched,
+  ]
+  return parts.length === 0 ? null : parts.join(' · ')
+}
+
+/** The `toasts` option: a toast per reward batch unless the player turned them off. */
+export const toastsOf = (options: PluginOptions): boolean => options['toasts'] !== false
+
+/** How long a gain's line stays at the end of the band. */
+export const fadeMs = 60_000

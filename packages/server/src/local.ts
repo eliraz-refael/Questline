@@ -4,10 +4,22 @@ import { PgliteClient } from "@effect/sql-pglite"
 import { Data, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/http"
 import { Buffer } from "node:buffer"
-import { chmodSync, closeSync, linkSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs"
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs"
 import { createServer } from "node:http"
 import { homedir, userInfo } from "node:os"
 import { join } from "node:path"
+import { DevMode } from "./game.ts"
 import { ApiRoutes } from "./http.ts"
 import { StreamHub } from "./hub.ts"
 import { migrate } from "./migrations.ts"
@@ -17,22 +29,61 @@ import type { Stepper } from "./writer.ts"
 import { PlayerWriter } from "./writer.ts"
 
 // The local server: one player, PGlite in ~/.questline/data, HTTP on a Unix socket in a 0700 directory, so only the
-// player's own user can connect. Exactly one runs per user: two processes on one PGlite folder corrupt it.
+// player's own user can connect. Exactly one runs per user: two processes on one PGlite folder corrupt it. Dev mode
+// runs a second one, a sandbox in ~/.questline-dev that takes the dev commands.
 
 export interface LocalPaths {
   readonly home: string
   readonly socket: string
   readonly lock: string
   readonly data: string
+  /** Which save the home holds, written in it on the first start, so neither server opens the other's. */
+  readonly profile: string
+  /** Dev mode: a sandbox save that takes the dev commands. */
+  readonly dev: boolean
 }
 
-/** `~/.questline`, or `QUESTLINE_HOME` when set and not empty. */
-export const localPaths = (home = process.env["QUESTLINE_HOME"] || join(homedir(), ".questline")): LocalPaths => ({
-  home,
-  socket: join(home, "server.sock"),
-  lock: join(home, "server.lock"),
-  data: join(home, "data"),
-})
+/** `QUESTLINE_DEV=1` starts the dev sandbox. */
+export const isDevMode = (value = process.env["QUESTLINE_DEV"]): boolean => value === "1"
+
+/**
+ * `~/.questline`, or `~/.questline-dev` in dev mode, or `QUESTLINE_HOME` (when set and not empty) in place of
+ * either. A home holds one kind of save, which `claimHome` checks, so even a shared `QUESTLINE_HOME` never turns the
+ * player's real save into a dev one.
+ */
+export const localPaths = (home?: string, dev = isDevMode()): LocalPaths => {
+  const root = home || process.env["QUESTLINE_HOME"] || join(homedir(), dev ? ".questline-dev" : ".questline")
+  return {
+    home: root,
+    socket: join(root, "server.sock"),
+    lock: join(root, "server.lock"),
+    data: join(root, "data"),
+    profile: join(root, "profile"),
+    dev,
+  }
+}
+
+export class WrongHome extends Data.TaggedError("WrongHome")<{ readonly home: string; readonly holds: string }> {
+  override get message() {
+    const other = this.holds === "dev" ? "with QUESTLINE_DEV=1" : "without QUESTLINE_DEV=1"
+    return `${this.home} holds a ${this.holds} save, which only a server started ${other} opens`
+  }
+}
+
+/**
+ * Marks the home with the save it holds, or fails when it holds the other kind. A save from before the mark is the
+ * player's real one: dev mode never takes it.
+ */
+export const claimHome = (paths: LocalPaths) =>
+  Effect.gen(function* () {
+    const wanted = paths.dev ? "dev" : "play"
+    // A mark that reads as neither kind (an empty file from a start cut short) counts as none.
+    const read = yield* Effect.sync(() => readIfExists(paths.profile)?.trim())
+    const marked = read === "dev" || read === "play" ? read : null
+    const holds = marked ?? (existsSync(paths.data) ? "play" : null)
+    if (holds !== null && holds !== wanted) return yield* new WrongHome({ home: paths.home, holds })
+    if (marked === null) yield* Effect.sync(() => writeFileSync(paths.profile, wanted, { mode: 0o600 }))
+  })
 
 export class ServerRunning extends Data.TaggedError("ServerRunning")<{ readonly pid: number }> {
   override get message() {
@@ -124,8 +175,13 @@ export const defaultProfile = (): LocalProfile => {
   return { displayName: name, characterName: name, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
 }
 
-/** Everything behind the routes, over a PGlite database: migrated, with the local player in place. */
-export const services = (pglite: PgliteClient.PgliteClientConfig, profile: LocalProfile, stepper: Stepper = step) => {
+/** Everything behind the routes, over a PGlite database: migrated, with the local player in place; dev mode off. */
+export const services = (
+  pglite: PgliteClient.PgliteClientConfig,
+  profile: LocalProfile,
+  stepper: Stepper = step,
+  dev = false,
+) => {
   const Database = Layer.effectDiscard(migrate).pipe(Layer.provideMerge(PgliteClient.layer(pglite)))
   const Player = Layer.effect(
     CurrentPlayer,
@@ -134,7 +190,11 @@ export const services = (pglite: PgliteClient.PgliteClientConfig, profile: Local
       return yield* players.local(profile)
     }),
   ).pipe(Layer.provideMerge(Players.layer))
-  return Layer.mergeAll(Player, PlayerWriter.make(stepper)).pipe(Layer.provideMerge(StreamHub.layer), Layer.provideMerge(Database))
+  return Layer.mergeAll(Player, PlayerWriter.make(stepper)).pipe(
+    Layer.provideMerge(StreamHub.layer),
+    Layer.provideMerge(Database),
+    Layer.provideMerge(DevMode.layer(dev)),
+  )
 }
 
 /** The local server, listening on the socket until the scope closes. */
@@ -148,13 +208,15 @@ export const localServer = (paths: LocalPaths = localPaths(), profile: LocalProf
         chmodSync(paths.home, 0o700)
       })
       yield* holdLock(paths.lock)
+      yield* claimHome(paths)
+      if (paths.dev) yield* Effect.logInfo(`Dev mode: a sandbox save in ${paths.home}, which takes the dev commands`)
       // Only the lock holder may remove the socket, so a second server can't pull it from under the first.
       yield* Effect.sync(() => rmSync(paths.socket, { force: true }))
     }),
   )
   return HttpRouter.serve(ApiRoutes).pipe(
     Layer.provide(NodeHttpServer.layer(createServer, { path: paths.socket })),
-    Layer.provide(services({ dataDir: paths.data }, profile)),
+    Layer.provide(services({ dataDir: paths.data }, profile, step, paths.dev)),
     Layer.provide(Prepare),
   )
 }

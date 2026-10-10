@@ -66,7 +66,7 @@ export const StatCounters = Schema.Struct({
     /** The latest sessions measured, latest last. */
     recent: Schema.Array(SessionPeak),
   }),
-  /** Graded prompts, the sum of their weighted quality grades (0-10 each), and those with a regret above 0. */
+  /** Graded prompts, the sum of their weighted quality grades (0-10 each), and those regretted (`prompt.regretAt`). */
   prompts: Schema.Struct({ graded: Count, scoreSum: NonNegative, regretted: Count }),
 })
 export interface StatCounters extends Schema.Schema.Type<typeof StatCounters> {}

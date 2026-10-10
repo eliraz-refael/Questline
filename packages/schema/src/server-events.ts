@@ -14,12 +14,16 @@ const tier = Rarity
 const serverEvent = <Type extends string, Data extends Schema.Struct.Fields>(type: Type, data: Data) =>
   Schema.Struct({ type: Schema.Literal(type), data: Schema.Struct(data) })
 
-/** Fills the XP bar, floats "+120 XP". */
+/**
+ * Fills the XP bar, floats "+120 XP". `reason` is the scoring fact, or `dev` for XP a dev command granted. A graded
+ * prompt's grant names the weighted grade (0-10) that priced it.
+ */
 export const XpGranted = serverEvent("xp.granted", {
   amount: Count,
   tier: XpTier,
   reason: Schema.String,
   totalAfter: Count,
+  grade: Schema.optionalKey(Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 10 })))),
 })
 /** Dim note: daily cap reached for that event. */
 export const XpCapped = serverEvent("xp.capped", { eventType: Schema.String, cap: Count })
@@ -41,7 +45,7 @@ export const LootDropped = serverEvent("loot.dropped", {
   pity: Pity,
   tier,
 })
-/** Updates the gold counter. */
+/** Updates the gold counter. `reason`: `drop`, or `dev` for gold a dev command set. */
 export const GoldChanged = serverEvent("gold.changed", { delta: Schema.Int, totalAfter: Count, reason: Schema.String })
 /** A pending, verified, rejected or expired claim, shown in the quest log. */
 export const ClaimUpdated = serverEvent("claim.updated", ClaimState.fields)

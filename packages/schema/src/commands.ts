@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Name, Rarity, Slot, Ulid } from "./primitives.ts"
+import { Count, Name, Rarity, Slot, Ulid } from "./primitives.ts"
 
 // Commands are player choices, answered synchronously. Like events they carry a ULID and are idempotent;
 // unlike events they can be refused.
@@ -25,6 +25,20 @@ export const QuestAbandon = command("quest.abandon", { questId: Schema.String })
 export const CharacterRename = command("character.rename", { name: Name })
 export const CharacterPrestige = command("character.prestige", {})
 
+// Dev commands, for trying the game out in a sandbox: a local server in dev mode runs them, with its own home, and
+// every other server refuses them. What they make is marked `dev` (an entry's source, an XP or gold reason).
+
+/** One item of the catalogue, by id. */
+export const DevGrantItem = command("dev.grantItem", { itemId: Schema.String })
+/** Every band style of the catalogue not owned yet. */
+export const DevGrantStyles = command("dev.grantStyles", {})
+/** XP, crossing level-ups as play would. */
+export const DevGrantXp = command("dev.grantXp", { amount: Count.pipe(Schema.check(Schema.isGreaterThan(0))) })
+export const DevSetGold = command("dev.setGold", { gold: Count })
+
+export const DevCommand = Schema.Union([DevGrantItem, DevGrantStyles, DevGrantXp, DevSetGold])
+export type DevCommand = typeof DevCommand.Type
+
 export const Command = Schema.Union([
   PetHatch,
   PetRename,
@@ -41,6 +55,10 @@ export const Command = Schema.Union([
   QuestAbandon,
   CharacterRename,
   CharacterPrestige,
+  DevGrantItem,
+  DevGrantStyles,
+  DevGrantXp,
+  DevSetGold,
 ])
 export type Command = typeof Command.Type
 export type CommandType = Command["type"]
