@@ -9,7 +9,7 @@ import { Predicate, Result, Schema } from "effect"
 export interface Admitted {
   readonly id: string
   readonly input: Input
-  /** Null for observations that are not a piece of work, like a finished turn. */
+  /** Null for observations that are not a piece of work, like a finished turn or a graded prompt. */
   readonly naturalKey: string | null
 }
 
@@ -72,6 +72,11 @@ export const naturalKey = (event: ClientEvent): string | null => {
     case "tests.failed":
     case "tests.passed":
     case "repo.explored":
+    case "prompt.graded":
+    case "session.cleared":
+    case "session.compacted":
+    case "command.used":
+    case "context.measured":
       return null
   }
 }

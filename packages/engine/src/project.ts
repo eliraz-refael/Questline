@@ -1,6 +1,7 @@
 import type { CharacterSlot, Context, PetSlot, Player, PlayerState, Slot, Snapshot } from "@questline/schema"
 import { isLater, localDay } from "./days.ts"
 import { levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
+import { statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
 const characterSlots: ReadonlyArray<CharacterSlot> = ["levelUpEffect", "scene"]
@@ -93,6 +94,7 @@ export const project = (
     boosts: progress.boosts.filter((boost) => isLater(boost.endsAt, now)),
     pity: holdings.loot.pity,
     achievements: holdings.achievements,
+    stats: statsOf(state, now),
     cursor: meta.cursor,
   }
 }

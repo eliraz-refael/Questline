@@ -1,4 +1,12 @@
-import type { ChangeMerged, CommitMade, PetHatch, TurnCompleted } from "@questline/schema"
+import type {
+  ChangeMerged,
+  CommandUsed,
+  CommitMade,
+  ContextMeasured,
+  PetHatch,
+  PromptGraded,
+  TurnCompleted,
+} from "@questline/schema"
 import { QuestlineApi } from "@questline/schema"
 import { Effect, Layer } from "effect"
 import { HttpServer } from "effect/http"
@@ -43,6 +51,45 @@ export const turn = (id = nextId()): typeof TurnCompleted.Type => ({
   occurredAt: start,
   sessionId: session,
   data: { durationMs: 1000, toolCalls: 2 },
+})
+
+/** A prompt graded `score` on every dimension, regret included. */
+export const prompt = (score: number, id = nextId()): typeof PromptGraded.Type => ({
+  id,
+  type: "prompt.graded",
+  occurredAt: start,
+  sessionId: session,
+  data: {
+    scores: {
+      clarity: score,
+      grammar: score,
+      specificity: score,
+      instructive: score,
+      context: score,
+      doneCriteria: score,
+      focus: score,
+      regret: score,
+    },
+    rubricVersion: 1,
+    words: 12,
+    grader: "haiku",
+  },
+})
+
+export const commandUsed = (command: string, id = nextId()): typeof CommandUsed.Type => ({
+  id,
+  type: "command.used",
+  occurredAt: start,
+  sessionId: session,
+  data: { command },
+})
+
+export const contextMeasured = (pct: number, id = nextId()): typeof ContextMeasured.Type => ({
+  id,
+  type: "context.measured",
+  occurredAt: start,
+  sessionId: session,
+  data: { pct },
 })
 
 export const hatch = (id = nextId()): typeof PetHatch.Type => ({ id, type: "pet.hatch", data: { species: "fox", name: "Pixel" } })

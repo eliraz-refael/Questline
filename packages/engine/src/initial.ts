@@ -16,6 +16,13 @@ export const initialState = (options: { characterName: string; timezone: string;
     boosts: [],
     tests: { armed: [] },
     claims: [],
+    stats: {
+      clears: 0,
+      compactions: { manual: 0, auto: 0 },
+      commands: {},
+      context: { crossed: { pct50: 0, pct75: 0, pct100: 0 }, sessions: 0, peakSum: 0, recent: [] },
+      prompts: { graded: 0, scoreSum: 0, regretted: 0 },
+    },
   },
   holdings: {
     gold: 0,

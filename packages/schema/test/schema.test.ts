@@ -1,6 +1,15 @@
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { ClientEvent, clientEventTypes, CommandResponse, GitHubRepo, LevelCurve, ServerEvent, Snapshot } from "../src/index.ts"
+import {
+  ClientEvent,
+  clientEventTypes,
+  CommandResponse,
+  GitHubRepo,
+  LevelCurve,
+  PromptRules,
+  ServerEvent,
+  Snapshot,
+} from "../src/index.ts"
 
 const ulid = "01K6ZQ8W3J5V7XKQ2M4N6P8R9T"
 const key = "ab".repeat(32)
@@ -23,7 +32,7 @@ describe("ClientEvent", () => {
 
   it("lists every accepted type for the session response", () => {
     expect(clientEventTypes).toContain("turn.completed")
-    expect(clientEventTypes).toHaveLength(9)
+    expect(clientEventTypes).toHaveLength(14)
   })
 
   it("refuses an unknown type, a bad id and a local path in place of a repo", () => {
@@ -76,6 +85,79 @@ describe("ClientEvent", () => {
   })
 })
 
+describe("ClientEvent: prompts and stats", () => {
+  const base = { id: ulid, occurredAt: at, sessionId: ulid }
+  const scores = { clarity: 8, grammar: 9, specificity: 6, instructive: 7, context: 5, doneCriteria: 4, focus: 10, regret: 0 }
+  const prompt = { ...base, type: "prompt.graded", data: { scores, rubricVersion: 1, words: 14, grader: "haiku" } }
+
+  it("decodes a graded prompt: scores, rubric version, word count and grader, never the text", () => {
+    expect(Schema.decodeUnknownSync(ClientEvent)(prompt)).toEqual(prompt)
+    const leaky = Schema.decodeUnknownSync(ClientEvent)({ ...prompt, data: { ...prompt.data, text: "fix the bug" } })
+    expect(leaky.data).toEqual(prompt.data)
+  })
+
+  it("holds scores to whole numbers 0-10, every dimension present", () => {
+    const withScores = (changed: object) => ({ ...prompt, data: { ...prompt.data, scores: { ...scores, ...changed } } })
+    expect(decodeEvent(withScores({ clarity: 11 }))._tag).toBe("Failure")
+    expect(decodeEvent(withScores({ clarity: 7.5 }))._tag).toBe("Failure")
+    const { regret: _regret, ...noRegret } = scores
+    expect(decodeEvent({ ...prompt, data: { ...prompt.data, scores: noRegret } })._tag).toBe("Failure")
+  })
+
+  it("decodes the stats events", () => {
+    const events = [
+      { ...base, type: "session.cleared", data: {} },
+      { ...base, type: "session.compacted", data: { trigger: "auto" } },
+      { ...base, type: "command.used", data: { command: "/code-review" } },
+      { ...base, type: "command.used", data: { command: "/plugin:deploy" } },
+      { ...base, type: "command.used", data: { command: "custom" } },
+      { ...base, type: "context.measured", data: { pct: 62.5 } },
+    ]
+    for (const event of events) expect(Schema.decodeUnknownSync(ClientEvent)(event)).toEqual(event)
+  })
+
+  it("takes a command's name only, never its arguments, and a context fill only within 0-100", () => {
+    const used = (command: string) => ({ ...base, type: "command.used", data: { command } })
+    expect(["/review 212", "code-review", "/", "/a b", "/../x"].map((name) => decodeEvent(used(name))._tag)).toEqual(
+      Array(5).fill("Failure"),
+    )
+    expect(decodeEvent({ ...base, type: "context.measured", data: { pct: 101 } })._tag).toBe("Failure")
+    expect(decodeEvent({ ...base, type: "session.compacted", data: { trigger: "sometimes" } })._tag).toBe("Failure")
+  })
+})
+
+describe("PromptRules", () => {
+  const rules = {
+    rubricVersion: 1,
+    weights: { clarity: 1, grammar: 1, specificity: 1, instructive: 1, context: 1, doneCriteria: 1, focus: 1 },
+    maxXp: 20,
+    perDay: [
+      { upTo: 20, pct: 100 },
+      { upTo: 40, pct: 50 },
+      { upTo: null, pct: 10 },
+    ],
+  }
+  const valid = Schema.is(PromptRules)
+
+  it("accepts the starter's bands and weights", () => {
+    expect(valid(rules)).toBe(true)
+    expect(valid({ ...rules, perDay: [{ upTo: 5, pct: 100 }] })).toBe(true)
+  })
+
+  it("refuses weights that count no score, and a weight for regret, which only the stats count", () => {
+    const none = { clarity: 0, grammar: 0, specificity: 0, instructive: 0, context: 0, doneCriteria: 0, focus: 0 }
+    expect(valid({ ...rules, weights: none })).toBe(false)
+    expect(valid({ ...rules, weights: { ...rules.weights, clarity: -1 } })).toBe(false)
+    const decoded = Schema.decodeUnknownSync(PromptRules)({ ...rules, weights: { ...rules.weights, regret: 5 } })
+    expect(decoded.weights).toEqual(rules.weights)
+  })
+
+  it("refuses bands that don't rise, or an open band before the last", () => {
+    expect(valid({ ...rules, perDay: [{ upTo: 40, pct: 50 }, { upTo: 20, pct: 100 }] })).toBe(false)
+    expect(valid({ ...rules, perDay: [{ upTo: null, pct: 10 }, { upTo: 20, pct: 100 }] })).toBe(false)
+  })
+})
+
 describe("GitHubRepo", () => {
   it("accepts GitHub slugs and refuses path-like strings", () => {
     const valid = Schema.is(GitHubRepo)
@@ -112,8 +194,23 @@ describe("ServerEvent", () => {
   })
 
   it("decodes a level-up with its optional fields left out", () => {
-    const event = { seq: 7, at, type: "level.up", cause: ulid, data: { from: 4, to: 5 } }
+    const event = { seq: 7, at, type: "level.up", cause: ulid, data: { from: 4, to: 5, tier: "rare" } }
     expect(Schema.decodeUnknownSync(ServerEvent)(event)).toEqual(event)
+  })
+
+  it("names the celebration's tier on a level-up", () => {
+    const event = { seq: 7, at, type: "level.up", cause: ulid, data: { from: 4, to: 5 } }
+    expect(Schema.decodeUnknownExit(ServerEvent)(event)._tag).toBe("Failure")
+    expect(Schema.decodeUnknownExit(ServerEvent)({ ...event, data: { from: 4, to: 5, tier: "huge" } })._tag).toBe("Failure")
+  })
+
+  it("carries only the stats that changed on stats.changed", () => {
+    const changed = (stats: object) => ({ seq: 9, at, type: "stats.changed", cause: ulid, data: { stats } })
+    const one = changed({ clears: 3 })
+    expect(Schema.decodeUnknownSync(ServerEvent)(one)).toEqual(one)
+    expect(Schema.decodeUnknownExit(ServerEvent)(changed({ contextPeak: { lastSession: 140, average: 50 } }))._tag).toBe(
+      "Failure",
+    )
   })
 })
 
@@ -149,6 +246,14 @@ describe("Snapshot", () => {
     boosts: [],
     pity: { sinceRare: 0, sinceEpic: 0 },
     achievements: [],
+    stats: {
+      clears: 0,
+      compactions: { manual: 0, auto: 0 },
+      commands: {},
+      contextCrossed: { pct50: 0, pct75: 0, pct100: 0 },
+      contextPeak: { lastSession: 0, average: 0 },
+      prompts: { graded: 0, gradedToday: 0, averageScore: 0, regretted: 0 },
+    },
     cursor: 0,
   }
 

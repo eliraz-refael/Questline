@@ -93,5 +93,7 @@ describe("localServer", () => {
       expect(JSON.parse(reopened.body)).toMatchObject({ snapshot: { cursor: 3, character: { xp: { reported: 13 } } } })
       expect(existsSync(paths.lock)).toBe(false)
     }),
+    // Two cold starts of an on-disk PGlite, each running every migration: seconds apiece on a CI runner.
+    30_000,
   )
 })

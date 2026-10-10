@@ -1,9 +1,20 @@
 import { it as prop } from "@effect/vitest"
-import type { ClientEvent, Context, Input, PlayerState, Recorded, RulesConfig, Step } from "@questline/schema"
+import type { ClientEvent, Context, GradeDimension, Input, PlayerState, Recorded, RulesConfig, Step } from "@questline/schema"
 import { Step as StepSchema } from "@questline/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { initialState, levelOf, project, starterCatalog, starterRules, step, totalXp, xpForLevel } from "../src/index.ts"
+import {
+  initialState,
+  levelOf,
+  maxCommands,
+  project,
+  starterCatalog,
+  starterRules,
+  statsOf,
+  step,
+  totalXp,
+  xpForLevel,
+} from "../src/index.ts"
 
 const start = "2026-10-09T08:00:00Z"
 const session = "01K6ZQ8W3J5V7XKQ2M4N6P8R9T"
@@ -17,7 +28,20 @@ let ids = 0
 /** ULIDs in order: the time part fixed, the counter in the random part. */
 const nextId = (): string => `01K6ZQ8W3J${String(ids++).padStart(16, "0")}`
 
-const client = (type: ClientEvent["type"], minutes = 0, sessionId = session): Input => {
+/** The same score on every dimension. */
+const flat = (score: number): Record<GradeDimension, number> => ({
+  clarity: score,
+  grammar: score,
+  specificity: score,
+  instructive: score,
+  context: score,
+  doneCriteria: score,
+  focus: score,
+  regret: score,
+})
+
+/** An event of `type`; `n`, 0-10, varies its data: a prompt's scores, a context fill of n * 10%, and so on. */
+const client = (type: ClientEvent["type"], minutes = 0, sessionId = session, n = 10): Input => {
   const base = { id: nextId(), occurredAt: minutesLater(minutes), sessionId }
   const event = ((): ClientEvent => {
     switch (type) {
@@ -37,6 +61,16 @@ const client = (type: ClientEvent["type"], minutes = 0, sessionId = session): In
         return { ...base, type, data: { checkout: { ...repo, branch: "main", headSha: null }, runner: "vitest" } }
       case "repo.explored":
         return { ...base, type, data: { repo } }
+      case "prompt.graded":
+        return { ...base, type, data: { scores: flat(n), rubricVersion: 1, words: 12, grader: "haiku" } }
+      case "session.cleared":
+        return { ...base, type, data: {} }
+      case "session.compacted":
+        return { ...base, type, data: { trigger: n % 2 === 0 ? "manual" : "auto" } }
+      case "command.used":
+        return { ...base, type, data: { command: n % 2 === 0 ? "/code-review" : "/plugin:deploy" } }
+      case "context.measured":
+        return { ...base, type, data: { pct: n * 10 } }
     }
   })()
   return { kind: "client", event }
@@ -126,7 +160,7 @@ describe("step: XP", () => {
   it("levels up once past the curve and never replays a level already reached", () => {
     const { state, events } = play([client("change.merged")])
     expect(levelOf(state, starterRules).level).toBe(1)
-    expect(events.filter((e) => e.type === "level.up")).toEqual([{ type: "level.up", data: { from: 0, to: 1 } }])
+    expect(events.filter((e) => e.type === "level.up")).toEqual([{ type: "level.up", data: { from: 0, to: 1, tier: "rare" } }])
     expect(state.holdings.peakLevel).toBe(1)
   })
 })
@@ -155,6 +189,165 @@ describe("step: loot", () => {
     const commonOnly = { ...always, loot: { ...always.loot, weights: { common: 1, uncommon: 0, rare: 0, epic: 0, legendary: 0 } } }
     const { steps } = play([client("turn.completed")], commonOnly, pitied)
     expect(steps[0]?.rolls[0]?.drop?.rarity).toBe("rare")
+  })
+})
+
+const graded = (scores: Record<GradeDimension, number>, minutes = 0): Input => {
+  const input = client("prompt.graded", minutes)
+  if (input.kind !== "client" || input.event.type !== "prompt.graded") throw new Error("not a graded prompt")
+  return { kind: "client", event: { ...input.event, data: { ...input.event.data, scores } } }
+}
+
+/** The XP each graded prompt earned, in order. */
+const promptXp = (events: ReadonlyArray<Step["events"][number]>): Array<number> =>
+  events.flatMap((e) => (e.type === "xp.granted" && e.data.reason === "prompt.graded" ? [e.data.amount] : []))
+
+describe("step: graded prompts", () => {
+  it("earns the quality scores' average x 2, and starts the day's streak like any work", () => {
+    const { state, events } = play([client("prompt.graded", 0, session, 10), client("prompt.graded", 1, session, 7)])
+    expect(promptXp(events)).toEqual([20, 14])
+    expect(state.progress.xp.reported).toBe(10 + 20 + 14)
+    expect(state.progress.activeDays).toEqual(["2026-10-09"])
+  })
+
+  it("weighs the scores by the rules, and leaves regret out of the price", () => {
+    const weights = { clarity: 3, grammar: 1, specificity: 0, instructive: 0, context: 0, doneCriteria: 0, focus: 0 }
+    const rules = { ...starterRules, prompt: { ...starterRules.prompt, weights } }
+    const scores = { ...flat(0), clarity: 10, grammar: 2, regret: 10 }
+    // (3 * 10 + 1 * 2) / 4 = 8, x 2 = 16; the regret score changes nothing.
+    expect(promptXp(play([graded(scores)], rules).events)).toEqual([16])
+    expect(promptXp(play([graded({ ...scores, regret: 0 })], rules).events)).toEqual([16])
+  })
+
+  it("earns nothing for a zero grade, but still counts the prompt", () => {
+    const { state, events } = play([client("prompt.graded", 0, session, 0)])
+    expect(promptXp(events)).toEqual([])
+    expect(statsOf(state, start).prompts).toEqual({ graded: 1, gradedToday: 1, averageScore: 0, regretted: 0 })
+  })
+
+  it("is full for the day's first 20 prompts, half for the next 20, a tenth after, and full again the next day", () => {
+    const day = Array.from({ length: 45 }, (_, i) => client("prompt.graded", i))
+    const { events } = play([...day, client("prompt.graded", 24 * 60)])
+    expect(promptXp(events)).toEqual([...Array(20).fill(20), ...Array(20).fill(10), ...Array(5).fill(2), 20])
+  })
+
+  it("earns nothing past the last band when the rules close it", () => {
+    const perDay = [{ upTo: 1, pct: 100 }]
+    const rules = { ...starterRules, prompt: { ...starterRules.prompt, perDay } }
+    expect(promptXp(play([client("prompt.graded"), client("prompt.graded", 1)], rules).events)).toEqual([20])
+  })
+
+  it("rolls loot at the turn's chance, and a drop names its rarity as the celebration's tier", () => {
+    const { state, steps } = play([client("prompt.graded")], always)
+    expect(steps[0]?.rolls).toEqual([expect.objectContaining({ number: 0, trigger: "prompt", chance: 1 })])
+    const dropped = steps[0]?.events.find((e) => e.type === "loot.dropped")
+    if (dropped?.type !== "loot.dropped") throw new Error("expected a drop")
+    expect(dropped.data.tier).toBe(dropped.data.item.rarity)
+    expect(state.holdings.inventory).toHaveLength(1)
+    expect(play([client("prompt.graded")]).steps[0]?.rolls[0]).toMatchObject({ trigger: "prompt", chance: 0.12 })
+  })
+
+  it("counts graded prompts, today's, the average grade and the regrets, and says so on the stream", () => {
+    const { state, events } = play([graded({ ...flat(10), regret: 0 }), graded({ ...flat(5), regret: 3 }, 1)])
+    expect(statsOf(state, start).prompts).toEqual({ graded: 2, gradedToday: 2, averageScore: 7.5, regretted: 1 })
+    expect(statsOf(state, minutesLater(24 * 60)).prompts.gradedToday).toBe(0)
+    expect(events.filter((e) => e.type === "stats.changed").at(-1)).toEqual({
+      type: "stats.changed",
+      data: { stats: { prompts: { graded: 2, gradedToday: 2, averageScore: 7.5, regretted: 1 } } },
+    })
+  })
+})
+
+describe("step: player stats", () => {
+  const other = "01K6ZQ8W3J5V7XKQ2M4N6P8R9V"
+
+  it("counts clears, compactions by trigger and commands by name, with no XP and no streak", () => {
+    const inputs = [
+      client("session.cleared"),
+      client("session.compacted", 1, session, 0),
+      client("session.compacted", 2, session, 1),
+      client("session.compacted", 3, session, 1),
+      client("command.used", 4, session, 0),
+      client("command.used", 5, session, 0),
+      client("command.used", 6, session, 1),
+    ]
+    const { state, events } = play(inputs)
+    expect(totalXp(state)).toBe(0)
+    expect(state.progress.activeDays).toEqual([])
+    expect(events.every((e) => e.type === "stats.changed")).toBe(true)
+    expect(statsOf(state, start)).toMatchObject({
+      clears: 1,
+      compactions: { manual: 1, auto: 2 },
+      commands: { "/code-review": 2, "/plugin:deploy": 1 },
+    })
+  })
+
+  it("sends only the stats an event changed", () => {
+    const { events } = play([client("session.cleared"), client("command.used", 1, session, 0)])
+    expect(events).toEqual([
+      { type: "stats.changed", data: { stats: { clears: 1 } } },
+      { type: "stats.changed", data: { stats: { commands: { "/code-review": 1 } } } },
+    ])
+  })
+
+  it("counts each context fill a session crosses once, and keeps each session's peak", () => {
+    const fills = (sessionId: string, ...tenths: Array<number>) =>
+      tenths.map((n, i) => client("context.measured", i, sessionId, n))
+    const first = play(fills(session, 3, 6, 5, 8, 10))
+    expect(statsOf(first.state, start)).toMatchObject({
+      contextCrossed: { pct50: 1, pct75: 1, pct100: 1 },
+      contextPeak: { lastSession: 100, average: 100 },
+    })
+    // A fill below the session's peak changes nothing, so it sends nothing.
+    expect(first.steps[2]?.events).toEqual([])
+    const second = play(fills(other, 4, 8), starterRules, first.state)
+    expect(statsOf(second.state, start)).toMatchObject({
+      contextCrossed: { pct50: 2, pct75: 2, pct100: 1 },
+      contextPeak: { lastSession: 80, average: 90 },
+    })
+  })
+
+  it("counts a new command name as custom once the record holds the most names it keeps", () => {
+    const state = fresh()
+    const names = Array.from({ length: maxCommands - 1 }, (_, i): [string, number] => [`/c${i}`, 1])
+    const commands = Object.fromEntries([...names, ["/plugin:deploy", 4]])
+    const full = { ...state, progress: { ...state.progress, stats: { ...state.progress.stats, commands } } }
+    const uses = [client("command.used", 0, session, 0), client("command.used", 1, session, 1)]
+    const { state: after } = play(uses, starterRules, full)
+    expect(after.progress.stats.commands["/code-review"]).toBeUndefined()
+    expect(after.progress.stats.commands["custom"]).toBe(1)
+    expect(after.progress.stats.commands["/plugin:deploy"]).toBe(5)
+  })
+})
+
+describe("step: review fixes, prompts and stats", () => {
+  it("never keeps more than maxCommands names, custom included", () => {
+    const uses = Array.from({ length: maxCommands + 20 }, (_, i): Input => {
+      const input = client("command.used", i)
+      if (input.kind !== "client" || input.event.type !== "command.used") throw new Error("not a command use")
+      return { kind: "client", event: { ...input.event, data: { command: `/c${i}` } } }
+    })
+    const { state } = play(uses)
+    expect(Object.keys(state.progress.stats.commands)).toHaveLength(maxCommands)
+    expect(state.progress.stats.commands["custom"]).toBe(21)
+  })
+})
+
+describe("step: celebration tiers", () => {
+  it("stages a level-up as rare, and as epic when it brings a new title", () => {
+    expect(play([client("change.merged")]).events.find((e) => e.type === "level.up")).toMatchObject({
+      data: { to: 1, tier: "rare" },
+    })
+    const state = fresh()
+    const nearTen = {
+      ...state,
+      progress: { ...state.progress, xp: { verified: 0, reported: xpForLevel(starterRules.levelCurve, 10) - 100 } },
+      holdings: { ...state.holdings, peakLevel: 9 },
+    }
+    expect(play([client("change.merged")], starterRules, nearTen).events.find((e) => e.type === "level.up")).toEqual({
+      type: "level.up",
+      data: { from: 9, to: 10, tier: "epic", title: "Adept" },
+    })
   })
 })
 
@@ -219,7 +412,15 @@ describe("step: review fixes", () => {
 
 describe("step: purity", () => {
   it("returns output the Step schema accepts", () => {
-    const { steps } = play([client("commit.made"), client("turn.completed", 1), client("change.merged", 2)], always)
+    const inputs = [
+      client("commit.made"),
+      client("turn.completed", 1),
+      client("change.merged", 2),
+      client("prompt.graded", 3),
+      client("context.measured", 4),
+      client("command.used", 5),
+    ]
+    const { steps } = play(inputs, always)
     for (const s of steps) expect(Schema.decodeUnknownExit(StepSchema)(s)._tag).toBe("Success")
   })
 
@@ -232,8 +433,9 @@ describe("step: purity", () => {
   })
 })
 
-// A generated session: each entry is an event kind, minutes after the previous one, and which of two sessions.
-const kinds = [
+// A generated session: each entry is an event kind, minutes after the previous one, which of two sessions, and `n`
+// for the event's data (a prompt's scores, a context fill).
+const Kind = Schema.Literals([
   "turn.completed",
   "commit.made",
   "change.opened",
@@ -241,20 +443,26 @@ const kinds = [
   "tests.failed",
   "tests.passed",
   "repo.explored",
-] as const
+  "prompt.graded",
+  "session.cleared",
+  "session.compacted",
+  "command.used",
+  "context.measured",
+])
 const Script = Schema.Array(
   Schema.Struct({
-    kind: Schema.Literals(kinds),
+    kind: Kind,
     gap: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1440 })),
     second: Schema.Boolean,
+    n: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10 })),
   }),
 ).check(Schema.isMaxLength(60))
 
 const toInputs = (script: typeof Script.Type): Array<Input> => {
   let minutes = 0
-  return script.map(({ kind, gap, second }) => {
+  return script.map(({ kind, gap, second, n }) => {
     minutes += gap
-    return client(kind, minutes, second ? "01K6ZQ8W3J5V7XKQ2M4N6P8R9V" : session)
+    return client(kind, minutes, second ? "01K6ZQ8W3J5V7XKQ2M4N6P8R9V" : session, n)
   })
 }
 
@@ -280,5 +488,39 @@ describe("step: properties", () => {
     }
     expect(state.holdings.gold).toBeGreaterThanOrEqual(0)
     expect(state.holdings.loot.pity.sinceRare).toBeGreaterThanOrEqual(0)
+  })
+
+  prop.prop("a graded prompt earns at most its day's band of maxXp", [Script], ([script]) => {
+    const inputs = toInputs(script)
+    const perDay = new Map<string, number>()
+    for (const [i, s] of play(inputs, loot).steps.entries()) {
+      const input = inputs[i]
+      if (input?.kind !== "client" || input.event.type !== "prompt.graded") continue
+      const day = input.event.occurredAt.slice(0, 10)
+      const nth = (perDay.get(day) ?? 0) + 1
+      perDay.set(day, nth)
+      const cap = nth <= 20 ? 20 : nth <= 40 ? 10 : 2
+      for (const amount of promptXp(s.events)) expect(amount).toBeLessThanOrEqual(cap)
+    }
+  })
+
+  const statKinds: ReadonlyArray<ClientEvent["type"]> = ["session.cleared", "session.compacted", "command.used", "context.measured"]
+
+  prop.prop("stats events earn nothing, counters only grow, and context fills nest", [Script], ([script]) => {
+    let state = fresh()
+    for (const [i, input] of toInputs(script).entries()) {
+      const before = statsOf(state, nowOf(input))
+      const result = step(state, input, context(i + 1, nowOf(input), loot))
+      const after = statsOf(result.state, nowOf(input))
+      if (input.kind === "client" && statKinds.includes(input.event.type)) expect(totalXp(result.state)).toBe(totalXp(state))
+      expect(after.clears).toBeGreaterThanOrEqual(before.clears)
+      expect(after.prompts.graded).toBeGreaterThanOrEqual(before.prompts.graded)
+      expect(after.contextCrossed.pct50).toBeGreaterThanOrEqual(before.contextCrossed.pct50)
+      const { pct50, pct75, pct100 } = after.contextCrossed
+      expect(pct100 <= pct75 && pct75 <= pct50 && pct50 <= result.state.progress.stats.context.sessions).toBe(true)
+      expect(after.contextPeak.average).toBeGreaterThanOrEqual(0)
+      expect(after.contextPeak.average).toBeLessThanOrEqual(100)
+      state = result.state
+    }
   })
 })

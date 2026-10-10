@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { CharacterSlot, Count, IsoDate, IsoDateTime, Name, PetSlot, Rarity, Slot, Ulid } from "./primitives.ts"
+import { CharacterSlot, Count, IsoDate, IsoDateTime, Name, Percent, PetSlot, Rarity, Slot, Ulid } from "./primitives.ts"
 
 // The snapshot is everything the mod draws, sent whole when a session opens and kept current by server events.
 
@@ -141,6 +141,30 @@ export interface Boost extends Schema.Schema.Type<typeof Boost> {}
 export const Pity = Schema.Struct({ sinceRare: Count, sinceEpic: Count })
 export interface Pity extends Schema.Schema.Type<typeof Pity> {}
 
+/** Counted by the server from stats events and graded prompts. They earn no XP; missions and achievements read them. */
+export const PlayerStats = Schema.Struct({
+  /** `/clear` uses. */
+  clears: Count,
+  compactions: Schema.Struct({ manual: Count, auto: Count }),
+  /** "/code-review" -> 12 */
+  commands: Schema.Record(Schema.String, Count),
+  /** Sessions that crossed each context fill. */
+  contextCrossed: Schema.Struct({ pct50: Count, pct75: Count, pct100: Count }),
+  /** Percent. `lastSession` is the latest measured session's peak; a low average = "keeps context low". */
+  contextPeak: Schema.Struct({ lastSession: Percent, average: Percent }),
+  /**
+   * `averageScore` is the weighted quality grade, 0-10, over every graded prompt. `regretted` counts the prompts that
+   * walked back or corrected the player's own previous ask (a regret score above 0); it earns no XP.
+   */
+  prompts: Schema.Struct({
+    graded: Count,
+    gradedToday: Count,
+    averageScore: Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 10 }))),
+    regretted: Count,
+  }),
+})
+export interface PlayerStats extends Schema.Schema.Type<typeof PlayerStats> {}
+
 export const Snapshot = Schema.Struct({
   /** The mod keeps cursor, cache, queue and token per server. */
   serverId: Schema.String,
@@ -157,6 +181,7 @@ export const Snapshot = Schema.Struct({
   boosts: Schema.Array(Boost),
   pity: Pity,
   achievements: Schema.Array(Schema.Struct({ id: Schema.String, unlockedAt: IsoDateTime })),
+  stats: PlayerStats,
   /** Last server-event seq included, read from the same row as the state. */
   cursor: Count,
 })

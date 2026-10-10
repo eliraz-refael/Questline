@@ -4,13 +4,16 @@ import type {
   Command,
   CommandRefusal,
   Context,
+  GradeDimension,
   Input,
   InventoryEntry,
   PlayerState,
+  PlayerStats,
   Progress,
   RollRecord,
   ScoringFact,
   ServerEventDraft,
+  StatCounters,
   Step,
   SystemEvent,
 } from "@questline/schema"
@@ -18,10 +21,12 @@ import { addDays, isLater, localDay } from "./days.ts"
 import { formFor, formsFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import { pityAfter, rollLoot } from "./loot.ts"
 import { ulids } from "./random.ts"
+import { bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
-// This version covers the proof of concept: reported XP with daily caps, levels, the streak, a loot roll per turn
-// and hatching the pet. Verified-tier facts wait for the verifier, and other commands are refused for now.
+// This version covers the proof of concept: reported XP with daily caps, XP for graded prompts, levels, the streak,
+// a loot roll per turn and per graded prompt, the player stats, and hatching the pet. Verified-tier facts wait for
+// the verifier, and other commands are refused for now.
 
 /** What one step builds up. It lives only inside `step`, so the function stays pure. */
 interface Run {
@@ -75,11 +80,48 @@ const applyClient = (state: PlayerState, event: ClientEvent, context: Context): 
   const today = localDay(context.now, state.timezone)
   const eventDay = localDay(event.occurredAt, state.timezone)
   const day = eventDay > today ? today : eventDay
-  markActive(run, day)
+  // Stats earn no XP, so they don't start the day's streak either.
+  if (!isStat(event)) markActive(run, day)
   switch (event.type) {
     case "turn.completed":
       roll(run, "turn", context.rules.loot.chancePerTurn)
       break
+    case "prompt.graded":
+      gradePrompt(run, event.data.scores, day)
+      break
+    case "session.cleared":
+      setStats(run, { clears: run.state.progress.stats.clears + 1 })
+      statsChanged(run, (stats) => ({ clears: stats.clears }))
+      break
+    case "session.compacted": {
+      const compactions = run.state.progress.stats.compactions
+      setStats(run, { compactions: { ...compactions, [event.data.trigger]: compactions[event.data.trigger] + 1 } })
+      statsChanged(run, (stats) => ({ compactions: stats.compactions }))
+      break
+    }
+    case "command.used": {
+      const commands = run.state.progress.stats.commands
+      const name = commandKey(commands, event.data.command)
+      setStats(run, { commands: { ...commands, [name]: (commands[name] ?? 0) + 1 } })
+      statsChanged(run, (stats) => ({ commands: stats.commands }))
+      break
+    }
+    case "context.measured": {
+      const before = statsOf(run.state, context.now)
+      setStats(run, { context: measureContext(run.state.progress.stats.context, event.sessionId, event.data.pct) })
+      const after = statsOf(run.state, context.now)
+      const crossed = contextThresholds.some(([key]) => after.contextCrossed[key] !== before.contextCrossed[key])
+      const peak =
+        after.contextPeak.lastSession !== before.contextPeak.lastSession ||
+        after.contextPeak.average !== before.contextPeak.average
+      if (crossed || peak) {
+        statsChanged(run, (stats) => ({
+          ...(crossed ? { contextCrossed: stats.contextCrossed } : {}),
+          ...(peak ? { contextPeak: stats.contextPeak } : {}),
+        }))
+      }
+      break
+    }
     case "commit.made":
     case "change.opened":
     case "change.merged":
@@ -99,6 +141,46 @@ const applyClient = (state: PlayerState, event: ClientEvent, context: Context): 
   }
   prune(run)
   return finish(run)
+}
+
+const statEvents: ReadonlyArray<ClientEvent["type"]> = [
+  "session.cleared",
+  "session.compacted",
+  "command.used",
+  "context.measured",
+]
+const isStat = (event: ClientEvent): boolean => statEvents.includes(event.type)
+
+const setStats = (run: Run, stats: Partial<StatCounters>): void => {
+  setProgress(run, { stats: { ...run.state.progress.stats, ...stats } })
+}
+
+/** A quiet update of the stats the event changed, as `pick` takes them from the stats as they now stand. */
+const statsChanged = (run: Run, pick: (stats: PlayerStats) => Partial<PlayerStats>): void => {
+  run.events.push({ type: "stats.changed", data: { stats: pick(statsOf(run.state, run.context.now)) } })
+}
+
+/**
+ * A graded prompt: XP from its weighted quality grade, tapered by how many the day has seen already, a loot roll
+ * like a finished turn's, and the prompt stats. The grade is priced whatever rubric version made it.
+ */
+const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>, day: string): void => {
+  const { rules } = run.context
+  const grade = gradeOf(rules.prompt, scores)
+  const nth = (run.state.progress.tallies.find((t) => t.day === day)?.counts["prompt.graded"] ?? 0) + 1
+  // maxXp * grade / 10 * pct / 100, to the thousandth so float error in the weights never costs a point.
+  const xp = Math.round(rules.prompt.maxXp * grade * bandPct(rules.prompt, nth)) / 1000
+  grant(run, "prompt.graded", day, xp)
+  const prompts = run.state.progress.stats.prompts
+  setStats(run, {
+    prompts: {
+      graded: prompts.graded + 1,
+      scoreSum: prompts.scoreSum + grade,
+      regretted: prompts.regretted + (scores.regret > 0 ? 1 : 0),
+    },
+  })
+  roll(run, "prompt", rules.loot.chancePerTurn)
+  statsChanged(run, (stats) => ({ prompts: stats.prompts }))
 }
 
 const applyCommand = (state: PlayerState, command: Command, context: Context): Step => {
@@ -168,12 +250,15 @@ const levelUp = (run: Run, before: number): void => {
   const title = titleFor(rules, after)
   const form = formFor(rules, after)
   const evolves = pet !== null && !pet.forms.includes(form)
+  const titled = title !== titleFor(rules, before)
   run.events.push({
     type: "level.up",
     data: {
       from: before,
       to: after,
-      ...(title !== titleFor(rules, before) ? { title } : {}),
+      // Staged like a rare drop; a new title or evolution makes it a bigger moment.
+      tier: titled || evolves ? "epic" : "rare",
+      ...(titled ? { title } : {}),
       ...(evolves ? { evolution: form } : {}),
     },
   })
@@ -261,7 +346,9 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number): void =>
   setHoldings(run, { inventory: [...run.state.holdings.inventory, entry], gold, loot: { nextRoll, pity } })
   const item = catalog.find((def) => def.id === drop.itemId)
   // An item a later catalogue removed is still owned; it just has no definition to show.
-  if (item !== undefined) run.events.push({ type: "loot.dropped", data: { entry, item, gold: drop.gold, pity } })
+  if (item !== undefined) {
+    run.events.push({ type: "loot.dropped", data: { entry, item, gold: drop.gold, pity, tier: drop.rarity } })
+  }
   if (drop.gold > 0) run.events.push({ type: "gold.changed", data: { delta: drop.gold, totalAfter: gold, reason: "drop" } })
 }
 
