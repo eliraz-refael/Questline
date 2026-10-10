@@ -1,0 +1,9 @@
+{
+  // The engine lays .claude-plugin/types/ (the claude-code API) when it loads the mod; it is not committed.
+  "extends": "./.claude-plugin/types/tsconfig.json",
+  "compilerOptions": {
+    "customConditions": ["@questline/source"],
+    "allowImportingTsExtensions": true,
+    "exactOptionalPropertyTypes": true
+  }
+}

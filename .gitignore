@@ -33,3 +33,6 @@ pnpm-debug.log*
 .claude/task-state/
 .claude/task-archive/
 .claude/settings.local.json
+
+# The claude-code API the engine lays beside the mod when it loads it
+packages/mod/.claude-plugin/types/

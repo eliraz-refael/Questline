@@ -1,0 +1,11 @@
+{
+  "name": "@questline/mod",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Questline's Claude Code mod: reports work to the server and draws the band",
+  "type": "module",
+  "license": "MIT",
+  "devDependencies": {
+    "@questline/schema": "workspace:*"
+  }
+}
