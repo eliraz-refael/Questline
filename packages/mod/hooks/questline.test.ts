@@ -10,10 +10,13 @@ import type {
   SessionMessage,
   SessionStartInput,
 } from 'claude-code'
-import type { Celebration } from '../types'
+import type { BandLook, BandView, Celebration } from '../types'
+import { barCells } from './band'
 import { joinQueue, queueOf } from './celebrate'
 import { cellsOf, glyphSlot } from './cells'
 import { hmac } from './ids'
+import { barRow } from './frames'
+import { sheenHead } from './looks'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
 import { headerOf, tabBarOf } from './pane'
 import { socketPathOf } from './server'
@@ -915,6 +918,143 @@ const samples = async ($: Parameters<TestBody>[0], clock: Clock, ms: number, eve
   }
   return seen
 }
+
+// Two loops at once at different rates: a 6 fps bar and a 4 fps gold, each frame of the gold a different icon.
+const sixFpsBar = styleItem('six-bar', 'Six Bar', 'epic', 'xpBar', {
+  glyphs: { head: '✦' },
+  colors: { full: '#9d4edd' },
+  frames: [{ glyphs: { head: '✦' } }, { glyphs: { head: '✧' } }],
+  fps: 6,
+})
+const fourFpsGold = styleItem('four-gold', 'Four Gold', 'legendary', 'goldDisplay', {
+  glyphs: { icon: '◈' },
+  colors: { icon: '#ffb627' },
+  frames: [{ glyphs: { icon: '◈' } }, { glyphs: { icon: '◆' } }, { glyphs: { icon: '◇' } }, { glyphs: { icon: '●' } }],
+  fps: 4,
+})
+const twoRates = (): Owned => ({
+  inventory: [
+    { id: '01K6ZQ8W3J0000000000009011', itemId: 'six-bar' },
+    { id: '01K6ZQ8W3J0000000000009012', itemId: 'four-gold' },
+  ],
+  items: [sixFpsBar, fourFpsGold],
+  equipped: { xpBar: '01K6ZQ8W3J0000000000009011', goldDisplay: '01K6ZQ8W3J0000000000009012' },
+})
+
+/** The clock times, sampled every `every` ms over `ms`, at which `pick` of the band's text changed. */
+const changes = async ($: Parameters<TestBody>[0], clock: Clock, ms: number, every: number, pick: (all: string) => string) => {
+  const times: Array<number> = []
+  let last = pick((await band($)).all)
+  for (let at = every; at <= ms; at += every) {
+    await clock.advance(every)
+    const now = pick((await band($)).all)
+    if (now !== last) times.push(at)
+    last = now
+  }
+  return times
+}
+
+describe('loop timing', () => {
+  test('a 4 fps look worn beside a 6 fps one steps every 250 ms, not 167 and 333 by turns', async ($, on) => {
+    const { clock } = await streaming($, on, twoRates())
+    const icon = (all: string) => /([◈◆◇●]) 25/.exec(all)?.[1] ?? ''
+    const times = await changes($, clock, 3_000, 25, icon)
+    const gaps = times.slice(1).map((at, i) => at - (times[i] ?? 0))
+    expect(gaps.length).toBeGreaterThan(8)
+    for (const gap of gaps) expect(Math.abs(gap - 250)).toBeLessThanOrEqual(25)
+  })
+})
+
+const view = (intoLevel: number, forNextLevel = 100): BandView => ({
+  name: 'Player',
+  level: 4,
+  title: 'Apprentice',
+  glyph: '⚔',
+  xp: { total: 400 + intoLevel, intoLevel, forNextLevel },
+  gold: 25,
+  isDev: false,
+  pet: null,
+})
+const arcane: BandLook = {
+  glyphs: { full: '▰', empty: '▱', head: '✦' },
+  colors: { full: '#9d4edd', empty: '#3c2a4d' },
+  frames: [{ glyphs: { head: '✦' } }, { glyphs: { head: '✧' } }],
+  fps: 6,
+  sheen: { colors: ['#7b2cbf', '#c77dff', '#e0aaff', '#ffffff'], rest: 6 },
+}
+/** Where the sheen's white head is in the bar's cells at each frame, over `frames` frames. */
+const heads = (look: BandLook, intoLevel: number, frames: number) =>
+  Array.from({ length: frames }, (_, tick) => {
+    const { cells, from } = barCells(view(intoLevel), 120, look, { ticks: { '6': tick } })
+    const at = cells.findIndex((cell) => cell.color === '#ffffff')
+    return at < 0 ? null : at - from
+  })
+
+describe('review fixes: loop clocks', () => {
+  test('a reload with no loop to run leaves no frame of the last copy standing: the pane draws its previews still', async ($, on) => {
+    // Owned, not worn: only the open pane's previews loop.
+    const { clock } = await streaming($, on, ownedOf())
+    const previews = async () => (await paneTexts($, 72)).texts.join('\n')
+    const still = await previews()
+    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    await clock.advance(500)
+    expect(await previews()).not.toBe(still)
+    // The fresh copy finds no pane open, so no clock runs, and the loops' frames from before must go.
+    await $.session.start(start)
+    await clock.settle()
+    expect(await previews()).toBe(still)
+  })
+})
+
+describe('the sheen', () => {
+  test('travels one cell a frame along a short fill, two along a long one, then rests', () => {
+    const short = heads(arcane, 10, 24)
+    // 11 cells filled: the head runs 0..12 as the tail follows it out, one cell a frame, then 6 frames of rest.
+    expect(short.slice(0, 11)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(short.slice(14, 20)).toEqual([null, null, null, null, null, null])
+    // 99 cells filled: two a frame, the whole pass within 51 frames.
+    const long = heads(arcane, 90, 51).flatMap((at) => (at === null ? [] : [at]))
+    expect(long.at(-1)).toBe(98)
+    const steps = long.slice(1).map((at, i) => at - (long[i] ?? 0))
+    expect(steps.every((step) => step > 0 && step <= 2)).toBe(true)
+  })
+
+  test('is a gradient of the look\'s colors, the head bold, inside the budget, and never on the bar still to fill', () => {
+    for (let tick = 0; tick < 30; tick++) {
+      const { cells, from, filled } = barCells(view(30), 120, arcane, { ticks: { '6': tick } })
+      const lit = cells.filter((cell) => arcane.sheen?.colors.includes(cell.color ?? '') && cell.color !== '#9d4edd')
+      expect(lit.length).toBeLessThanOrEqual(4)
+      expect(lit.filter((cell) => cell.bold === true).every((cell) => cell.color === '#ffffff')).toBe(true)
+      const at = cells.findIndex((cell) => cell.color === '#ffffff')
+      if (at >= 0) expect(at - from).toBeLessThan(filled)
+    }
+    // 33 cells filled, so two a frame: at frame 5 the head is on cell 10, its tail behind it.
+    const { cells } = barCells(view(30), 120, arcane, { ticks: { '6': 5 } })
+    expect(cells.slice(7, 11).map((cell) => cell.color)).toEqual(arcane.sheen?.colors)
+    expect(sheenHead(0, 0, 4, 0)).toBeNull()
+  })
+
+  test('rests with the loops: a still band draws no sheen', () => {
+    const { cells } = barCells(view(30), 120, arcane, null)
+    expect(cells.some((cell) => cell.color === '#ffffff')).toBe(false)
+  })
+
+  test("an XP gain's glint is a soft run, dim to white, that never hops more than three cells", () => {
+    const celebration: Celebration = { kind: 'xp', amount: 10 }
+    const glintAt = (tick: number) => {
+      const row = barRow(view(40), 120, { celebration, tick, seed: 1, motion: 'full', load: 1 })
+      // The glint's white head as a cell along the row, not a run: the tail's runs come and go around it.
+      const run = row.findIndex((one) => one.color === '#ffffff' && one.text.length === 1)
+      return run < 0 ? -1 : row.slice(0, run).reduce((cells, one) => cells + cellsOf(one.text), 0)
+    }
+    const at = [0, 1, 2, 3, 4].map(glintAt).filter((one) => one >= 0)
+    expect(at.length).toBeGreaterThan(2)
+    const hops = at.slice(1).map((one, i) => one - (at[i] ?? 0))
+    expect(hops.every((hop) => hop > 0 && hop <= 3)).toBe(true)
+    const runs = barRow(view(40), 120, { celebration, tick: 2, seed: 1, motion: 'full', load: 1 })
+    expect(new Set(runs.map((run) => run.color)).size).toBeGreaterThanOrEqual(5)
+  })
+})
 
 describe('band styles', () => {
   test('the band wears the equipped looks: a still one as it is, a looping one moving', async ($, on) => {

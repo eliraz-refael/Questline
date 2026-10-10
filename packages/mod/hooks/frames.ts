@@ -167,11 +167,17 @@ const shimmer = (
   const span = Math.min(filled, 10, Math.max(1, gained))
   const from = filled - span
   const last = ticksOf(stage) - 1
-  const glint = stage.motion === 'full' ? from - 1 + Math.round((stage.tick * (span + 1)) / Math.max(1, last)) : -2
   const settled = stage.motion === 'full' && stage.tick === last
-  for (let i = from; i < filled; i++) {
-    const color = i === glint ? white : i === glint - 1 ? pick(colors, 1, white) : pick(colors, settled ? 3 : 2, white)
-    cells[i] = { char: full, color, bold: true }
+  for (let i = from; i < filled; i++) cells[i] = { char: full, color: pick(colors, settled ? 3 : 2, white), bold: true }
+  // A soft glint, dim tail to white head, runs in over the new XP and out past its end before the last frame.
+  if (stage.motion === 'full' && !settled) {
+    const glint = [...colors].reverse()
+    const travel = span + glint.length - 2
+    const head = Math.round((stage.tick * travel) / Math.max(1, last - 1))
+    glint.forEach((color, i) => {
+      const at = from + head - (glint.length - 1 - i)
+      if (at >= from && at < filled) cells[at] = { char: full, color, bold: true }
+    })
   }
   if (filled < cells.length) {
     const star = stage.motion === 'full' ? cycle(glyphs, stage.tick, '✦') : '✦'

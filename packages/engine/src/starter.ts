@@ -1,4 +1,4 @@
-import type { BandFrame, BandLook, BandMark, BandSlot, ItemDef, Rarity, RulesConfig } from "@questline/schema"
+import type { BandFrame, BandLook, BandSlot, ItemDef, Rarity, RulesConfig } from "@questline/schema"
 
 // The starter config and catalogue a fresh local server begins with: the design doc's numbers. One deviation for
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
@@ -66,7 +66,7 @@ export const starterRules: RulesConfig = {
     // Haiku scores a regret of 1 or 2 on many a prompt that walks nothing back.
     regretAt: 5,
   },
-  catalogVersion: 2,
+  catalogVersion: 3,
   questPacks: [],
 }
 
@@ -90,24 +90,14 @@ const style = (
 
 const white = "#ffffff"
 
-/**
- * A sheen sweeping the track: `steps` frames carry its cells (`colors`, the middle one brightest) from one end to the
- * other, then `rest` frames without it; `accent` adds what each frame does to the slot's accents.
- */
-const sweep = (
-  steps: number,
-  rest: number,
-  colors: ReadonlyArray<string>,
-  accent: (i: number) => Omit<BandFrame, "marks"> = () => ({}),
-): Array<BandFrame> =>
-  Array.from({ length: steps + rest }, (_, i) => {
-    const at = Math.round((i / (steps - 1)) * 1000) / 1000
-    const middle = Math.floor(colors.length / 2)
-    const marks: Array<BandMark> = colors.map((color, j) => ({ at, dx: j - middle, color }))
-    return i < steps ? { ...accent(i), marks } : accent(i)
-  })
+/** A head that twinkles through `glyphs` and `colors`, one frame each, for a bar whose sheen does the travelling. */
+const headTwinkle = (glyphs: ReadonlyArray<string>, colors: ReadonlyArray<string>): Array<BandFrame> =>
+  glyphs.map((glyph, i) => ({ glyphs: { head: glyph }, colors: { head: pick(colors, i) } }))
 
-/** Twinkles at fixed places along the track, each running `glyphs` out of step with its neighbours. */
+/**
+ * Twinkles at fixed places along the track, each running `glyphs` out of step with its neighbours, in the color at the
+ * same step of `colors`, so a star brightens and dims with its glyph.
+ */
 const twinkle = (
   places: ReadonlyArray<number>,
   glyphs: ReadonlyArray<string>,
@@ -190,12 +180,10 @@ const bandStyles: ReadonlyArray<ItemDef> = [
     {
       glyphs: { full: "▰", empty: "▱", head: "✦" },
       colors: { full: "#9d4edd", empty: "#3c2a4d", head: "#e0aaff", label: "#c77dff" },
-      // A violet sheen runs the bar in under three seconds, then rests a second, the head twinkling throughout.
-      frames: sweep(16, 6, ["#c77dff", "#e0aaff", white, "#e0aaff", "#c77dff"], (i) => ({
-        glyphs: { head: pick(["✦", "✧", "⋆", "✧"], i) },
-        colors: { head: pick(["#e0aaff", white, "#c77dff", white], i) },
-      })),
+      // A soft violet light runs along the filled bar and rests a second, the head twinkling throughout.
+      frames: headTwinkle(["✦", "✧", "⋆", "✧"], ["#e0aaff", white, "#c77dff", white]),
       fps: 6,
+      sheen: { colors: ["#7b2cbf", "#c77dff", "#e0aaff", white], rest: 6 },
     },
     "It hums when the tests go green.",
   ),
@@ -219,7 +207,7 @@ const bandStyles: ReadonlyArray<ItemDef> = [
       frames: twinkle(
         [0.06, 0.19, 0.33, 0.47, 0.6, 0.74, 0.88],
         ["·", "⋆", "✧", "✦", "✧", "⋆", " ", " "],
-        ["#9d8cff", "#c77dff", "#e0aaff", white],
+        ["#7b6cf6", "#9d8cff", "#e0aaff", white, "#e0aaff", "#9d8cff"],
         (i) => ({ glyphs: { star: pick(["✦", "✧"], Math.floor(i / 2)) } }),
       ),
       fps: 5,
@@ -234,12 +222,10 @@ const bandStyles: ReadonlyArray<ItemDef> = [
     {
       glyphs: { full: "▰", empty: "▱", head: "✸" },
       colors: { full: "#ffb627", empty: "#4d3a12", head: "#fff1a8", label: "#ffd23f" },
-      // Molten light runs the bar, the head flaring like a forge.
-      frames: sweep(20, 4, ["#ff9f1c", "#ffd23f", white, "#ffd23f", "#ff9f1c"], (i) => ({
-        glyphs: { head: pick(["✸", "✦", "✧", "✦"], i) },
-        colors: { head: pick(["#fff1a8", white, "#ffd23f", white], i) },
-      })),
+      // Molten light runs along the filled bar, the head flaring like a forge.
+      frames: headTwinkle(["✸", "✦", "✧", "✦"], ["#fff1a8", white, "#ffd23f", white]),
       fps: 6,
+      sheen: { colors: ["#ff9f1c", "#ffd23f", "#fff1a8", white], rest: 4 },
     },
     "Hammered from a fallen star.",
   ),

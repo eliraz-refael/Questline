@@ -33,7 +33,7 @@ import {
 } from './observe'
 import type { Repo } from './observe'
 import { answerOf, initOf, isCommand, isEvents, isSession, isStream, ServerDown, socketPathOf, urlOf } from './server'
-import { ownedLooks, rateOf, wornLooks } from './looks'
+import { ownedLooks, ratesOf, wornLooks } from './looks'
 import type { Choice } from './pane'
 import { brand, headerGap, headerOf, lookSections, otherItems, paneId, tabBarOf, tabOf } from './pane'
 import { batchesOf, batchGainOf, canHatch, fadeMs, hearts, sprite, toastOf, toastsOf, viewOf, wardrobeOf } from './view'
@@ -48,7 +48,7 @@ const gain = atom({ plugin: 'questline', key: 'gain' }, null)
 const stage = atom({ plugin: 'questline', key: 'stage' }, null)
 const queue = atom({ plugin: 'questline', key: 'queue' }, [])
 const wardrobe = atom({ plugin: 'questline', key: 'wardrobe' }, null)
-const loop = atom({ plugin: 'questline', key: 'loop' }, null)
+const loops = atom({ plugin: 'questline', key: 'loops' }, null)
 const tab = atom({ plugin: 'questline', key: 'tab' }, 'inventory')
 
 /** This copy of the mod: a reload makes a new one, and a frame the old one left behind is never drawn. */
@@ -103,11 +103,11 @@ let playing: Celebration | null = null
 let frame: Timer | null = null
 let isTurnRunning = false
 let seed = 0
-// The looks' loops: one clock for all of them, at the fastest rate a looping look asks for, running only while the
-// prompt is idle, nothing celebrates and the player wants full motion. The pane's previews loop while it is open.
-let loopTimer: Timer | null = null
-let loopRate = 0
-let loopTick = 0
+// The looks' loops: a clock for each rate a looping look asks for, so a 4 fps look steps every 250 ms even beside a
+// 6 fps one, running only while the prompt is idle, nothing celebrates and the player wants full motion. The pane's
+// previews loop while it is open. Each clock counts its own frames.
+const loopTimers = new Map<number, Timer>()
+const loopTicks = new Map<number, number>()
 let isPaneOpen = false
 
 /** One request to the local server. A failure to reach it at all is `ServerDown`. */
@@ -327,23 +327,39 @@ const resumeCelebrations = async ($: EngineInterface) => {
 const syncLoop = async ($: EngineInterface) => {
   const owned = await read($, wardrobe)
   const looks = [...Object.values(wornLooks(owned)), ...(isPaneOpen ? ownedLooks(owned) : [])]
-  const rate = motion === 'full' && !isTurnRunning && playing === null ? rateOf(looks) : 0
-  if (rate === loopRate && (rate === 0) === (loopTimer === null)) return
-  // The timer is swapped before any await, so two syncs that overlap never leave two clocks running; the atom is
-  // written from the rate in force when the write lands, so the last sync wins there too.
-  loopTimer?.cancel()
-  loopRate = rate
-  loopTimer =
-    rate === 0 ? null : $.clock.every(Math.round(1000 / rate), () => void tickLoop($).catch(() => undefined))
-  await update($, loop, () => (loopRate === 0 ? null : { tick: loopTick, rate: loopRate }))
+  const rates = motion === 'full' && !isTurnRunning && playing === null ? ratesOf(looks) : []
+  if (rates.length === loopTimers.size && rates.every((rate) => loopTimers.has(rate))) return
+  // The clocks are swapped before any await, so two syncs that overlap never leave two clocks at one rate; the atom
+  // is written from the clocks in force when the write lands, so the last sync wins there too.
+  for (const [rate, timer] of loopTimers) {
+    if (rates.includes(rate)) continue
+    timer.cancel()
+    loopTimers.delete(rate)
+  }
+  for (const rate of rates) {
+    if (loopTimers.has(rate)) continue
+    loopTimers.set(rate, $.clock.every(Math.round(1000 / rate), () => void tickLoop($, rate).catch(() => undefined)))
+  }
+  await update($, loops, loopsNow)
 }
 
-const tickLoop = async ($: EngineInterface) => {
-  if (loopRate === 0) return
-  loopTick += 1
+/** The loops' frames as the clocks in force have counted them; null when none runs, which draws still looks. */
+const loopsNow = () =>
+  loopTimers.size === 0
+    ? null
+    : { ticks: Object.fromEntries([...loopTimers.keys()].map((rate) => [String(rate), loopTicks.get(rate) ?? 0])) }
+
+const stopLoops = () => {
+  for (const timer of loopTimers.values()) timer.cancel()
+  loopTimers.clear()
+}
+
+const tickLoop = async ($: EngineInterface, rate: number) => {
+  if (!loopTimers.has(rate)) return
+  loopTicks.set(rate, (loopTicks.get(rate) ?? 0) + 1)
   // A stop that came in while this tick was being written wins: the still looks stay. An atom a /clear emptied is
   // written again, so the loops pick up where they were.
-  await update($, loop, () => (loopRate === 0 ? null : { tick: loopTick, rate: loopRate }))
+  await update($, loops, loopsNow)
 }
 
 /** Reloads the character from the server; `fromScratch` also moves the cursor to the snapshot's. */
@@ -591,9 +607,9 @@ export const register: Register = (on, options) => {
     flushTimer = $.clock.every(flushEveryMs, () => void flush($))
     // A pane the last copy of the mod opened stays up across a reload: the engine keeps the record.
     isPaneOpen = (await $.ui.panes().catch(() => [])).some((pane) => pane.id === paneId)
-    loopTimer?.cancel()
-    loopTimer = null
-    loopRate = 0
+    stopLoops()
+    // The atom outlives a reload: clear the last copy's frames, or a sync with no clock to start leaves them frozen.
+    await update($, loops, () => null)
     await syncLoop($)
     await $.command
       .register({
@@ -747,7 +763,7 @@ export const register: Register = (on, options) => {
     const last = await read($, gain)
     const looks = wornLooks(await read($, wardrobe))
     // A running turn draws every look still, whatever the clock says.
-    const moving = e.props.isWorking ? null : await read($, loop)
+    const moving = e.props.isWorking ? null : await read($, loops)
     const { Box, Button, Text } = $.ui.resolve(e)
     // The band's top edge, so it reads apart from the transcript above it.
     const rule = draw(Text, edgeRow(e.props.bodyColumns, looks.topEdge ?? null, moving), 'edge')
@@ -821,7 +837,7 @@ export const register: Register = (on, options) => {
     const status = await read($, link)
     const current = await read($, view)
     const owned = await read($, wardrobe)
-    const moving = await read($, loop)
+    const moving = await read($, loops)
     const shownTab = tabOf(await read($, tab))
     // Inside the pane's padding: the header and the tab bar fit it on one row each, at any width.
     const columns = Math.max(0, e.props.bodyColumns - 2)
