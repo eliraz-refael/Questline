@@ -134,7 +134,7 @@ export const bandParts: Readonly<Record<BandSlot, BandParts>> = {
   },
 }
 
-/** The most cells one frame of a loop may change in the band: its accents and marks together. */
+/** The most cells one frame of a loop may change in the band: its accents, marks and sheen together. */
 export const maxAnimatedCells = 12
 /** The fastest a loop may run, in frames a second. */
 export const maxLoopFps = 6
@@ -156,6 +156,17 @@ export const BandFrame = Schema.Struct({
 })
 export interface BandFrame extends Schema.Schema.Type<typeof BandFrame> {}
 
+/**
+ * A soft-edged light that travels the slot's track, one or two cells a frame: its colors run from the dim tail to the
+ * bright head, which the mod draws bold. It lights the bar's filled cells, or the whole edge, and rests `rest` frames
+ * between passes. It moves on the loop's frames and rate.
+ */
+export const BandSheen = Schema.Struct({
+  colors: Schema.Array(HexColor).pipe(Schema.check(Schema.isMinLength(2), Schema.isMaxLength(6))),
+  rest: Schema.Int.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 48 }))),
+})
+export interface BandSheen extends Schema.Schema.Type<typeof BandSheen> {}
+
 /** A band cosmetic's look: glyphs and colors by part and, for a loop, its frames and their rate. */
 export const BandLook = Schema.Struct({
   glyphs: Schema.Record(Schema.String, Glyph),
@@ -164,8 +175,11 @@ export const BandLook = Schema.Struct({
   frames: Schema.NullOr(Schema.Array(BandFrame).pipe(Schema.check(Schema.isMinLength(2), Schema.isMaxLength(48)))),
   /** Low by design; the mod pauses the loop during turns. */
   fps: Schema.NullOr(Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 1, maximum: maxLoopFps })))),
+  /** A light that travels the track while the loop plays; a look without one is drawn as before. */
+  sheen: Schema.optionalKey(BandSheen),
 }).check(
   Schema.makeFilter((look) => (look.frames === null) === (look.fps === null) || "a loop needs both frames and a rate"),
+  Schema.makeFilter((look) => look.sheen === undefined || look.fps !== null || "a sheen moves only in a loop"),
 )
 export interface BandLook extends Schema.Schema.Type<typeof BandLook> {}
 
@@ -187,8 +201,10 @@ const lookIssue = (look: BandLook, slot: BandSlot): string | undefined => {
     if (fixed !== undefined) return `a frame may only change ${slot}'s accents, not "${fixed}"`
     const marks = frame.marks?.length ?? 0
     if (marks > 0 && !parts.track) return `${slot} has no track for marks`
-    if (changed.length + marks > maxAnimatedCells) return `a frame may change at most ${maxAnimatedCells} cells`
+    const sheen = look.sheen?.colors.length ?? 0
+    if (changed.length + marks + sheen > maxAnimatedCells) return `a frame may change at most ${maxAnimatedCells} cells`
   }
+  if (look.sheen !== undefined && !parts.track) return `${slot} has no track for a sheen`
   return undefined
 }
 

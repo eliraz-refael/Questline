@@ -1,4 +1,4 @@
-import type { BandLook, BandSlot, Loop, LookFrame, LookMark, OwnedItem, Wardrobe } from '../types'
+import type { BandLook, BandSlot, Loop, LookFrame, LookMark, LookSheen, OwnedItem, Wardrobe } from '../types'
 import type { Style } from './cells'
 import { cellsOf } from './cells'
 
@@ -47,15 +47,58 @@ export const maxMarks = 12
 export const loops = (look: BandLook | null): boolean =>
   look !== null && look.frames !== null && look.frames.length > 1 && look.fps !== null && look.fps > 0
 
-/** The frame a look is at on the loops' clock, or null when it is still or the loops rest. */
+/** The rate a look loops at, within the budget; 0 for a still one. */
+export const rateOfLook = (look: BandLook | null): number =>
+  look !== null && loops(look) && look.fps !== null ? Math.min(maxFps, look.fps) : 0
+
+/** The frames a look has played on its own rate's clock, or null when it is still or the loops rest. */
+export const tickOf = (look: BandLook | null, loop: Loop | null): number | null => {
+  const rate = rateOfLook(look)
+  return loop === null || rate === 0 ? null : (loop.ticks[String(rate)] ?? null)
+}
+
+/** The frame a look is at on its clock, or null when it is still or the loops rest. */
 export const frameOf = (look: BandLook | null, loop: Loop | null): LookFrame | null => {
-  if (loop === null || look === null || !loops(look) || look.frames === null || look.fps === null) return null
-  const fps = Math.min(maxFps, look.fps)
-  return look.frames[Math.floor((loop.tick * fps) / Math.max(1, loop.rate)) % look.frames.length] ?? null
+  const tick = tickOf(look, loop)
+  if (tick === null || look === null || look.frames === null) return null
+  return look.frames[tick % look.frames.length] ?? null
+}
+
+/** Below this many cells to travel a sheen moves one cell a frame; above it, two, so a long pass doesn't drag. */
+const sheenOneCellUpTo = 24
+
+/**
+ * The cell a sheen's head is on along a run of `span` lit cells at frame `tick`, or null while it rests. The head
+ * enters at the run's start and travels until the tail has left its end, so the light fades in and out at the ends.
+ */
+export const sheenHead = (tick: number, span: number, length: number, rest: number): number | null => {
+  if (span <= 0 || length <= 0) return null
+  const travel = span + length - 2
+  const step = travel <= sheenOneCellUpTo ? 1 : 2
+  const steps = Math.ceil(travel / step) + 1
+  const at = tick % (steps + Math.max(0, rest))
+  return at < steps ? Math.min(at * step, travel) : null
+}
+
+/** A sheen's cells along a run of `span`: where each falls and its color, the head last and drawn bold. */
+export const sheenCells = (
+  sheen: LookSheen,
+  tick: number,
+  span: number,
+): Array<{ at: number; color: string; isHead: boolean }> => {
+  const length = sheen.colors.length
+  const head = sheenHead(tick, span, length, sheen.rest)
+  if (head === null) return []
+  return sheen.colors.flatMap((color, i) => {
+    const at = head - (length - 1 - i)
+    return at >= 0 && at < span ? [{ at, color, isHead: i === length - 1 }] : []
+  })
 }
 
 /** What a slot is drawn with at one moment: its parts' glyphs and styles, and the marks along its track. */
 export type Parts = {
+  /** The look's sheen and the frame it is at, while it plays. */
+  readonly sheen: { sheen: LookSheen; tick: number } | null
   /** The part's glyph, or `fallback` when the look has none or one that isn't one cell wide. */
   readonly glyph: (part: string, fallback?: string) => string | undefined
   /** Any text the part draws, such as "Lv". */
@@ -68,6 +111,7 @@ export type Parts = {
 export const partsOf = (slot: BandSlot, look: BandLook | null, loop: Loop | null): Parts => {
   const own = ownLooks[slot]
   const frame = frameOf(look, loop)
+  const tick = tickOf(look, loop)
   const glyphs = { ...own.glyphs, ...look?.glyphs, ...frame?.glyphs }
   const colors = { ...own.colors, ...look?.colors, ...frame?.colors }
   const colored = { ...look?.colors, ...frame?.colors }
@@ -83,6 +127,7 @@ export const partsOf = (slot: BandSlot, look: BandLook | null, loop: Loop | null
       return { ...(color === undefined ? {} : { color }), ...(dim ? { dim } : {}) }
     },
     marks: (frame?.marks ?? []).slice(0, maxMarks),
+    sheen: look?.sheen === undefined || tick === null ? null : { sheen: look.sheen, tick },
   }
 }
 
@@ -114,6 +159,6 @@ export const wornLooks = (wardrobe: Wardrobe | null): Partial<Record<BandSlot, B
 export const ownedLooks = (wardrobe: Wardrobe | null): Array<BandLook> =>
   (wardrobe?.items ?? []).flatMap((item) => (isBandSlot(item.slot) && item.look !== null ? [item.look] : []))
 
-/** The loops' clock rate for these looks: the fastest of those that loop, within the budget; 0 when none loops. */
-export const rateOf = (looks: ReadonlyArray<BandLook>): number =>
-  Math.min(maxFps, Math.max(0, ...looks.flatMap((look) => (loops(look) && look.fps !== null ? [look.fps] : []))))
+/** The rates these looks loop at, each once, within the budget: one clock runs for each. */
+export const ratesOf = (looks: ReadonlyArray<BandLook>): Array<number> =>
+  [...new Set(looks.map(rateOfLook).filter((rate) => rate > 0))].sort((a, b) => a - b)
