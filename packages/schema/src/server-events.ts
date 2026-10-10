@@ -1,6 +1,6 @@
 import { Schema, Struct, Tuple } from "effect"
 import { ClaimState, InventoryEntry, ItemDef, Pet, Pity, PlayerStats } from "./domain.ts"
-import { Count, Glyph, IsoDateTime, Rarity, Ulid, XpTier } from "./primitives.ts"
+import { Count, Glyph, IsoDateTime, Rarity, Slot, Ulid, XpTier } from "./primitives.ts"
 
 // Server events are the outcomes the mod renders, numbered by a per-player seq that only goes up. Each one below
 // is the draft the rules engine emits; the write path adds the envelope as it appends the draft to the stream.
@@ -67,6 +67,10 @@ export const PetChanged = serverEvent("pet.changed", {
   form: Schema.optionalKey(Pet.fields.form),
   equipped: Schema.optionalKey(Pet.fields.equipped),
 })
+/** An item went into its slot, replacing what was there: a band style redraws its part of the band. */
+export const ItemEquipped = serverEvent("item.equipped", { slot: Slot, entryId: Ulid })
+/** A slot was emptied: the band draws its own look there again. */
+export const ItemUnequipped = serverEvent("item.unequipped", { slot: Slot })
 /** Streak flame in the band. */
 export const StreakChanged = serverEvent("streak.changed", { days: Count, restDaysLeftThisWeek: Count })
 /** Fetch `GET /v1/rules/{version}` and swap the config; no reload needed. */
@@ -99,6 +103,8 @@ export const ServerEventDraft = Schema.Union([
   AchievementUnlocked,
   PetHatched,
   PetChanged,
+  ItemEquipped,
+  ItemUnequipped,
   StreakChanged,
   RulesUpdated,
   Notice,

@@ -12,7 +12,7 @@ import type {
 } from 'claude-code'
 import type { Celebration } from '../types'
 import { joinQueue, queueOf } from './celebrate'
-import { cellsOf, glyphSlot } from './frames'
+import { cellsOf, glyphSlot } from './cells'
 import { hmac } from './ids'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
 
@@ -21,7 +21,10 @@ import { exitIsTheRuns, githubName, testRunner } from './observe'
 
 type Sent = { path: string; body: unknown }
 
-const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔') => ({
+/** What the player owns in the fake server: entries, their definitions, and what is equipped where. */
+type Owned = { inventory: Array<{ id: string; itemId: string }>; items: Array<unknown>; equipped: Record<string, string> }
+
+const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔', owned?: Owned) => ({
   serverId: 'local-test',
   streamEpoch: 1,
   cursor,
@@ -34,7 +37,15 @@ const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔')
     xp: { total: 130, verified: 0, reported: 130, intoLevel: 30, forNextLevel: 203 },
     gold: 25,
     streak: { days: 2, restDaysLeftThisWeek: 1, lastDay: '2026-10-09' },
+    equipped: { ...owned?.equipped },
   },
+  inventory: (owned?.inventory ?? []).map((entry) => ({
+    ...entry,
+    acquiredAt: '2026-10-09T08:00:00Z',
+    source: { kind: 'drop', ref: '1' },
+    dye: null,
+  })),
+  items: owned?.items ?? [],
 })
 
 const reply = (status: number, body: unknown) => ({ value: { status, ok: status < 300, headers: {}, text: JSON.stringify(body) } })
@@ -42,8 +53,10 @@ const ran = (exitCode: number, stdout: string) => ({
   value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
 })
 
-/** A session's bottom: what the engine itself answers beneath every plugin. */
+/** A session's bottom: what the engine itself answers beneath every plugin, and the commands and panes it took. */
 const engineBeneath = (on: On) => {
+  const registered: Array<string> = []
+  const opened: Array<string> = []
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
@@ -54,6 +67,17 @@ const engineBeneath = (on: On) => {
   on('command.list', () => ({ value: commands }))
   on('session.compact', ($, e) => ({ messages: e.messages }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
+  on('command.register', ($, e) => {
+    registered.push(e.name)
+    return { value: { command: e.name } }
+  })
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', ($, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', () => ({ value: undefined }))
+  return { registered, opened }
 }
 
 /** The commands the session lists: a built-in, a plugin's, and the player's own. */
@@ -74,12 +98,30 @@ const until = async (clock: Clock, check: () => boolean | Promise<boolean>) => {
   throw new Error('the mod never got there')
 }
 
-type ServerOptions = { level?: number; glyph?: string; isDown?: boolean; stream?: Array<{ seq: number }> }
+type ServerOptions = { level?: number; glyph?: string; isDown?: boolean; stream?: Array<{ seq: number }>; owned?: Owned }
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+
+/** What the fake server answers a command: an equip or unequip changes what it owns, anything else is refused. */
+const commandAnswer = (body: unknown, owned: Owned | undefined) => {
+  const data = isRecord(body) && isRecord(body['data']) ? body['data'] : {}
+  const slot = typeof data['slot'] === 'string' ? data['slot'] : ''
+  const entryId = typeof data['entryId'] === 'string' ? data['entryId'] : ''
+  if (owned !== undefined && isRecord(body) && body['type'] === 'item.equip') {
+    owned.equipped[slot] = entryId
+    return { status: 'ok', events: [{ seq: 900, at: '2026-10-09T08:00:00.000Z', cause: null, type: 'item.equipped', data }] }
+  }
+  if (owned !== undefined && isRecord(body) && body['type'] === 'item.unequip') {
+    delete owned.equipped[slot]
+    return { status: 'ok', events: [] }
+  }
+  return { status: 'refused', code: 'not_allowed', message: 'The egg hatches at level 1' }
+}
 
 const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
   const sent: Array<Sent> = []
   const tried: Array<string> = []
-  engineBeneath(on)
+  const { registered, opened } = engineBeneath(on)
   on('http.fetch', async ($, e) => {
     tried.push(new URL(e.url).pathname)
     if (options.isDown === true) throw new Error('connect ENOENT /home/player/.questline/server.sock')
@@ -87,7 +129,12 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     const body: unknown = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
     sent.push({ path, body })
     if (path === '/v1/sessions')
-      return reply(200, { snapshot: snapshot(options.level ?? 0, null, 0, options.glyph), rules: {}, minClientVersion: '0.0.0', acceptedEventTypes: [] })
+      return reply(200, {
+        snapshot: snapshot(options.level ?? 0, null, 0, options.glyph, options.owned),
+        rules: {},
+        minClientVersion: '0.0.0',
+        acceptedEventTypes: [],
+      })
     if (path === '/v1/events') {
       const events = typeof body === 'object' && body !== null && 'events' in body && Array.isArray(body.events) ? body.events : []
       // A type from a newer mod than this server knows, as `future.*` stands for here.
@@ -97,7 +144,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
           : { id: event.id, status: 'accepted' }
       return reply(200, { results: events.map(resultOf), events: [] })
     }
-    if (path === '/v1/commands') return reply(200, { status: 'refused', code: 'not_allowed', message: 'The egg hatches at level 1' })
+    if (path === '/v1/commands') return reply(200, commandAnswer(body, options.owned))
     // The stream answers as soon as the test hands it events, or after 25 seconds with none.
     const stream = options.stream ?? []
     if (options.stream === undefined) await clock.sleep(25_000)
@@ -113,7 +160,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     if (args === 'git rev-parse --abbrev-ref HEAD') return ran(0, 'main\n')
     return ran(1, '')
   })
-  return { sent, tried }
+  return { sent, tried, registered, opened }
 }
 
 const start: SessionStartInput = { cwd: '/work/widgets', surface: 'terminal', isInteractive: true }
@@ -512,12 +559,12 @@ const band = async ($: Parameters<TestBody>[0], maxRows = 20) => {
 }
 
 /** A session with the server up and its stream open, which hands the mod `events` when `send` is called. */
-const streaming = async ($: Parameters<TestBody>[0], on: On) => {
+const streaming = async ($: Parameters<TestBody>[0], on: On, owned?: Owned) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
   mock.store(on, { explored: ['acme/widgets'] })
   mock.env(on, { HOME: '/home/player' })
   const stream: Array<{ seq: number }> = []
-  const { sent } = fakeServer(on, clock, { level: 4, stream })
+  const { sent, registered, opened } = fakeServer(on, clock, { level: 4, stream, ...(owned === undefined ? {} : { owned }) })
   const played: Array<string> = []
   on('audio.play', ($, e) => {
     played.push(e.clip.mime ?? e.clip.asset ?? '')
@@ -531,7 +578,7 @@ const streaming = async ($: Parameters<TestBody>[0], on: On) => {
     await until(clock, () => stream.length === 0)
     await clock.settle()
   }
-  return { clock, send, played }
+  return { clock, send, played, sent, registered, opened }
 }
 
 /** Samples the band every 100 ms for `ms`, keeping which of `names` it draws at each sample, without repeats. */
@@ -728,13 +775,224 @@ describe('celebrations', () => {
     expect(played).toEqual([])
   })
 
-  test('a reload mid-celebration leaves no frame behind', async ($, on) => {
+  test('a reload mid-celebration takes its frame down, then plays it again from its first frame', async ($, on) => {
     const { clock, send } = await streaming($, on)
     await send(drop('rare', 'Wizard Hat'))
-    expect((await band($)).grown).toBe(4)
+    await clock.advance(1_500)
+    expect((await band($)).all).toContain('✦ Wizard Hat')
     await $.session.start(start)
     await clock.settle()
     expect((await band($)).grown).toBe(0)
+    await clock.advance(700)
+    const again = await band($)
+    expect(again.grown).toBe(4)
+    expect(again.all).not.toContain('Wizard Hat ✦')
+    await clock.advance(2_200)
+    expect((await band($)).grown).toBe(0)
+  })
+
+  test('a level-up in a band with no rows to spare still moves, in the place of the gain', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(levelUp(0, 1, 'rare', { glyph: '⚔' }))
+    // Past the bar's fill and flash, the level's own place keeps moving.
+    await clock.advance(900)
+    const frames = new Set<string>()
+    for (let at = 0; at < 900; at += 170) {
+      const { all, grown } = await band($, 6)
+      expect(grown).toBe(0)
+      for (const text of all.split('\n')) if (text.includes('Level')) frames.add(text)
+      await clock.advance(170)
+    }
+    expect(frames.size).toBeGreaterThan(3)
+  })
+
+  test('a level-up, its drop and the XP that brought it, all mid-turn, each play moving after the turn, then leave', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await $.turn.start({ text: 'fix the parser', turnId: 't1' })
+    await send(xpGranted(20), levelUp(0, 1, 'rare', { glyph: '⚔' }), drop('common', 'Plain Cap', 10))
+    await clock.advance(3_000)
+    expect((await band($)).grown).toBe(0)
+    await $.turn.complete({ answer: 'Done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+    const seen: Record<'xp' | 'coin' | 'level', Set<string>> = { xp: new Set(), coin: new Set(), level: new Set() }
+    for (let at = 0; at < 6_000; at += 100) {
+      const { all, grown } = await band($)
+      if (/[✦✧·]▱/.test(all)) seen.xp.add(all)
+      if (/[◐◓◑◒] Plain Cap/.test(all)) seen.coin.add(all)
+      if (grown === 4 && all.includes('L E V E L')) seen.level.add(all)
+      await clock.advance(100)
+    }
+    expect([seen.xp.size, seen.coin.size].every((size) => size > 1)).toBe(true)
+    expect(seen.level.size).toBeGreaterThan(5)
+    const after = await band($)
+    expect(after.grown).toBe(0)
+    expect(after.all).not.toMatch(/L E V E L|[◐◓◑◒]/)
+  })
+})
+
+// Band styles as the server sends them: a still bar, and a gold whose icon glints in a loop.
+const styleItem = (id: string, name: string, rarity: string, slot: string, look: unknown) => ({
+  id,
+  name,
+  rarity,
+  category: 'bandStyle',
+  slot,
+  sprite: null,
+  lore: null,
+  effect: null,
+  look,
+})
+const solidBar = styleItem('solid-bar', 'Solid Bar', 'common', 'xpBar', {
+  glyphs: { full: '█', empty: '░' },
+  colors: { full: '#87d787', empty: '#4e4e4e' },
+  frames: null,
+  fps: null,
+})
+const glintingGold = styleItem('dragons-hoard', "Dragon's Hoard", 'legendary', 'goldDisplay', {
+  glyphs: { icon: '◈', spark: '✧' },
+  colors: { icon: '#ffb627', amount: '#ffd23f' },
+  frames: [{ glyphs: { icon: '◆' } }, { glyphs: { icon: '✦', spark: '✦' } }, { glyphs: { spark: '⋆' } }],
+  fps: 6,
+})
+const starlitEdge = styleItem('starlit-edge', 'Starlit Edge', 'epic', 'topEdge', {
+  glyphs: { star: '✧' },
+  colors: { line: '#5a4a78' },
+  frames: [{ marks: [{ at: 0.5, glyph: '✦', color: '#ffffff' }] }, { marks: [{ at: 0.8, glyph: '⋆', color: '#ffffff' }] }],
+  fps: 5,
+})
+const ownedOf = (equipped: Record<string, string> = {}): Owned => ({
+  inventory: [
+    { id: '01K6ZQ8W3J0000000000009001', itemId: 'solid-bar' },
+    { id: '01K6ZQ8W3J0000000000009002', itemId: 'dragons-hoard' },
+    { id: '01K6ZQ8W3J0000000000009003', itemId: 'starlit-edge' },
+    { id: '01K6ZQ8W3J0000000000009004', itemId: 'plain-cap' },
+  ],
+  items: [
+    solidBar,
+    glintingGold,
+    starlitEdge,
+    { id: 'plain-cap', name: 'Plain Cap', rarity: 'common', category: 'wearable', slot: 'head', sprite: null, lore: null, effect: null, look: null },
+  ],
+  equipped,
+})
+const wearing = { xpBar: '01K6ZQ8W3J0000000000009001', goldDisplay: '01K6ZQ8W3J0000000000009002' }
+
+/** The texts the band draws over `ms`, sampled each `every` ms. */
+const samples = async ($: Parameters<TestBody>[0], clock: Clock, ms: number, every = 170) => {
+  const seen: Array<string> = []
+  for (let at = 0; at < ms; at += every) {
+    seen.push((await band($)).all)
+    await clock.advance(every)
+  }
+  return seen
+}
+
+describe('band styles', () => {
+  test('the band wears the equipped looks: a still one as it is, a looping one moving', async ($, on) => {
+    const { clock } = await streaming($, on, ownedOf(wearing))
+    const { all } = await band($)
+    expect(all).toMatch(/^█+░+ 30\/203 xp$/m)
+    expect(all).toMatch(/[◈◆✦] 25/)
+    // Six frames a second at most: the glint moves on within a frame or two, never every few milliseconds.
+    const seen = await samples($, clock, 1_000)
+    expect(new Set(seen).size).toBeGreaterThan(1)
+    expect(new Set(await samples($, clock, 160, 40)).size).toBeLessThanOrEqual(2)
+  })
+
+  test('the loops rest through a main-loop turn, drawing the still look, and move again after it', async ($, on) => {
+    const { clock } = await streaming($, on, ownedOf(wearing))
+    await $.turn.start({ text: 'fix the parser', turnId: 't1' })
+    const resting = await samples($, clock, 1_000)
+    expect(new Set(resting).size).toBe(1)
+    expect(resting[0]).toContain('◈ 25 ✧')
+    await $.turn.complete({ answer: 'Done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+    expect(new Set(await samples($, clock, 1_000)).size).toBeGreaterThan(1)
+  })
+
+  for (const animations of ['reduced', 'off']) {
+    test(`${animations} draws every look still`, { options: { animations } }, async ($, on) => {
+      const { clock } = await streaming($, on, ownedOf({ ...wearing, topEdge: '01K6ZQ8W3J0000000000009003' }))
+      const seen = await samples($, clock, 1_200)
+      expect(new Set(seen).size).toBe(1)
+      expect(seen[0]).toContain('◈ 25 ✧')
+      expect(seen[0]).toContain('✧ QUESTLINE ✧')
+    })
+  }
+
+  test('the loops keep moving after a /clear starts the session again', async ($, on) => {
+    const { clock, sent } = await streaming($, on, ownedOf(wearing))
+    const opened = () => sent.filter((one) => one.path === '/v1/sessions').length
+    await $.session.end({ reason: 'clear', sessionId: 'first', resume: { id: 'first' } })
+    await until(clock, () => opened() === 2)
+    expect(new Set(await samples($, clock, 1_000)).size).toBeGreaterThan(1)
+  })
+
+  test('an edge look keeps the band exactly as wide as its body, marks and all', async ($, on) => {
+    const { clock } = await streaming($, on, ownedOf({ topEdge: '01K6ZQ8W3J0000000000009003' }))
+    for (let at = 0; at < 600; at += 200) {
+      const edge = (await band($)).all.split('\n').find((text) => text.includes('QUESTLINE')) ?? ''
+      expect(cellsOf(edge)).toBe(bandOf().bodyColumns)
+      await clock.advance(200)
+    }
+  })
+})
+
+const paneProps = (): RenderPropsOf['Pane'] => ({
+  title: 'Questline',
+  isFocused: true,
+  bodyColumns: 72,
+  placement: 'dock',
+  scroll: { offset: 0, bodyRows: 40 },
+  view: {},
+})
+
+describe('the /questline pane', () => {
+  test('registers /questline, which opens the pane on its inventory', async ($, on) => {
+    const { registered, opened } = await streaming($, on, ownedOf(wearing))
+    expect(registered).toEqual(['questline'])
+    const answer = await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    expect(answer.text).toBe('Questline pane opened.')
+    expect(opened).toEqual(['questline'])
+    for (const surface of surfaces) {
+      const ui = await $.ui.mount({ plugin: 'questline', surface, component: 'Pane', requestId: 'questline', props: paneProps() })
+      const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')
+      for (const shown of ['◆ Inventory', 'Stats', 'soon', 'XP bar', 'Top edge', 'Solid Bar', 'Starlit Edge', 'Plain Cap']) {
+        expect(texts).toContain(shown)
+      }
+      // Each look's preview is drawn by the band's own code, the still one exactly as the band would.
+      expect(texts).toMatch(/^█+░+ 30\/203 xp$/m)
+      expect(await ui.find({ type: 'Button', key: 'equip:topEdge:starlit-edge' })).toBeDefined()
+      expect(await ui.find({ type: 'Button', key: 'unequip:xpBar' })).toBeDefined()
+      await ui.unmount()
+    }
+  })
+
+  test('Equip sends the command and the band wears it at once; Unequip puts the band back', async ($, on) => {
+    const { sent } = await streaming($, on, ownedOf())
+    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+    expect((await band($)).all).toMatch(/^▰+▱+ 30\/203 xp$/m)
+    await ui.press({ key: 'equip:xpBar:solid-bar' })
+    const commands = sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+    expect(commands).toMatchObject([{ type: 'item.equip', data: { entryId: '01K6ZQ8W3J0000000000009001', slot: 'xpBar' } }])
+    expect((await band($)).all).toMatch(/^█+░+ 30\/203 xp$/m)
+    await ui.press({ key: 'unequip:xpBar' })
+    expect(sent.filter((one) => one.path === '/v1/commands').at(-1)?.body).toMatchObject({ type: 'item.unequip', data: { slot: 'xpBar' } })
+    expect((await band($)).all).toMatch(/^▰+▱+ 30\/203 xp$/m)
+    await ui.unmount()
+  })
+})
+
+describe('review fixes: the pane', () => {
+  test('an equipped style the snapshot no longer names still shows, and can be taken off', async ($, on) => {
+    const owned = ownedOf({ xpBar: '01K6ZQ8W3J0000000000009009' })
+    const { sent } = await streaming($, on, owned)
+    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    const props = paneProps()
+    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props })
+    expect((await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')).toContain('Unknown style')
+    await ui.press({ key: 'unequip:xpBar' })
+    expect(sent.filter((one) => one.path === '/v1/commands').at(-1)?.body).toMatchObject({ type: 'item.unequip' })
+    await ui.unmount()
   })
 })
 

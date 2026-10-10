@@ -1,8 +1,10 @@
 import { Schema } from "effect"
 import {
+  BandSlot,
   CharacterSlot,
   Count,
   Glyph,
+  HexColor,
   IsoDate,
   IsoDateTime,
   Name,
@@ -74,8 +76,121 @@ export const Pet = Schema.Struct({
 })
 export interface Pet extends Schema.Schema.Type<typeof Pet> {}
 
-export const ItemCategory = Schema.Literals(["food", "wearable", "scene", "title", "artefact", "levelUpEffect"])
+export const ItemCategory = Schema.Literals([
+  "food",
+  "wearable",
+  "scene",
+  "title",
+  "artefact",
+  "levelUpEffect",
+  "bandStyle",
+])
 export type ItemCategory = typeof ItemCategory.Type
+
+// Band styles: a look for one band slot, drawn by the mod from data alone, so a new one ships without a mod update.
+// The mod draws each slot from named parts; a look names a glyph or a color for any of them, and the mod's own look
+// fills the rest. Common to rare looks are still; epic and legendary loop through frames, each laying overrides of the
+// slot's accents (single cells) and marks (one cell along the slot's track, the bar's cells or the edge's line) over
+// the look, at a low frame rate.
+
+/** The parts the mod draws a band slot from: which take a glyph, which a color, which a frame may change. */
+export interface BandParts {
+  readonly glyphs: ReadonlyArray<string>
+  readonly colors: ReadonlyArray<string>
+  /** Single cells a frame may change. */
+  readonly accents: ReadonlyArray<string>
+  /** Whether the slot has a run of cells a frame's marks land on. */
+  readonly track: boolean
+}
+
+export const bandParts: Readonly<Record<BandSlot, BandParts>> = {
+  /** `left` + the bar's cells (`full`, then `empty`, `head` on the first empty one) + `right`, then the label. */
+  xpBar: {
+    glyphs: ["full", "empty", "head", "left", "right"],
+    colors: ["full", "empty", "head", "left", "right", "label"],
+    accents: ["head", "left", "right"],
+    track: true,
+  },
+  /** The level glyph, then `left` + `lv` and the level + `right`, then the title. */
+  levelDisplay: {
+    glyphs: ["lv", "left", "right"],
+    colors: ["glyph", "level", "title", "left", "right"],
+    accents: ["glyph", "left", "right"],
+    track: false,
+  },
+  /** `line line left`, `star QUESTLINE star` (`title`), `right`, then the line with a `dot knot dot` every so often. */
+  topEdge: {
+    glyphs: ["line", "left", "right", "star", "knot", "dot"],
+    colors: ["line", "left", "right", "star", "title", "knot", "dot"],
+    accents: ["left", "right", "star"],
+    track: true,
+  },
+  /** `icon` and the amount, then `spark` when the look has one. */
+  goldDisplay: {
+    glyphs: ["icon", "spark"],
+    colors: ["icon", "amount", "spark"],
+    accents: ["icon", "spark"],
+    track: false,
+  },
+}
+
+/** The most cells one frame of a loop may change in the band: its accents and marks together. */
+export const maxAnimatedCells = 12
+/** The fastest a loop may run, in frames a second. */
+export const maxLoopFps = 6
+
+/** One cell of a frame along the slot's track: at a share of its length, moved `dx` cells, recolored or redrawn. */
+export const BandMark = Schema.Struct({
+  at: Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+  dx: Schema.optionalKey(Schema.Int.pipe(Schema.check(Schema.isBetween({ minimum: -8, maximum: 8 })))),
+  glyph: Schema.optionalKey(Glyph),
+  color: Schema.optionalKey(HexColor),
+}).check(Schema.makeFilter((mark) => mark.glyph !== undefined || mark.color !== undefined || "a mark draws something"))
+export interface BandMark extends Schema.Schema.Type<typeof BandMark> {}
+
+/** One frame of a loop: overrides of the slot's accents, and marks along its track. */
+export const BandFrame = Schema.Struct({
+  glyphs: Schema.optionalKey(Schema.Record(Schema.String, Glyph)),
+  colors: Schema.optionalKey(Schema.Record(Schema.String, HexColor)),
+  marks: Schema.optionalKey(Schema.Array(BandMark)),
+})
+export interface BandFrame extends Schema.Schema.Type<typeof BandFrame> {}
+
+/** A band cosmetic's look: glyphs and colors by part and, for a loop, its frames and their rate. */
+export const BandLook = Schema.Struct({
+  glyphs: Schema.Record(Schema.String, Glyph),
+  colors: Schema.Record(Schema.String, HexColor),
+  /** Epic and legendary: played in a loop while equipped. */
+  frames: Schema.NullOr(Schema.Array(BandFrame).pipe(Schema.check(Schema.isMinLength(2), Schema.isMaxLength(48)))),
+  /** Low by design; the mod pauses the loop during turns. */
+  fps: Schema.NullOr(Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 1, maximum: maxLoopFps })))),
+}).check(
+  Schema.makeFilter((look) => (look.frames === null) === (look.fps === null) || "a loop needs both frames and a rate"),
+)
+export interface BandLook extends Schema.Schema.Type<typeof BandLook> {}
+
+const isBandSlot = Schema.is(BandSlot)
+
+const outside = (keys: ReadonlyArray<string>, allowed: ReadonlyArray<string>): string | undefined =>
+  keys.find((key) => !allowed.includes(key))
+
+/** What is wrong with a look for a slot, if anything: a part the slot doesn't draw, or a frame past the budget. */
+const lookIssue = (look: BandLook, slot: BandSlot): string | undefined => {
+  const parts = bandParts[slot]
+  const glyph = outside(Object.keys(look.glyphs), parts.glyphs)
+  if (glyph !== undefined) return `${slot} draws no glyph "${glyph}"`
+  const color = outside(Object.keys(look.colors), parts.colors)
+  if (color !== undefined) return `${slot} draws no color "${color}"`
+  for (const frame of look.frames ?? []) {
+    const changed = [...new Set([...Object.keys(frame.glyphs ?? {}), ...Object.keys(frame.colors ?? {})])]
+    const fixed = outside(changed, parts.accents)
+    if (fixed !== undefined) return `a frame may only change ${slot}'s accents, not "${fixed}"`
+    const marks = frame.marks?.length ?? 0
+    if (marks > 0 && !parts.track) return `${slot} has no track for marks`
+    if (changed.length + marks > maxAnimatedCells) return `a frame may change at most ${maxAnimatedCells} cells`
+  }
+  return undefined
+}
 
 /** A catalogue entry, versioned with the rules config. */
 export const ItemDef = Schema.Struct({
@@ -90,7 +205,19 @@ export const ItemDef = Schema.Struct({
   lore: Schema.NullOr(Schema.String),
   /** Food only. */
   effect: Schema.NullOr(Schema.Struct({ xpBoostPct: Count, minutes: Count })),
-})
+  /** Band styles only: the look its band slot draws. */
+  look: Schema.NullOr(BandLook),
+}).check(
+  Schema.makeFilter((item) => {
+    if (item.category !== "bandStyle") {
+      return item.look === null || { path: ["look"], issue: "only a band style has a look" }
+    }
+    if (item.slot === null || !isBandSlot(item.slot)) return { path: ["slot"], issue: "a band style fills a band slot" }
+    if (item.look === null) return { path: ["look"], issue: "a band style needs a look" }
+    const issue = lookIssue(item.look, item.slot)
+    return issue === undefined || { path: ["look"], issue }
+  }),
+)
 export interface ItemDef extends Schema.Schema.Type<typeof ItemDef> {}
 
 export const ItemSource = Schema.Struct({
@@ -189,6 +316,8 @@ export const Snapshot = Schema.Struct({
   /** Null until hatched at level 1. */
   pet: Schema.NullOr(Pet),
   inventory: Schema.Array(InventoryEntry),
+  /** The definitions of the items the inventory holds, band looks included, so the mod draws them as they are. */
+  items: Schema.Array(ItemDef),
   quests: Schema.Array(QuestState),
   claims: Schema.Array(ClaimState),
   shop: Schema.Array(ShopOffer),

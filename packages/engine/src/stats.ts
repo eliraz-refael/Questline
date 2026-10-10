@@ -72,6 +72,9 @@ export const commandKey = (commands: StatCounters["commands"], command: string):
   return Object.keys(commands).length < room ? command : "custom"
 }
 
+/** An average to the thousandth: a sum of floats over a count would show its float error in the pane. */
+const thousandth = (value: number): number => Math.round(value * 1000) / 1000
+
 /** The stats the mod draws, as of `now`. */
 export const statsOf = (state: PlayerState, now: string): PlayerStats => {
   const { stats, tallies } = state.progress
@@ -85,12 +88,12 @@ export const statsOf = (state: PlayerState, now: string): PlayerStats => {
     contextPeak: {
       lastSession: context.recent[context.recent.length - 1]?.peak ?? 0,
       // Clamped: a sum of floats over a count can land a hair outside the range.
-      average: context.sessions === 0 ? 0 : Math.min(100, context.peakSum / context.sessions),
+      average: context.sessions === 0 ? 0 : Math.min(100, thousandth(context.peakSum / context.sessions)),
     },
     prompts: {
       graded: prompts.graded,
       gradedToday: tallies.find((tally) => tally.day === today)?.counts["prompt.graded"] ?? 0,
-      averageScore: prompts.graded === 0 ? 0 : Math.min(10, prompts.scoreSum / prompts.graded),
+      averageScore: prompts.graded === 0 ? 0 : Math.min(10, thousandth(prompts.scoreSum / prompts.graded)),
       regretted: prompts.regretted,
     },
   }

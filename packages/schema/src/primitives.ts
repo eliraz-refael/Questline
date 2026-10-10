@@ -31,6 +31,9 @@ export const Percent = Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimu
  */
 export const Glyph = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(8)))
 
+/** A color as `#rrggbb`. */
+export const HexColor = Schema.String.pipe(Schema.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/u)))
+
 /** A character or pet name. */
 export const Name = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(32)))
 
@@ -43,7 +46,11 @@ export type Rarity = typeof Rarity.Type
 export const PetSlot = Schema.Literals(["head", "neck", "back", "hand", "aura"])
 export type PetSlot = typeof PetSlot.Type
 
-export const CharacterSlot = Schema.Literals(["levelUpEffect", "scene"])
+/** The band's own slots: each holds a band style, a look the mod draws from data alone. */
+export const BandSlot = Schema.Literals(["xpBar", "levelDisplay", "topEdge", "goldDisplay"])
+export type BandSlot = typeof BandSlot.Type
+
+export const CharacterSlot = Schema.Literals(["levelUpEffect", "scene", ...BandSlot.literals])
 export type CharacterSlot = typeof CharacterSlot.Type
 
 export const Slot = Schema.Union([PetSlot, CharacterSlot])

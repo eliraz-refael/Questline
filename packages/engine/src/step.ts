@@ -13,6 +13,7 @@ import type {
   RollRecord,
   ScoringFact,
   ServerEventDraft,
+  Slot,
   StatCounters,
   Step,
   SystemEvent,
@@ -22,14 +23,15 @@ import { addDays, isLater, localDay } from "./days.ts"
 import { formFor, formsFor, glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import type { RarityWeights } from "./loot.ts"
 import { pityAfter, raiseRare, rollLoot } from "./loot.ts"
+import { petSlots } from "./project.ts"
 import { ulids } from "./random.ts"
 import { bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
 // This version covers the proof of concept: reported XP with daily caps, XP for graded prompts, levels, the streak,
 // a loot roll per turn, per graded prompt (better odds for a better grade) and per level-up, the player stats, and
-// hatching the pet. Verified-tier facts wait for
-// the verifier, and other commands are refused for now.
+// hatching the pet, and equipping items. Verified-tier facts wait for the verifier, and other commands are refused
+// for now.
 
 /** What one step builds up. It lives only inside `step`, so the function stays pure. */
 interface Run {
@@ -196,6 +198,10 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
   switch (command.type) {
     case "pet.hatch":
       return hatch(state, command.data, context)
+    case "item.equip":
+      return equip(state, command.data, context)
+    case "item.unequip":
+      return unequip(state, command.data.slot, context)
     default:
       return refuse(state, { code: "not_allowed", message: "Not available in this version yet" })
   }
@@ -392,5 +398,41 @@ const hatch = (state: PlayerState, data: { species: string; name: string }, cont
   const pet = { species: data.species, name: data.name, hatchedAt: now, forms, form, mood: { value: 100, at: now } }
   const run = begin({ ...state, holdings: { ...state.holdings, pet } }, context)
   run.events.push({ type: "pet.hatched", data: { species: pet.species, name: pet.name, form, mood: 100, equipped: {} } })
+  return finish(run)
+}
+
+const isPetSlot = (slot: Slot): boolean => petSlots.some((pet) => pet === slot)
+
+/**
+ * An owned item into the one slot its definition names, replacing what was there; a pet slot needs the pet. A replay
+ * applies what the live run accepted, even if a later catalogue moved or dropped the item.
+ */
+const equip = (state: PlayerState, data: { entryId: string; slot: Slot }, context: Context): Step => {
+  const { holdings } = state
+  const entry = holdings.inventory.find((owned) => owned.id === data.entryId)
+  if (entry === undefined) return refuse(state, { code: "not_owned", message: "That item is not in the inventory" })
+  if (context.mode.kind === "live") {
+    const item = context.catalog.find((def) => def.id === entry.itemId)
+    if (item === undefined) return refuse(state, { code: "invalid", message: "That item can no longer be equipped" })
+    if (item.slot !== data.slot) return refuse(state, { code: "invalid", message: "Wrong slot for the item" })
+    if (isPetSlot(data.slot) && holdings.pet === null) {
+      return refuse(state, { code: "not_allowed", message: "The pet has not hatched" })
+    }
+  }
+  const equipped = { ...holdings.equipped, [data.slot]: entry.id }
+  const run = begin({ ...state, holdings: { ...holdings, equipped } }, context)
+  run.events.push({ type: "item.equipped", data: { slot: data.slot, entryId: entry.id } })
+  return finish(run)
+}
+
+/** Empties a slot: a band slot goes back to the mod's own look. */
+const unequip = (state: PlayerState, slot: Slot, context: Context): Step => {
+  const { holdings } = state
+  if (holdings.equipped[slot] === undefined) {
+    return refuse(state, { code: "invalid", message: "Nothing is equipped there" })
+  }
+  const equipped = Object.fromEntries(Object.entries(holdings.equipped).filter(([key]) => key !== slot))
+  const run = begin({ ...state, holdings: { ...holdings, equipped } }, context)
+  run.events.push({ type: "item.unequipped", data: { slot } })
   return finish(run)
 }

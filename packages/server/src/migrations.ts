@@ -141,12 +141,24 @@ const levelGlyphs = Effect.gen(function* () {
   `
 })
 
+// Item definitions gained a `look` (band styles only): the drops stored before it carry an item with none, so they
+// get `look: null`, which every item but a band style has.
+const bandLooks = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    UPDATE server_events
+    SET data = jsonb_set(data, '{item,look}', 'null'::jsonb)
+    WHERE type = 'loot.dropped' AND data -> 'item' IS NOT NULL AND data -> 'item' -> 'look' IS NULL
+  `
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
   "0002_player_stats": playerStats,
   "0003_celebration_tiers": celebrationTiers,
   "0004_level_glyphs": levelGlyphs,
+  "0005_band_looks": bandLooks,
 }
 
 /** Runs the migrations not applied yet, in order. */

@@ -1,14 +1,12 @@
-import type { BandView, Celebration, Stage, Tier } from '../types'
+import type { BandLook, BandView, Celebration, Loop, Stage, Tier } from '../types'
+import { barCells } from './band'
 import { isSmall, scriptOf } from './celebrate'
-import { bar } from './view'
+import type { Cell, Row, Run, Style } from './cells'
+import { cellsOf, glyphSlot, glyphsOf, isWide, runsOf } from './cells'
 
 // What each frame of a celebration looks like, as rows of styled runs the band draws. Every look is plain data
 // (glyph sequences, colors) so a later cosmetic can swap one for another; the frames are worked out from the stage,
 // the band's width and the rows it may take, so a redraw at the same tick draws the same frame.
-
-/** A stretch of text in one style. */
-export type Run = { text: string; color?: string; bold?: boolean; dim?: boolean }
-export type Row = ReadonlyArray<Run>
 
 /** A celebration's look: its glyph sequences, and its palette from the brightest color to the dimmest. */
 export type Look = { glyphs: ReadonlyArray<string>; sparks: ReadonlyArray<string>; colors: ReadonlyArray<string> }
@@ -72,40 +70,6 @@ export const aurora: ReadonlyArray<string> = [
 /** Stars that twinkle over the big takeovers. */
 const twinkles: ReadonlyArray<string> = ['·', '⋆', '✧', '˚']
 
-// Cell widths: the band lays its pieces out by cells, and an emoji takes two.
-
-const isWide = (glyph: string): boolean => {
-  const code = glyph.codePointAt(0) ?? 0
-  return (
-    glyph.includes('\uFE0F') ||
-    code >= 0x1f000 ||
-    (code >= 0x1100 && code <= 0x115f) ||
-    (code >= 0x2e80 && code <= 0xa4cf) ||
-    (code >= 0xac00 && code <= 0xd7a3) ||
-    (code >= 0xf900 && code <= 0xfaff) ||
-    (code >= 0xff00 && code <= 0xff60)
-  )
-}
-
-/** The glyphs of a text as it draws them: a selector or a joiner stays with the glyph before it. */
-export const glyphsOf = (text: string): Array<string> => {
-  const glyphs: Array<string> = []
-  let joining = false
-  for (const char of text) {
-    const last = glyphs.length - 1
-    if (last >= 0 && (joining || char === '\uFE0F' || char === '\u200D')) glyphs[last] += char
-    else glyphs.push(char)
-    joining = char === '\u200D'
-  }
-  return glyphs
-}
-
-export const cellsOf = (text: string): number =>
-  glyphsOf(text).reduce((cells, glyph) => cells + (isWide(glyph) ? 2 : 1), 0)
-
-/** The level glyph in a slot two cells wide, so the band doesn't shift when a one-cell glyph turns into an emoji. */
-export const glyphSlot = (glyph: string): string => `${glyph}${' '.repeat(Math.max(0, 2 - cellsOf(glyph)))}`
-
 /** "Epic drop" as `E P I C   D R O P`: the takeovers' banner lettering. */
 export const spaced = (text: string): string => [...text.toUpperCase()].join(' ').replace(/ {3}/g, '   ')
 
@@ -121,10 +85,8 @@ export const hash = (...values: ReadonlyArray<number>): number => {
   return (h >>> 0) / 4_294_967_296
 }
 
-// A grid of cells, for the frames that place glyphs by position; `''` is the right half of a wide glyph.
+// A grid of cells, for the frames that place glyphs by position.
 
-type Style = { color?: string; bold?: boolean; dim?: boolean }
-type Cell = Style & { char: string }
 type Grid = Array<Array<Cell>>
 
 const gridOf = (width: number, height: number): Grid =>
@@ -161,32 +123,6 @@ const clear = (grid: Grid, x: number, y: number, cells: number): void => {
   for (let at = Math.max(0, x); at < Math.min(row.length, x + cells); at++) row[at] = { char: ' ' }
 }
 
-const sameStyle = (a: Style, b: Style): boolean => a.color === b.color && a.bold === b.bold && a.dim === b.dim
-
-const styleOf = (cell: Cell): Style => ({
-  ...(cell.color === undefined ? {} : { color: cell.color }),
-  ...(cell.bold === undefined ? {} : { bold: cell.bold }),
-  ...(cell.dim === undefined ? {} : { dim: cell.dim }),
-})
-
-/**
- * A run of cells as styled runs, the blank end left off; spaces keep no style, so they join either side. A blank
- * row is one space, so it still takes its row.
- */
-export const runsOf = (cells: ReadonlyArray<Cell>): Row => {
-  let end = cells.length
-  while (end > 0 && (cells[end - 1]?.char === ' ' || cells[end - 1]?.char === '')) end--
-  const runs: Array<Run> = []
-  for (const cell of cells.slice(0, end)) {
-    if (cell.char === '') continue
-    const style = cell.char === ' ' ? {} : styleOf(cell)
-    const last = runs[runs.length - 1]
-    if (last !== undefined && (cell.char === ' ' || sameStyle(last, style))) last.text += cell.char
-    else runs.push({ text: cell.char, ...style })
-  }
-  return runs.length === 0 ? [{ text: ' ' }] : runs
-}
-
 const rowsOf = (grid: Grid): Array<Row> => grid.map(runsOf)
 
 const pick = <A>(items: ReadonlyArray<A>, i: number, fallback: A): A =>
@@ -197,26 +133,34 @@ const cycle = <A>(items: ReadonlyArray<A>, i: number, fallback: A): A =>
 
 const ticksOf = (stage: Stage): number => scriptOf(stage.celebration, stage.motion).ticks
 
-// The XP bar row: the bar as wide as the band leaves beside its label, and the flourishes that play on it.
-
-/** The bar's label, at its end. */
-export const barLabel = (view: BandView): string => ` ${view.xp.intoLevel}/${view.xp.forNextLevel} xp`
+// The XP bar row: the bar as wide as the band leaves beside its label, in its look, and the flourishes that play on
+// it.
 
 /** The XP bar's cells for a band `columns` wide: the new XP shimmering on a gain, a fill and flash on a level-up. */
-export const barRow = (view: BandView, columns: number, stage: Stage | null): Row => {
-  const width = Math.max(10, columns - cellsOf(barLabel(view)))
-  const { filled } = bar(view, width)
-  const cells: Array<Cell> = Array.from({ length: width }, (_, i) =>
-    i < filled ? { char: '▰', color: 'success' } : { char: '▱', dim: true },
-  )
+export const barRow = (
+  view: BandView,
+  columns: number,
+  stage: Stage | null,
+  look: BandLook | null = null,
+  loop: Loop | null = null,
+): Row => {
+  const { cells, from, width, filled, full } = barCells(view, columns, look, loop)
+  const track = cells.slice(from, from + width)
   const celebration = stage?.celebration
-  if (stage !== null && celebration?.kind === 'xp') shimmer(cells, filled, celebration.amount, view, stage)
-  if (stage !== null && celebration?.kind === 'level' && stage.motion === 'full') fillAndFlash(cells, stage.tick)
-  return runsOf(cells)
+  if (stage !== null && celebration?.kind === 'xp') shimmer(track, filled, celebration.amount, view, stage, full)
+  if (stage !== null && celebration?.kind === 'level' && stage.motion === 'full') fillAndFlash(track, stage.tick, full)
+  return runsOf([...cells.slice(0, from), ...track, ...cells.slice(from + width)])
 }
 
 /** The cells the latest XP filled light up, a glint runs across them and a star twinkles at the bar's head. */
-const shimmer = (cells: Array<Cell>, filled: number, amount: number, view: BandView, stage: Stage): void => {
+const shimmer = (
+  cells: Array<Cell>,
+  filled: number,
+  amount: number,
+  view: BandView,
+  stage: Stage,
+  full: string,
+): void => {
   const { glyphs, colors } = looks.xp
   const gained = view.xp.forNextLevel === 0 ? 0 : Math.round((amount / view.xp.forNextLevel) * cells.length)
   // Ten cells at most, the head's star making the eleventh and twelfth: the in-band budget.
@@ -227,7 +171,7 @@ const shimmer = (cells: Array<Cell>, filled: number, amount: number, view: BandV
   const settled = stage.motion === 'full' && stage.tick === last
   for (let i = from; i < filled; i++) {
     const color = i === glint ? white : i === glint - 1 ? pick(colors, 1, white) : pick(colors, settled ? 3 : 2, white)
-    cells[i] = { char: '▰', color, bold: true }
+    cells[i] = { char: full, color, bold: true }
   }
   if (filled < cells.length) {
     const star = stage.motion === 'full' ? cycle(glyphs, stage.tick, '✦') : '✦'
@@ -236,12 +180,12 @@ const shimmer = (cells: Array<Cell>, filled: number, amount: number, view: BandV
 }
 
 /** The bar fills up in three frames, flashes white then gold, and drops back to the new level's fill. */
-const fillAndFlash = (cells: Array<Cell>, tick: number): void => {
+const fillAndFlash = (cells: Array<Cell>, tick: number, full: string): void => {
   if (tick > 4) return
   const reach = tick < 3 ? Math.ceil((cells.length * (tick + 1)) / 3) : cells.length
   for (let i = 0; i < reach; i++) {
     const color = tick === 3 ? white : tick === 4 ? gold : i >= reach - 3 ? white : '#ffc857'
-    cells[i] = { char: '▰', color, bold: true }
+    cells[i] = { char: full, color, bold: true }
   }
 }
 
@@ -274,10 +218,27 @@ export const slotRow = (stage: Stage, hasRows: boolean): Row | null => {
   const full = stage.motion === 'full'
   if (celebration.kind === 'level') {
     const title = celebration.title === null ? [] : [{ text: ` · ${celebration.title}`, color: '#ffc857' }]
+    if (!full) {
+      return [
+        { text: `${celebration.glyph} `, color: 'claude', bold: true },
+        { text: `Level ${celebration.to}!`, color: gold, bold: true },
+        ...title,
+      ]
+    }
+    // With no rows to grow by, the level ticks over in a white flash where the gain shows, sparks either side of it.
+    const { sparks, colors } = looks.level
+    const spark = (shift: number): Run => ({
+      text: cycle(sparks, tick + shift, '✦'),
+      color: cycle(colors, tick + shift, gold),
+      bold: true,
+    })
     return [
-      { text: `${celebration.glyph} `, color: 'claude', bold: true },
-      { text: `Level ${celebration.to}!`, color: gold, bold: true },
+      spark(0),
+      { text: ` ${celebration.glyph} `, color: 'claude', bold: true },
+      { text: `Level ${tick >= 3 ? celebration.to : celebration.from}!`, color: tick === 3 ? white : gold, bold: true },
       ...title,
+      { text: ' ' },
+      spark(2),
     ]
   }
   const color = rarityColors[celebration.tier]

@@ -39,7 +39,7 @@ describe("project", () => {
   const now = "2026-10-09T08:00:00Z"
   const player = { id: "01K6ZQ8W3J5V7XKQ2M4N6P8R9T", githubUserId: null, githubLogin: null, displayName: "Player", createdAt: now }
   const meta = { player, serverId: "local", streamEpoch: 1, cursor: 0 }
-  const context = { rules: starterRules, questPacks: [], now }
+  const context = { rules: starterRules, catalog: starterCatalog, questPacks: [], now }
 
   it("draws a fresh player the Snapshot schema accepts", () => {
     const snapshot = project(initialState({ characterName: "Player", timezone: "UTC", now }), context, meta)
@@ -63,7 +63,7 @@ describe("project", () => {
       command: { id: "01K6ZQ8W3J0000000000000002", type: "pet.hatch", data: { species: "fox", name: "Ember" } },
     }
     const live: Context["mode"] = { kind: "live" }
-    const ctx = { ...context, rollSeed: "seed", catalog: starterCatalog, mode: live }
+    const ctx = { ...context, rollSeed: "seed", mode: live }
     let state = initialState({ characterName: "Player", timezone: "UTC", now })
     state = step(state, merged, { ...ctx, logSeq: 1 }).state
     state = step(state, hatch, { ...ctx, logSeq: 2 }).state

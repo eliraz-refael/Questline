@@ -1,5 +1,6 @@
 import type { ServerEvent, Snapshot } from '@questline/schema'
-import type { BandView, Gain } from '../types'
+import type { BandView, Gain, OwnedItem, Wardrobe } from '../types'
+import { tierOf } from './celebrate'
 
 // What the band draws, worked out from the server's snapshot and stream; no game rule is computed here.
 
@@ -20,6 +21,26 @@ export const viewOf = (snapshot: Snapshot): BandView => ({
       ? null
       : { species: snapshot.pet.species, name: snapshot.pet.name, form: snapshot.pet.form, mood: snapshot.pet.mood },
 })
+
+/** What the player owns, by the definitions the snapshot carries, and what is equipped where. */
+export const wardrobeOf = (snapshot: Snapshot): Wardrobe => {
+  // An older server's snapshot carries no definitions: nothing it can't name is shown.
+  const defs = Array.isArray(snapshot.items) ? snapshot.items : []
+  const inventory = Array.isArray(snapshot.inventory) ? snapshot.inventory : []
+  const byId = new Map(defs.map((def) => [def.id, def]))
+  const items = inventory.flatMap((entry): Array<OwnedItem> => {
+    const def = byId.get(entry.itemId)
+    if (def === undefined) return []
+    const { name, category, slot, lore } = def
+    const look = def.look ?? null
+    return [{ entryId: entry.id, itemId: def.id, name, rarity: tierOf(def.rarity), category, slot, look, lore }]
+  })
+  const equipped: Record<string, string> = {}
+  const worn = [...Object.entries(snapshot.character.equipped ?? {}), ...Object.entries(snapshot.pet?.equipped ?? {})]
+  for (const [slot, entryId] of worn)
+    if (typeof entryId === 'string') equipped[slot] = entryId
+  return { items, equipped }
+}
 
 /** The egg hatches once the character reaches level 1. */
 export const canHatch = (view: BandView): boolean => view.pet === null && view.level >= 1
@@ -71,19 +92,4 @@ export const announce = (event: ServerEvent): { gain?: Gain; toast?: string } =>
     default:
       return {}
   }
-}
-
-/**
- * The band's top edge, `columns` cells wide: a title tab, then a run of line with a sparkle every so often. Every
- * glyph is one cell wide, so the pieces add up to `columns` exactly.
- */
-export const ruleOf = (columns: number): { lead: string; title: string; trail: string } => {
-  const lead = '──┤ '
-  const title = '✦ QUESTLINE ✦'
-  const left = Math.max(0, columns - lead.length - title.length - 1)
-  const motif = '──────────·✧·'
-  const trail = ` ├${motif.repeat(Math.ceil(left / motif.length))}`.slice(0, left + 1)
-  return columns < lead.length + title.length + 2
-    ? { lead: '', title: '', trail: '─'.repeat(columns) }
-    : { lead, title, trail }
 }

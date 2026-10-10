@@ -8,6 +8,9 @@ import { describe, expect } from "vitest"
 import { migrate, migrations } from "../src/index.ts"
 import { profile, start } from "./fixtures.ts"
 
+// Each test starts a fresh PGlite and runs every migration: the first cold start can take seconds on a CI runner.
+const coldStart = 30_000
+
 describe("migrations", () => {
   it.effect("start a player saved before the player stats from zero, and leave a newer one's alone", () =>
     Effect.gen(function* () {
@@ -32,6 +35,7 @@ describe("migrations", () => {
       const states = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ state: PlayerState })))(rows)
       expect(states.map((row) => row.state.progress.stats)).toEqual([fresh.progress.stats, counted.progress.stats])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
   )
 
   it.effect("give celebrations stored before tiers the tier the engine now stages them at", () =>
@@ -60,6 +64,7 @@ describe("migrations", () => {
       `
       expect(tiers.map((row) => row.tier)).toEqual(["rare", "epic", "uncommon", "legendary"])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
   )
 
   it.effect("give level-ups stored before glyphs the starter's glyph for their level", () =>
@@ -96,5 +101,38 @@ describe("migrations", () => {
       `
       expect(glyphs.map((row) => row.glyph)).toEqual(["⚔", "🗡️", "🛡️", "👑", "🐉", "✦"])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
+  )
+
+  it("give drops stored before band looks an item with no look, and leave a look already there", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      const { "0005_band_looks": _looks, ...before } = migrations
+      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      yield* sql`
+        INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
+        VALUES ('p', NULL, NULL, 'Player', 'seed', ${start})
+      `
+      const look = { glyphs: {}, colors: {}, frames: null, fps: null }
+      const rows: Array<[number, string, unknown]> = [
+        [1, "loot.dropped", { item: { id: "plain-cap", rarity: "common" }, tier: "common" }],
+        [2, "loot.dropped", { item: { id: "solid-bar", rarity: "common", look }, tier: "common" }],
+        [3, "gold.changed", { delta: 10, totalAfter: 10, reason: "drop" }],
+      ]
+      for (const [seq, type, data] of rows) {
+        yield* sql`
+          INSERT INTO server_events (player_id, seq, at, cause, type, data)
+          VALUES ('p', ${seq}, ${start}, NULL, ${type}, ${JSON.stringify(data)}::jsonb)
+        `
+      }
+      yield* migrate
+      const stored = yield* sql<{ data: unknown }>`SELECT data FROM server_events WHERE player_id = 'p' ORDER BY seq`
+      expect(stored.map((row) => row.data)).toEqual([
+        { item: { id: "plain-cap", rarity: "common", look: null }, tier: "common" },
+        { item: { id: "solid-bar", rarity: "common", look }, tier: "common" },
+        { delta: 10, totalAfter: 10, reason: "drop" },
+      ])
+    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
   )
 })
