@@ -1,6 +1,18 @@
 import { it as prop } from "@effect/vitest"
-import type { ClientEvent, Context, GradeDimension, Input, PlayerState, Recorded, RulesConfig, Step } from "@questline/schema"
-import { RulesConfig as RulesSchema, Step as StepSchema } from "@questline/schema"
+import type {
+  ClientEvent,
+  Command,
+  Context,
+  GradeDimension,
+  Input,
+  InventoryEntry,
+  PlayerState,
+  Recorded,
+  RulesConfig,
+  Slot,
+  Step,
+} from "@questline/schema"
+import { ItemDef, RulesConfig as RulesSchema, Step as StepSchema } from "@questline/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {
@@ -423,7 +435,7 @@ describe("level glyphs", () => {
   })
 
   it("puts the character's glyph on the snapshot, under the rules in force", () => {
-    const context = { rules: starterRules, questPacks: [], now: start }
+    const context = { rules: starterRules, catalog: starterCatalog, questPacks: [], now: start }
     expect(project(at(15), context, meta).character).toMatchObject({ level: 15, glyph: "👑" })
     const rules = { ...starterRules, glyphs: [{ fromLevel: 3, glyph: "✦" }, { fromLevel: 12, glyph: "★" }] }
     expect(project(at(0), { ...context, rules }, meta).character.glyph).toBe("✦")
@@ -480,7 +492,8 @@ describe("step: review fixes", () => {
     expect(result.state.progress.xp.reported).toBe(10 + 250)
     const player = { id: session, githubUserId: null, githubLogin: null, displayName: "P", createdAt: start }
     const meta = { player, serverId: "local", streamEpoch: 1, cursor: 0 }
-    expect(project(result.state, { rules: starterRules, questPacks: [], now: minutesLater(60) }, meta).boosts).toEqual([])
+    const projected = project(result.state, { rules: starterRules, catalog: starterCatalog, questPacks: [], now: minutesLater(60) }, meta)
+    expect(projected.boosts).toEqual([])
   })
 
   it("keeps forms an evolution stone unlocked when the pet evolves by level", () => {
@@ -524,6 +537,98 @@ describe("step: review fixes, graded prompt loot", () => {
     const loot = { ...always.loot, weights: { common: 999, uncommon: 0, rare: 1, epic: 0, legendary: 0 }, promptGreatRareFactor: 1_000_000 }
     const rules = { ...always, loot, prompt: { ...always.prompt, weights } }
     expect(play([client("prompt.graded", 0, session, 9)], rules).steps[0]?.rolls[0]?.drop?.rarity).toBe("rare")
+  })
+})
+
+describe("step: review fixes, stats averages", () => {
+  it("rounds the average grade and context peak to the thousandth, so float error never shows", () => {
+    const none = { ...flat(0), regret: 0 }
+    const { state } = play([
+      graded({ ...none, clarity: 1 }),
+      graded({ ...none, clarity: 10, grammar: 5 }, 1),
+      client("context.measured", 2, session, 0),
+    ])
+    // 0.143 and 2.143 average to 1.1429999999999998 in floats.
+    expect(statsOf(state, start).prompts.averageScore).toBe(1.143)
+    const measured = (pct: number, sessionId: string): Input => {
+      const input = client("context.measured", 3, sessionId)
+      if (input.kind !== "client" || input.event.type !== "context.measured") throw new Error("not a measurement")
+      return { kind: "client", event: { ...input.event, data: { pct } } }
+    }
+    const peaks = play([measured(0.1, session), measured(0.2, "01K6ZQ8W3J5V7XKQ2M4N6P8R9V")]).state
+    // 0.1 + 0.2 over two sessions is 0.15000000000000002 in floats.
+    expect(statsOf(peaks, start).contextPeak.average).toBe(0.15)
+  })
+})
+
+describe("step: equipping", () => {
+  const entryId = "01K6ZQ8W3J0000000000009001"
+  const otherId = "01K6ZQ8W3J0000000000009002"
+  const owning = (...items: ReadonlyArray<readonly [string, string]>): PlayerState => {
+    const state = fresh()
+    const source: InventoryEntry["source"] = { kind: "drop", ref: "0" }
+    const inventory = items.map(([id, itemId]): InventoryEntry => ({ id, itemId, acquiredAt: start, source, dye: null }))
+    return { ...state, holdings: { ...state.holdings, inventory } }
+  }
+  const command = (command: Command): Input => ({ kind: "command", command })
+  const equip = (id: string, slot: Slot): Input => command({ id: nextId(), type: "item.equip", data: { entryId: id, slot } })
+  const unequip = (slot: Slot): Input => command({ id: nextId(), type: "item.unequip", data: { slot } })
+  const player = { id: session, githubUserId: null, githubLogin: null, displayName: "Player", createdAt: start }
+  const meta = { player, serverId: "local", streamEpoch: 1, cursor: 0 }
+  const snapshotOf = (state: PlayerState) =>
+    project(state, { rules: starterRules, catalog: starterCatalog, questPacks: [], now: start }, meta)
+
+  it("puts an owned band style in its slot, the snapshot carrying it and its look, and empties it again", () => {
+    const owned = owning([entryId, "arcane-current"], [otherId, "tempered-steel"])
+    const { state, steps } = play([equip(entryId, "xpBar"), equip(otherId, "xpBar"), unequip("xpBar")], starterRules, owned)
+    expect(steps.map((s) => s.refusal)).toEqual([null, null, null])
+    expect(steps.flatMap((s) => s.events)).toEqual([
+      { type: "item.equipped", data: { slot: "xpBar", entryId } },
+      { type: "item.equipped", data: { slot: "xpBar", entryId: otherId } },
+      { type: "item.unequipped", data: { slot: "xpBar" } },
+    ])
+    expect(state.holdings.equipped).toEqual({})
+    const worn = snapshotOf(play([equip(entryId, "xpBar")], starterRules, owned).state)
+    expect(worn.character.equipped).toEqual({ xpBar: entryId })
+    expect(worn.items.map((item) => item.id)).toEqual(["tempered-steel", "arcane-current"])
+    expect(worn.items.find((item) => item.id === "arcane-current")?.look?.fps).toBe(6)
+  })
+
+  it("refuses an item not owned, the wrong slot, a pet slot before the hatch, and an empty slot", () => {
+    const owned = owning([entryId, "solid-bar"], [otherId, "wizard-hat"])
+    const refusals = play(
+      [equip("01K6ZQ8W3J0000000000009999", "xpBar"), equip(entryId, "topEdge"), equip(otherId, "head"), unequip("goldDisplay")],
+      starterRules,
+      owned,
+    ).steps.map((s) => s.refusal?.code)
+    expect(refusals).toEqual(["not_owned", "invalid", "not_allowed", "invalid"])
+    const pet = { species: "fox", name: "Ember", hatchedAt: start, forms: [0], form: 0, mood: { value: 100, at: start } }
+    const hatched = { ...owned, holdings: { ...owned.holdings, pet } }
+    const { state } = play([equip(otherId, "head")], starterRules, hatched)
+    expect(snapshotOf(state).pet?.equipped).toEqual({ head: otherId })
+    expect(snapshotOf(state).character.equipped).toEqual({})
+  })
+
+  it("refuses an item the catalogue no longer has, but a replay applies what the live run accepted", () => {
+    const owned = owning([entryId, "retired-style"])
+    expect(play([equip(entryId, "xpBar")], starterRules, owned).steps[0]?.refusal?.code).toBe("invalid")
+    const replayed = step(owned, equip(entryId, "xpBar"), context(1, start, starterRules, { kind: "replay", recorded: { rolls: [], refusal: null } }))
+    expect(replayed.state.holdings.equipped).toEqual({ xpBar: entryId })
+  })
+})
+
+describe("starter catalogue", () => {
+  it("passes the item schema, with band styles at every rarity: still up to rare, looping from epic", () => {
+    const decode = Schema.decodeUnknownSync(ItemDef)
+    for (const item of starterCatalog) expect(decode(item)).toEqual(item)
+    const styles = starterCatalog.filter((item) => item.category === "bandStyle")
+    const rarities = ["common", "uncommon", "rare", "epic", "legendary"]
+    expect(new Set(styles.map((item) => item.rarity))).toEqual(new Set(rarities))
+    for (const item of styles) {
+      const loops = item.look?.frames !== null
+      expect(loops).toBe(item.rarity === "epic" || item.rarity === "legendary")
+    }
+    expect(new Set(styles.map((item) => item.slot))).toEqual(new Set(["xpBar", "levelDisplay", "topEdge", "goldDisplay"]))
   })
 })
 

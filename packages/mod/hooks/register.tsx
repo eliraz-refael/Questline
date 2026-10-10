@@ -1,10 +1,11 @@
 import type { ClientEvent, Command, ServerEvent } from '@questline/schema'
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
-import type { BandView, Celebration, Gain, Link, Motion, Stage } from '../types'
+import type { ElementConstructor, EngineInterface, Register, TextProps, Timer } from 'claude-code'
+import type { BandSlot, BandView, Celebration, Gain, Link, Motion, PaneTab, Stage } from '../types'
+import { goldRow, labelRun, edgeRow, levelRow } from './band'
 import { celebrationOf, chimeOf, chimeWav, gapMs, idleMs, joinQueue, motionOf, queueOf, scriptOf } from './celebrate'
-import { barLabel, barRow, glyphSlot, slotRow, stageRows } from './frames'
-import type { Row } from './frames'
+import type { Row } from './cells'
+import { barRow, rarityColors, slotRow, stageRows } from './frames'
 import {
   answerTail,
   askFor,
@@ -30,15 +31,26 @@ import {
 } from './observe'
 import type { Repo } from './observe'
 import { answerOf, initOf, isCommand, isEvents, isSession, isStream, ServerDown, socketPathOf, urlOf } from './server'
-import { announce, canHatch, hearts, ruleOf, sprite, viewOf } from './view'
+import { ownedLooks, rateOf, wornLooks } from './looks'
+import type { Choice } from './pane'
+import { lookSections, otherItems, paneId, tabOf, tabs } from './pane'
+import { announce, canHatch, hearts, sprite, viewOf, wardrobeOf } from './view'
 
 // Questline's mod: it reports what happens in the session to the local game server, keeps one long-poll open for
-// what the server decides, and draws the character in a band above the prompt. The server computes every number.
+// what the server decides, draws the character in a band above the prompt in the looks the player equipped, and
+// opens the `/questline` pane. The server computes every number and sends every look but the band's own.
 
 const view = atom({ plugin: 'questline', key: 'view' }, null)
 const link = atom({ plugin: 'questline', key: 'link' }, 'connecting')
 const gain = atom({ plugin: 'questline', key: 'gain' }, null)
 const stage = atom({ plugin: 'questline', key: 'stage' }, null)
+const queue = atom({ plugin: 'questline', key: 'queue' }, [])
+const wardrobe = atom({ plugin: 'questline', key: 'wardrobe' }, null)
+const loop = atom({ plugin: 'questline', key: 'loop' }, null)
+const tab = atom({ plugin: 'questline', key: 'tab' }, 'inventory')
+
+/** This copy of the mod: a reload makes a new one, and a frame the old one left behind is never drawn. */
+const load = Math.random()
 
 /** Cells the band's rows are set in from each side, and the rows it takes of its own: the edge, a gap, two rows. */
 const inset = 2
@@ -83,6 +95,12 @@ let playing: Celebration | null = null
 let frame: Timer | null = null
 let isTurnRunning = false
 let seed = 0
+// The looks' loops: one clock for all of them, at the fastest rate a looping look asks for, running only while the
+// prompt is idle, nothing celebrates and the player wants full motion. The pane's previews loop while it is open.
+let loopTimer: Timer | null = null
+let loopRate = 0
+let loopTick = 0
+let isPaneOpen = false
 
 /** One request to the local server. A failure to reach it at all is `ServerDown`. */
 async function call<A>(
@@ -173,14 +191,32 @@ const show = async ($: EngineInterface, event: ServerEvent) => {
   const celebration = motion === 'off' ? null : celebrationOf(event, (await read($, view))?.glyph ?? '')
   if (celebration !== null) {
     lineup = joinQueue(lineup, celebration)
+    await saveQueue($)
     playSoon($, 0)
   }
+}
+
+/** Keeps what waits to play, the one playing first, in the session's state, where a reload of the mod finds it. */
+const saveQueue = async ($: EngineInterface) => {
+  const waiting = playing === null ? lineup : [playing, ...lineup]
+  await update($, queue, () => waiting)
 }
 
 /** Starts the next celebration after `ms`, unless one plays, a turn holds them, or a start is already set. */
 const playSoon = ($: EngineInterface, ms: number) => {
   if (playing !== null || isTurnRunning || frame !== null) return
-  frame = $.clock.after(ms, () => void playNext($).catch(() => undefined))
+  frame = $.clock.after(ms, () => void playNext($).catch(() => abandon($)))
+}
+
+/** A celebration whose frame could not be drawn gives way to the next, so no frame is left standing. */
+const abandon = async ($: EngineInterface) => {
+  frame?.cancel()
+  frame = null
+  playing = null
+  await update($, stage, () => null).catch(() => undefined)
+  await saveQueue($).catch(() => undefined)
+  await syncLoop($).catch(() => undefined)
+  playSoon($, gapMs)
 }
 
 const playNext = async ($: EngineInterface) => {
@@ -190,7 +226,8 @@ const playNext = async ($: EngineInterface) => {
   lineup = lineup.slice(1)
   playing = next
   seed += 1
-  const first: Stage = { celebration: next, tick: 0, seed, motion }
+  const first: Stage = { celebration: next, tick: 0, seed, motion, load }
+  await syncLoop($)
   await update($, stage, () => first)
   // A turn that began while the first frame was being set has held this one: take back the frame it left.
   if (playing !== next) {
@@ -209,6 +246,8 @@ const frameAt = async ($: EngineInterface, celebration: Celebration, tick: numbe
   if (tick >= script.ticks) {
     playing = null
     await update($, stage, () => null)
+    await saveQueue($)
+    await syncLoop($)
     playSoon($, gapMs)
     return
   }
@@ -219,28 +258,59 @@ const frameAt = async ($: EngineInterface, celebration: Celebration, tick: numbe
   // A sound is a flourish: a terminal with no player, or a refused clip, changes nothing else.
   if (chime !== null && tick === chime.tick)
     $.audio.play({ base64: chimeWav(chime.tier), mime: 'audio/wav' }, { gain: 0.6 }).catch(() => undefined)
-  frame = $.clock.after(script.frameMs, () => void frameAt($, celebration, tick + 1).catch(() => undefined))
+  frame = $.clock.after(script.frameMs, () => void frameAt($, celebration, tick + 1).catch(() => abandon($)))
 }
 
-/** A main-loop turn began: what plays stops and waits, to play whole once the prompt is idle again. */
+/** A main-loop turn began: what plays stops and waits, to play whole once the prompt is idle again; loops rest. */
 const holdCelebrations = async ($: EngineInterface) => {
   isTurnRunning = true
   frame?.cancel()
   frame = null
+  await syncLoop($)
   if (playing === null) return
   lineup = queueOf([playing, ...lineup])
   playing = null
   await update($, stage, () => null)
 }
 
-/** Clears what a reload left: the module's queue starts empty, so the band must not hold a frame of the old one. */
-const resetCelebrations = async ($: EngineInterface) => {
+/**
+ * A fresh copy of the mod (a reload, or the session's start) takes the celebrations the last copy left in the
+ * session's state and plays them again, the one that was playing from its first frame: its frame on the band is
+ * taken down at once, since nothing would move it on.
+ */
+const resumeCelebrations = async ($: EngineInterface) => {
   frame?.cancel()
   frame = null
-  lineup = []
   playing = null
   isTurnRunning = false
+  const saved = await read($, queue)
+  lineup = motion === 'off' || !Array.isArray(saved) ? [] : queueOf(saved)
   await update($, stage, () => null)
+  await saveQueue($)
+  if (lineup.length > 0) playSoon($, idleMs)
+}
+
+/** Starts, re-rates or stops the looks' loops, as what is drawn and the moment ask. */
+const syncLoop = async ($: EngineInterface) => {
+  const owned = await read($, wardrobe)
+  const looks = [...Object.values(wornLooks(owned)), ...(isPaneOpen ? ownedLooks(owned) : [])]
+  const rate = motion === 'full' && !isTurnRunning && playing === null ? rateOf(looks) : 0
+  if (rate === loopRate && (rate === 0) === (loopTimer === null)) return
+  // The timer is swapped before any await, so two syncs that overlap never leave two clocks running; the atom is
+  // written from the rate in force when the write lands, so the last sync wins there too.
+  loopTimer?.cancel()
+  loopRate = rate
+  loopTimer =
+    rate === 0 ? null : $.clock.every(Math.round(1000 / rate), () => void tickLoop($).catch(() => undefined))
+  await update($, loop, () => (loopRate === 0 ? null : { tick: loopTick, rate: loopRate }))
+}
+
+const tickLoop = async ($: EngineInterface) => {
+  if (loopRate === 0) return
+  loopTick += 1
+  // A stop that came in while this tick was being written wins: the still looks stay. An atom a /clear emptied is
+  // written again, so the loops pick up where they were.
+  await update($, loop, () => (loopRate === 0 ? null : { tick: loopTick, rate: loopRate }))
 }
 
 /** Reloads the character from the server; `fromScratch` also moves the cursor to the snapshot's. */
@@ -248,8 +318,11 @@ const refresh = async ($: EngineInterface, fromScratch: boolean) => {
   const opened = await openSession($)
   if (fromScratch) cursor = opened.snapshot.cursor
   const next = viewOf(opened.snapshot)
+  const owned = wardrobeOf(opened.snapshot)
   await update($, view, () => next)
+  await update($, wardrobe, () => owned)
   await update($, link, () => 'online')
+  await syncLoop($)
 }
 
 /** One long-poll, then the next. A failure waits a little and reconnects from a fresh snapshot. */
@@ -357,6 +430,32 @@ const hatch = async ($: EngineInterface) => {
   }
 }
 
+/** Puts an owned band style in its slot, or with no entry the band's own look back; the band redraws at once. */
+const wear = async ($: EngineInterface, slot: BandSlot, entryId: string | null) => {
+  try {
+    const { id } = await stamp($)
+    const command: Command =
+      entryId === null
+        ? { id, type: 'item.unequip', data: { slot } }
+        : { id, type: 'item.equip', data: { entryId, slot } }
+    const answer = await runCommand($, command)
+    if (answer.status === 'refused') {
+      $.ui.toast(answer.message)
+      return
+    }
+    await refresh($, false)
+  } catch {
+    await update($, link, () => 'offline')
+  }
+}
+
+/** Opens the pane, and its previews loop while it stays open. */
+const openPane = async ($: EngineInterface) => {
+  await $.ui.open({ id: paneId, title: 'Questline' })
+  isPaneOpen = true
+  await syncLoop($)
+}
+
 /**
  * Grades a prompt the player typed with Haiku, from what the grader is asked (`askFor`), and queues the scores. A
  * failed call or a reply that doesn't parse sends nothing.
@@ -412,12 +511,33 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    await resetCelebrations($)
+    await resumeCelebrations($)
     await begin($, e.cwd)
     flushTimer?.cancel()
     flushTimer = $.clock.every(flushEveryMs, () => void flush($))
+    // A pane the last copy of the mod opened stays up across a reload: the engine keeps the record.
+    isPaneOpen = (await $.ui.panes().catch(() => [])).some((pane) => pane.id === paneId)
+    loopTimer?.cancel()
+    loopTimer = null
+    loopRate = 0
+    await syncLoop($)
+    await $.command
+      .register({ name: 'questline', description: 'Open the Questline pane: your inventory and band styles' })
+      .catch(() => undefined)
     return result
   })
+
+  on('command.run', { command: 'questline' }, async ($) => {
+    await openPane($)
+    return { text: 'Questline pane opened.' }
+  })
+
+  on('ui.close', { id: paneId }, async ($, e, next) => {
+    const result = await next(e)
+    isPaneOpen = false
+    await syncLoop($)
+    return result
+  }).catch(($, e, next) => next(e))
 
   // A /clear ends the conversation without a new session.start, and the band's state goes with it: start again.
   on('session.end', async ($, e, next) => {
@@ -519,6 +639,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) {
       isTurnRunning = false
       playSoon($, idleMs)
+      await syncLoop($)
       // A turn the person interrupted, or one an error ended, is no finished piece of work.
       if (e.reason === 'answer') {
         const data = {
@@ -543,18 +664,12 @@ export const register: Register = (on, options) => {
     const status = await read($, link)
     const current = await read($, view)
     const last = await read($, gain)
+    const looks = wornLooks(await read($, wardrobe))
+    // A running turn draws every look still, whatever the clock says.
+    const moving = e.props.isWorking ? null : await read($, loop)
     const { Box, Button, Text } = $.ui.resolve(e)
     // The band's top edge, so it reads apart from the transcript above it.
-    const edge = ruleOf(e.props.bodyColumns)
-    const rule = (
-      <Text color="claude" dimColor>
-        {edge.lead}
-        <Text bold dimColor={false}>
-          {edge.title}
-        </Text>
-        {edge.trail}
-      </Text>
-    )
+    const rule = draw(Text, edgeRow(e.props.bodyColumns, looks.topEdge ?? null, moving), 'edge')
 
     if (status === 'offline') {
       return (
@@ -572,45 +687,25 @@ export const register: Register = (on, options) => {
     if (current === null) return next(e)
 
     // What a celebration draws: its flourish on the XP bar, in the gain's place or in rows the band grows by. A
-    // running turn draws none, whatever the timers say.
-    const shown = e.props.isWorking ? null : await read($, stage)
+    // running turn draws none, whatever the timers say, and nor does a frame another copy of the mod left.
+    const staged = e.props.isWorking ? null : await read($, stage)
+    const shown = staged !== null && staged.load === load && playing !== null ? staged : null
     const columns = Math.max(0, e.props.bodyColumns - 2 * inset)
     const rows = shown === null ? [] : stageRows(shown, columns, Math.max(0, e.props.maxRows - ownRows))
     const slot = shown === null ? null : slotRow(shown, rows.length > 0)
-    const line = (row: Row, key: string) => (
-      <Text key={key} wrap="truncate">
-        {row.map((run, i) => (
-          <Text
-            key={String(i)}
-            {...(run.color === undefined ? {} : { color: run.color })}
-            {...(run.bold === undefined ? {} : { bold: run.bold })}
-            {...(run.dim === undefined ? {} : { dimColor: run.dim })}
-          >
-            {run.text}
-          </Text>
-        ))}
-      </Text>
-    )
     const pet = current.pet
+    const barLook = looks.xpBar ?? null
+    const bar = [...barRow(current, columns, shown, barLook, moving), labelRun(current, barLook)]
     // Under the edge, a row of air, then the XP bar alone and everything else under it, both set in from the sides.
     return (
       <Box flexDirection="column">
         {rule}
         <Text> </Text>
         <Box flexDirection="column" paddingX={inset}>
-          <Text wrap="truncate">
-            {line(barRow(current, columns, shown), 'bar')}
-            {barLabel(current)}
-          </Text>
+          {draw(Text, bar, 'bar')}
           <Box flexWrap="wrap" columnGap={2}>
-            <Text>
-              <Text color="claude" bold>
-                {/* A view kept in the session's state from before glyphs has none until the snapshot comes in. */}
-                {glyphSlot(current.glyph || '⚔')} Lv {current.level}
-              </Text>{' '}
-              {current.title}
-            </Text>
-            <Text color="suggestion">◈ {current.gold}</Text>
+            {draw(Text, levelRow(current, looks.levelDisplay ?? null, moving), 'level')}
+            {draw(Text, goldRow(current, looks.goldDisplay ?? null, moving), 'gold')}
             {pet !== null ? (
               <Text>
                 {sprite(pet)} {pet.name} <Text color="error">{hearts(pet.mood)}</Text>
@@ -621,7 +716,7 @@ export const register: Register = (on, options) => {
               <Text dimColor>🥚 hatches at Lv 1</Text>
             )}
             {slot !== null ? (
-              line(slot, 'slot')
+              draw(Text, slot, 'slot')
             ) : last === null ? null : (
               <Text color={toneColor[last.tone]} dimColor={last.tone === 'quiet'}>
                 {last.text}
@@ -630,11 +725,192 @@ export const register: Register = (on, options) => {
           </Box>
           {rows.length === 0 ? null : (
             <Box key="stage" flexDirection="column">
-              {rows.map((row, i) => line(row, `stage-${i}`))}
+              {rows.map((row, i) => draw(Text, row, `stage-${i}`))}
             </Box>
           )}
         </Box>
       </Box>
     )
   })
+
+  // The pane: a hub of tabs over the game, the inventory first. Each band style is listed with a live preview, drawn
+  // by the band's own code, and a button that puts it on.
+  on('ui.render', { component: 'Pane', requestId: paneId }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const status = await read($, link)
+    const current = await read($, view)
+    const owned = await read($, wardrobe)
+    const moving = await read($, loop)
+    const shownTab = tabOf(await read($, tab))
+    const width = Math.max(20, e.props.bodyColumns - 2)
+    const preview = Math.max(20, Math.min(width - 4, 56))
+
+    const tabBar = (
+      <Box key="tabs" flexWrap="wrap" columnGap={3}>
+        {tabs.map((one) =>
+          one.id === shownTab ? (
+            <Text key={one.id} bold color="claude">
+              ◆ {one.label}
+            </Text>
+          ) : one.isReady ? (
+            <Button key={`tab:${one.id}`} plain label={`◇ ${one.label}`} onPress={() => void showTab($, one.id)} />
+          ) : (
+            <Text key={one.id} dimColor>
+              ◇ {one.label} <Text italic>soon</Text>
+            </Text>
+          ),
+        )}
+      </Box>
+    )
+    const header = (
+      <Box flexDirection="column">
+        <Text>
+          <Text bold color="claude">
+            ✦ QUESTLINE ✦
+          </Text>
+          {current === null ? null : (
+            <Text dimColor>
+              {'  '}
+              {current.name} · Lv {current.level} {current.title} · ◈ {current.gold}
+            </Text>
+          )}
+        </Text>
+        <Text> </Text>
+        {tabBar}
+        <Text dimColor>{'─'.repeat(width)}</Text>
+      </Box>
+    )
+    if (current === null || owned === null) {
+      const why =
+        status === 'offline'
+          ? 'The Questline server is not answering. Start it: pnpm --filter @questline/server start'
+          : 'Connecting to the Questline server…'
+      return (
+        <Box flexDirection="column" paddingX={1}>
+          {header}
+          <Text dimColor>{why}</Text>
+        </Box>
+      )
+    }
+
+    const sections = lookSections(owned)
+    const styles = sections.reduce((count, section) => count + section.choices.length - 1, 0)
+    const others = otherItems(owned)
+    const previewOf = (slot: BandSlot, choice: Choice): Row => {
+      const motion = choice.isLooping ? moving : null
+      switch (slot) {
+        case 'xpBar':
+          return [...barRow(current, preview, null, choice.look, motion), labelRun(current, choice.look)]
+        case 'levelDisplay':
+          return levelRow(current, choice.look, motion)
+        case 'topEdge':
+          return edgeRow(preview, choice.look, motion)
+        case 'goldDisplay':
+          return goldRow(current, choice.look, motion)
+      }
+    }
+    const choiceRow = (slot: BandSlot, choice: Choice) => {
+      const color = choice.rarity === null ? undefined : rarityColors[choice.rarity]
+      const notes = [
+        ...(choice.note !== null ? [choice.note] : choice.rarity === null ? [] : [choice.rarity]),
+        ...(choice.isLooping ? ['loops'] : []),
+        ...(choice.count > 1 ? [`×${choice.count}`] : []),
+      ].join(' · ')
+      return (
+        <Box key={`${slot}:${choice.key}`} flexDirection="column" marginLeft={2} marginBottom={1}>
+          <Box flexWrap="wrap" columnGap={2}>
+            <Text>
+              <Text color={choice.isWorn ? 'success' : 'inactive'}>{choice.isWorn ? '●' : '○'}</Text>{' '}
+              <Text bold {...(color === undefined ? {} : { color })}>
+                {choice.name}
+              </Text>
+              <Text dimColor> {notes}</Text>
+            </Text>
+            {choice.isWorn ? (
+              <Text color="success">equipped</Text>
+            ) : (
+              <Button
+                key={`equip:${slot}:${choice.key}`}
+                label="Equip"
+                onPress={() => void wear($, slot, choice.entryId)}
+              />
+            )}
+            {choice.isWorn && choice.entryId !== null ? (
+              <Button key={`unequip:${slot}`} label="Unequip" dimColor onPress={() => void wear($, slot, null)} />
+            ) : null}
+          </Box>
+          <Box marginLeft={2} flexDirection="column">
+            {draw(Text, previewOf(slot, choice), `preview:${slot}:${choice.key}`)}
+            {choice.lore === null ? null : (
+              <Text dimColor italic>
+                {choice.lore}
+              </Text>
+            )}
+          </Box>
+        </Box>
+      )
+    }
+
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        {header}
+        <Text>
+          <Text bold>Band styles</Text>
+          <Text dimColor>
+            {'  '}
+            {styles === 0 ? 'none yet: they drop like any loot' : `${styles} owned`} · what your band wears
+          </Text>
+        </Text>
+        <Text> </Text>
+        {sections.map((section) => (
+          <Box key={`section:${section.slot}`} flexDirection="column">
+            <Text>
+              <Text bold color="claude">
+                {section.title}
+              </Text>
+              <Text dimColor> {'─'.repeat(Math.max(0, width - section.title.length - 1))}</Text>
+            </Text>
+            {section.choices.map((choice) => choiceRow(section.slot, choice))}
+          </Box>
+        ))}
+        <Text bold>Other items</Text>
+        {others.length === 0 ? (
+          <Text dimColor>  Nothing yet: loot drops from finished turns, graded prompts and level-ups.</Text>
+        ) : (
+          others.map((item) => (
+            <Text key={`item:${item.itemId}`}>
+              {'  '}
+              <Text color={rarityColors[item.rarity]}>{item.name}</Text>
+              <Text dimColor>
+                {' '}
+                {item.rarity} · {item.kind}
+                {item.count > 1 ? ` · ×${item.count}` : ''}
+              </Text>
+            </Text>
+          ))
+        )}
+      </Box>
+    )
+  })
 }
+
+/** Shows a tab of the pane. */
+const showTab = async ($: EngineInterface, next: PaneTab) => {
+  await update($, tab, () => next)
+}
+
+/** One row of styled runs as one Text, cut at the band's edge rather than wrapped. */
+const draw = (Text: ElementConstructor<TextProps>, row: Row, key: string) => (
+  <Text key={key} wrap="truncate">
+    {row.map((run, i) => (
+      <Text
+        key={String(i)}
+        {...(run.color === undefined ? {} : { color: run.color })}
+        {...(run.bold === undefined ? {} : { bold: run.bold })}
+        {...(run.dim === undefined ? {} : { dimColor: run.dim })}
+      >
+        {run.text}
+      </Text>
+    ))}
+  </Text>
+)

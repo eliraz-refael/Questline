@@ -1,9 +1,22 @@
 import { it } from "@effect/vitest"
 import { clientEventTypes } from "@questline/schema"
 import { Effect, Fiber } from "effect"
+import { SqlClient } from "effect/sql"
 import { TestClock } from "effect/testing"
 import { describe, expect } from "vitest"
-import { client, commandUsed, commit, contextMeasured, hatch, merged, prompt, session, withServer } from "./fixtures.ts"
+import {
+  client,
+  commandUsed,
+  commit,
+  contextMeasured,
+  hatch,
+  merged,
+  nextId,
+  prompt,
+  session,
+  start,
+  withServer,
+} from "./fixtures.ts"
 
 describe("POST /v1/sessions", () => {
   it.effect("opens on the snapshot, the rules and the event types this server takes", () =>
@@ -15,7 +28,7 @@ describe("POST /v1/sessions", () => {
         expect(opened.snapshot.character).toMatchObject({ name: "Player", level: 0, gold: 0 })
         expect(opened.snapshot.pet).toBeNull()
         expect(opened.snapshot.serverId).toBe(`local-${opened.snapshot.player.id}`)
-        expect(opened.rules.version).toBe(3)
+        expect(opened.rules.version).toBe(4)
         expect(opened.acceptedEventTypes).toEqual(clientEventTypes)
       }),
     ),
@@ -87,6 +100,34 @@ describe("POST /v1/commands", () => {
         expect(hatched.status === "ok" && hatched.events.map((event) => event.type)).toEqual(["pet.hatched"])
         const opened = yield* api.openSession({ payload: { sessionId: session } })
         expect(opened.snapshot.pet).toMatchObject({ species: "fox", name: "Pixel", form: 0 })
+      }),
+    ),
+  )
+})
+
+describe("POST /v1/commands: band styles", () => {
+  it.effect("equips an owned band style, keeps it across sessions, refuses the wrong slot, and unequips it", () =>
+    withServer(
+      Effect.gen(function* () {
+        const api = yield* client
+        const sql = yield* SqlClient.SqlClient
+        const entryId = "01K6ZQ8W3J0000000000009001"
+        const entry = { id: entryId, itemId: "starlit-edge", acquiredAt: start, source: { kind: "drop", ref: "0" }, dye: null }
+        yield* sql`UPDATE player_state SET state = jsonb_set(state, '{holdings,inventory}', ${JSON.stringify([entry])}::jsonb)`
+        const wrong = yield* api.runCommand({ payload: { id: nextId(), type: "item.equip", data: { entryId, slot: "xpBar" } } })
+        expect(wrong).toMatchObject({ status: "refused", code: "invalid" })
+        const equipped = yield* api.runCommand({ payload: { id: nextId(), type: "item.equip", data: { entryId, slot: "topEdge" } } })
+        expect(equipped.status === "ok" && equipped.events.map((event) => [event.type, event.data])).toEqual([
+          ["item.equipped", { slot: "topEdge", entryId }],
+        ])
+        const opened = yield* api.openSession({ payload: { sessionId: session } })
+        expect(opened.snapshot.character.equipped).toEqual({ topEdge: entryId })
+        expect(opened.snapshot.items.map((item) => [item.id, item.look?.fps])).toEqual([["starlit-edge", 5]])
+        const stream = yield* api.stream({ query: { after: 0 } })
+        expect(stream.events.map((event) => event.type)).toEqual(["item.equipped"])
+        const unequipped = yield* api.runCommand({ payload: { id: nextId(), type: "item.unequip", data: { slot: "topEdge" } } })
+        expect(unequipped.status).toBe("ok")
+        expect((yield* api.openSession({ payload: { sessionId: session } })).snapshot.character.equipped).toEqual({})
       }),
     ),
   )

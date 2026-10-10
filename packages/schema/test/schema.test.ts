@@ -5,6 +5,7 @@ import {
   clientEventTypes,
   CommandResponse,
   GitHubRepo,
+  ItemDef,
   LevelCurve,
   PromptRules,
   ServerEvent,
@@ -211,6 +212,14 @@ describe("ServerEvent", () => {
     expect(Schema.decodeUnknownExit(ServerEvent)({ ...event, data: { ...event.data, glyph: "🗡️" } })._tag).toBe("Success")
   })
 
+  it("names the slot and the entry on item.equipped, and the slot alone on item.unequipped", () => {
+    const equipped = { seq: 10, at, type: "item.equipped", cause: ulid, data: { slot: "xpBar", entryId: ulid } }
+    expect(Schema.decodeUnknownSync(ServerEvent)(equipped)).toEqual(equipped)
+    const unequipped = { ...equipped, type: "item.unequipped", data: { slot: "topEdge" } }
+    expect(Schema.decodeUnknownSync(ServerEvent)(unequipped)).toEqual(unequipped)
+    expect(Schema.decodeUnknownExit(ServerEvent)({ ...unequipped, data: { slot: "cape" } })._tag).toBe("Failure")
+  })
+
   it("carries only the stats that changed on stats.changed", () => {
     const changed = (stats: object) => ({ seq: 9, at, type: "stats.changed", cause: ulid, data: { stats } })
     const one = changed({ clears: 3 })
@@ -218,6 +227,40 @@ describe("ServerEvent", () => {
     expect(Schema.decodeUnknownExit(ServerEvent)(changed({ contextPeak: { lastSession: 140, average: 50 } }))._tag).toBe(
       "Failure",
     )
+  })
+})
+
+describe("ItemDef: band styles", () => {
+  const base = { sprite: null, lore: null, effect: null }
+  const look = { glyphs: { full: "█", empty: "░" }, colors: { full: "#87d787" }, frames: null, fps: null }
+  const style = { ...base, id: "solid-bar", name: "Solid Bar", rarity: "common", category: "bandStyle", slot: "xpBar", look }
+  const decode = Schema.decodeUnknownExit(ItemDef)
+  const loop = (frames: ReadonlyArray<object>, fps: number | null = 5) => ({ ...style, look: { ...look, frames, fps } })
+  const marks = (count: number) => Array.from({ length: count }, (_, i) => ({ at: i / 20, color: "#ffffff" }))
+
+  it("carries a look for its band slot, and no other item carries one", () => {
+    expect(Schema.decodeUnknownSync(ItemDef)(style)).toEqual(style)
+    const hat = { ...base, id: "hat", name: "Hat", rarity: "rare", category: "wearable", slot: "head", look: null }
+    expect(decode(hat)._tag).toBe("Success")
+    expect(decode({ ...hat, look })._tag).toBe("Failure")
+    expect(decode({ ...style, look: null })._tag).toBe("Failure")
+    expect(decode({ ...style, slot: "head" })._tag).toBe("Failure")
+  })
+
+  it("refuses a part the slot doesn't draw, and a color that isn't #rrggbb", () => {
+    expect(decode({ ...style, look: { ...look, glyphs: { icon: "◈" } } })._tag).toBe("Failure")
+    expect(decode({ ...style, look: { ...look, colors: { full: "green" } } })._tag).toBe("Failure")
+  })
+
+  it("loops only within the budget: accents and marks, at most 12 cells a frame, at most 6 frames a second", () => {
+    const head = { glyphs: { head: "✦" } }
+    expect(decode(loop([{ ...head, marks: marks(11) }, head]))._tag).toBe("Success")
+    expect(decode(loop([{ ...head, marks: marks(12) }, head]))._tag).toBe("Failure")
+    expect(decode(loop([{ colors: { full: "#ffffff" } }, head]))._tag).toBe("Failure")
+    expect(decode(loop([head, head], 8))._tag).toBe("Failure")
+    expect(decode(loop([head, head], null))._tag).toBe("Failure")
+    const gold = { ...style, slot: "goldDisplay", look: { glyphs: {}, colors: {}, frames: [{ marks: marks(1) }, {}], fps: 4 } }
+    expect(decode(gold)._tag).toBe("Failure")
   })
 })
 
@@ -248,6 +291,7 @@ describe("Snapshot", () => {
     },
     pet: null,
     inventory: [],
+    items: [],
     quests: [],
     claims: [],
     shop: [],
