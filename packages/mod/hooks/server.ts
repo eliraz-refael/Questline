@@ -39,6 +39,9 @@ export const answerOf = <A>(path: string, response: HttpResponse, is: (value: un
   return parsed
 }
 
-/** The socket's path under the Questline home, given the two variables that decide it. */
-export const socketPathOf = (questlineHome: string | undefined, home: string | undefined): string =>
-  `${questlineHome || `${home ?? ''}/.questline`}/server.sock`
+/**
+ * The socket's path under the Questline home: `QUESTLINE_HOME` when set, else `~/.questline`, or `~/.questline-dev`
+ * for the dev server, as the server picks its own.
+ */
+export const socketPathOf = (questlineHome: string | undefined, home: string | undefined, isDev = false): string =>
+  `${questlineHome || `${home ?? ''}/${isDev ? '.questline-dev' : '.questline'}`}/server.sock`

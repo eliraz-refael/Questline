@@ -19,6 +19,19 @@
       "description": "How loot drops and level-ups play in the band: full animations (the band grows for the big ones, epic and legendary chime), reduced (one still frame in the band's own rows, no sound), or off.",
       "options": ["full", "reduced", "off"],
       "default": "full"
+    },
+    "toasts": {
+      "type": "boolean",
+      "title": "Reward toasts",
+      "description": "One toast for everything a prompt, a commit or a level-up earned: its XP, level-ups, drops and gold. Off, the band still celebrates and names the latest gain.",
+      "default": true
+    },
+    "server": {
+      "type": "string",
+      "title": "Server",
+      "description": "Which local server the mod plays on: your own save (default), or the dev sandbox in ~/.questline-dev for trying out band styles, XP and celebrations (start it with QUESTLINE_DEV=1 pnpm --filter @questline/server start). QUESTLINE_HOME, when set, picks the home for either.",
+      "options": ["default", "dev"],
+      "default": "default"
     }
   }
 }

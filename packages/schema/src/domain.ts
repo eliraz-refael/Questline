@@ -220,8 +220,9 @@ export const ItemDef = Schema.Struct({
 )
 export interface ItemDef extends Schema.Schema.Type<typeof ItemDef> {}
 
+/** Where an entry came from; `dev` marks what dev mode made, so an import to a public server can drop it. */
 export const ItemSource = Schema.Struct({
-  kind: Schema.Literals(["drop", "quest", "shop", "craft", "achievement"]),
+  kind: Schema.Literals(["drop", "quest", "shop", "craft", "achievement", "dev"]),
   ref: Schema.String,
 })
 export interface ItemSource extends Schema.Schema.Type<typeof ItemSource> {}
@@ -295,7 +296,8 @@ export const PlayerStats = Schema.Struct({
   contextPeak: Schema.Struct({ lastSession: Percent, average: Percent }),
   /**
    * `averageScore` is the weighted quality grade, 0-10, over every graded prompt. `regretted` counts the prompts that
-   * walked back or corrected the player's own previous ask (a regret score above 0); it earns no XP.
+   * walked back or corrected the player's own previous ask (a regret score of at least the rules' `prompt.regretAt`);
+   * it earns no XP.
    */
   prompts: Schema.Struct({
     graded: Count,
@@ -327,5 +329,7 @@ export const Snapshot = Schema.Struct({
   stats: PlayerStats,
   /** Last server-event seq included, read from the same row as the state. */
   cursor: Count,
+  /** Present only on a local server in dev mode, which takes the dev commands: the mod shows its dev controls. */
+  dev: Schema.optionalKey(Schema.Literal(true)),
 })
 export interface Snapshot extends Schema.Schema.Type<typeof Snapshot> {}

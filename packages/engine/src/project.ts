@@ -28,6 +28,8 @@ export interface SnapshotMeta {
   readonly serverId: string
   readonly streamEpoch: number
   readonly cursor: number
+  /** A local server in dev mode, which takes the dev commands. */
+  readonly dev?: boolean
 }
 
 /** The Snapshot the mod draws: the state with everything derived worked out under the rules in force. */
@@ -106,5 +108,6 @@ export const project = (
     achievements: holdings.achievements,
     stats: statsOf(state, now),
     cursor: meta.cursor,
+    ...(meta.dev === true ? { dev: true } : {}),
   }
 }

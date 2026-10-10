@@ -191,7 +191,7 @@ const fillAndFlash = (cells: Array<Cell>, tick: number, full: string): void => {
 
 // The in-band frame: beside the band's other pieces, where the latest gain shows, without any rows of its own.
 
-const capitalised = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
+export const capitalised = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1)
 
 const articleOf = (word: string): string => (/^[aeiou]/i.test(word) ? 'an' : 'a')
 

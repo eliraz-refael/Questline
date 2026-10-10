@@ -283,13 +283,24 @@ describe("step: graded prompts", () => {
   })
 
   it("counts graded prompts, today's, the average grade and the regrets, and says so on the stream", () => {
-    const { state, events } = play([graded({ ...flat(10), regret: 0 }), graded({ ...flat(5), regret: 3 }, 1)])
+    const { state, events } = play([graded({ ...flat(10), regret: 0 }), graded({ ...flat(5), regret: 6 }, 1)])
     expect(statsOf(state, start).prompts).toEqual({ graded: 2, gradedToday: 2, averageScore: 7.5, regretted: 1 })
     expect(statsOf(state, minutesLater(24 * 60)).prompts.gradedToday).toBe(0)
     expect(events.filter((e) => e.type === "stats.changed").at(-1)).toEqual({
       type: "stats.changed",
       data: { stats: { prompts: { graded: 2, gradedToday: 2, averageScore: 7.5, regretted: 1 } } },
     })
+  })
+
+  it("counts a prompt as regretted only from the rules' regretAt on, as the grader gives small regrets as noise", () => {
+    const regrets = (regretAt: number, ...scores: Array<number>) => {
+      const rules = { ...starterRules, prompt: { ...starterRules.prompt, regretAt } }
+      const inputs = scores.map((regret, i) => graded({ ...flat(5), regret }, i))
+      return statsOf(play(inputs, rules).state, start).prompts.regretted
+    }
+    expect(starterRules.prompt.regretAt).toBe(5)
+    expect(regrets(5, 0, 1, 4, 5, 10)).toBe(2)
+    expect(regrets(1, 0, 1, 4, 5, 10)).toBe(4)
   })
 })
 
@@ -614,6 +625,98 @@ describe("step: equipping", () => {
     expect(play([equip(entryId, "xpBar")], starterRules, owned).steps[0]?.refusal?.code).toBe("invalid")
     const replayed = step(owned, equip(entryId, "xpBar"), context(1, start, starterRules, { kind: "replay", recorded: { rolls: [], refusal: null } }))
     expect(replayed.state.holdings.equipped).toEqual({ xpBar: entryId })
+  })
+})
+
+describe("step: dev commands", () => {
+  const dev = (data: Command): Input => ({ kind: "command", command: data })
+  const grantXp = (amount: number) => dev({ id: nextId(), type: "dev.grantXp", data: { amount } })
+  const grantItem = (itemId: string) => dev({ id: nextId(), type: "dev.grantItem", data: { itemId } })
+  const grantStyles = () => dev({ id: nextId(), type: "dev.grantStyles", data: {} })
+  const setGold = (gold: number) => dev({ id: nextId(), type: "dev.setGold", data: { gold } })
+  /** Runs inputs as a local server in dev mode would, or with `mode` a replay. */
+  const inDev = (inputs: ReadonlyArray<Input>, state = fresh(), mode?: Context["mode"]) => {
+    const steps: Array<Step> = []
+    for (const [i, input] of inputs.entries()) {
+      const result = step(state, input, { ...context(i + 1, start, starterRules, mode), dev: true })
+      steps.push(result)
+      state = result.state
+    }
+    return { state, steps, events: steps.flatMap((s) => s.events) }
+  }
+  const all = [grantXp(500), grantItem("wizard-hat"), grantStyles(), setGold(999)]
+
+  it("refuses every one off dev mode, live or in a replay, and changes nothing", () => {
+    const off = play(all)
+    expect(off.steps.map((s) => s.refusal?.code)).toEqual(["not_allowed", "not_allowed", "not_allowed", "not_allowed"])
+    expect(off.state).toEqual(fresh())
+    const replayed = step(fresh(), grantXp(500), context(1, start, starterRules, { kind: "replay", recorded: { rolls: [], refusal: null } }))
+    expect(replayed.refusal?.code).toBe("not_allowed")
+    expect(replayed.state).toEqual(fresh())
+  })
+
+  it("grants XP that levels up as play would, marked dev, with no fact counted and no streak", () => {
+    const { state, events } = inDev([grantXp(500)])
+    expect(events[0]).toEqual({ type: "xp.granted", data: { amount: 500, tier: "reported", reason: "dev", totalAfter: 500 } })
+    expect(events.find((e) => e.type === "level.up")).toMatchObject({ data: { from: 0, to: levelOf(state, starterRules).level } })
+    // The level-up's drop is the dev command's too.
+    expect(state.holdings.inventory.map((entry) => entry.source.kind)).toEqual(["dev"])
+    expect(events.filter((e) => e.type === "gold.changed").every((e) => e.type === "gold.changed" && e.data.reason === "dev")).toBe(true)
+    expect(state.progress.totals).toEqual({})
+    expect(state.progress.activeDays).toEqual([])
+    for (const one of inDev(all).steps) expect(Schema.is(StepSchema)(one)).toBe(true)
+  })
+
+  it("grants an item by id, marked dev, and refuses an id the catalogue lacks", () => {
+    const { state, events, steps } = inDev([grantItem("wizard-hat"), grantItem("no-such-thing")])
+    expect(state.holdings.inventory).toMatchObject([{ itemId: "wizard-hat", source: { kind: "dev", ref: "dev.grantItem" } }])
+    expect(events).toMatchObject([{ type: "loot.dropped", data: { item: { id: "wizard-hat" }, gold: 0, tier: "rare" } }])
+    expect(steps[1]?.refusal?.code).toBe("invalid")
+  })
+
+  it("grants every band style not owned yet, once", () => {
+    const styles = starterCatalog.filter((item) => item.category === "bandStyle").map((item) => item.id)
+    const { state, steps } = inDev([grantItem("solid-bar"), grantStyles(), grantStyles()])
+    expect(state.holdings.inventory.map((entry) => entry.itemId).sort()).toEqual([...styles].sort())
+    expect(state.holdings.inventory.every((entry) => entry.source.kind === "dev")).toBe(true)
+    expect(steps[2]?.events).toEqual([])
+  })
+
+  it("sets the gold, marked dev", () => {
+    const { state, events } = inDev([setGold(999), setGold(999), setGold(5)])
+    expect(state.holdings.gold).toBe(5)
+    expect(events).toEqual([
+      { type: "gold.changed", data: { delta: 999, totalAfter: 999, reason: "dev" } },
+      { type: "gold.changed", data: { delta: -994, totalAfter: 5, reason: "dev" } },
+    ])
+  })
+
+  it("replays on a dev server as the live run applied it", () => {
+    const live = inDev([grantXp(500)])
+    const recorded = { rolls: live.steps[0]?.rolls ?? [], refusal: null }
+    expect(inDev([grantXp(500)], fresh(), { kind: "replay", recorded }).state).toEqual(live.state)
+  })
+
+  it("says so on the snapshot only in dev mode", () => {
+    const player = { id: session, githubUserId: null, githubLogin: null, displayName: "Player", createdAt: start }
+    const meta = { player, serverId: "local", streamEpoch: 1, cursor: 0 }
+    const of = (dev?: boolean) =>
+      project(fresh(), { rules: starterRules, catalog: starterCatalog, questPacks: [], now: start }, { ...meta, ...(dev === undefined ? {} : { dev }) })
+    expect(of(true).dev).toBe(true)
+    expect("dev" in of()).toBe(false)
+    expect("dev" in of(false)).toBe(false)
+  })
+})
+
+describe("step: the grade on a prompt's grant", () => {
+  it("names the weighted grade that priced it, and no other grant names one", () => {
+    const { events } = play([client("commit.made"), graded({ ...flat(9), clarity: 2 }, 1)])
+    const grants = events.flatMap((e) => (e.type === "xp.granted" ? [e.data] : []))
+    expect(grants.map((data) => [data.reason, data.grade])).toEqual([
+      ["streak.day", undefined],
+      ["commit.made", undefined],
+      ["prompt.graded", 8],
+    ])
   })
 })
 

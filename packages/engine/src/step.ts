@@ -4,9 +4,11 @@ import type {
   Command,
   CommandRefusal,
   Context,
+  DevCommand,
   GradeDimension,
   Input,
   InventoryEntry,
+  ItemDef,
   PlayerState,
   PlayerStats,
   Progress,
@@ -40,6 +42,8 @@ interface Run {
   readonly events: Array<ServerEventDraft>
   readonly rolls: Array<RollRecord>
   readonly newId: () => string
+  /** A dev command's run: what it makes is marked `dev`. */
+  readonly isDev: boolean
 }
 
 export const step = (state: PlayerState, input: Input, context: Context): Step => {
@@ -53,12 +57,13 @@ export const step = (state: PlayerState, input: Input, context: Context): Step =
   }
 }
 
-const begin = (state: PlayerState, context: Context): Run => ({
+const begin = (state: PlayerState, context: Context, isDev = false): Run => ({
   state,
   context,
   events: [],
   rolls: [],
   newId: ulids(context.rollSeed, context.logSeq, context.now),
+  isDev,
 })
 
 const finish = (run: Run): Step => ({ state: run.state, rolls: run.rolls, refusal: null, events: run.events, claims: [] })
@@ -176,13 +181,13 @@ const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>,
   const nth = (run.state.progress.tallies.find((t) => t.day === day)?.counts["prompt.graded"] ?? 0) + 1
   // maxXp * grade / 10 * pct / 100, to the thousandth so float error in the weights never costs a point.
   const xp = Math.round(rules.prompt.maxXp * grade * bandPct(rules.prompt, nth)) / 1000
-  grant(run, "prompt.graded", day, xp)
+  grant(run, "prompt.graded", day, xp, grade)
   const prompts = run.state.progress.stats.prompts
   setStats(run, {
     prompts: {
       graded: prompts.graded + 1,
       scoreSum: prompts.scoreSum + grade,
-      regretted: prompts.regretted + (scores.regret > 0 ? 1 : 0),
+      regretted: prompts.regretted + (scores.regret >= rules.prompt.regretAt ? 1 : 0),
     },
   })
   const { loot } = rules
@@ -202,6 +207,13 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
       return equip(state, command.data, context)
     case "item.unequip":
       return unequip(state, command.data.slot, context)
+    case "dev.grantItem":
+    case "dev.grantStyles":
+    case "dev.grantXp":
+    case "dev.setGold":
+      return context.dev === true
+        ? runDev(state, command, context)
+        : refuse(state, { code: "not_allowed", message: "Dev commands run only on a local server in dev mode" })
     default:
       return refuse(state, { code: "not_allowed", message: "Not available in this version yet" })
   }
@@ -226,8 +238,11 @@ const bonusPct = (run: Run): number => {
 /** A graded prompt's rule: the `prompt` section sets its XP, and the day's bands, not a cap, taper it. */
 const promptRule: XpRule = { xp: 0, tier: "reported", dailyCap: null }
 
-/** Counts one scoring fact and grants its XP, unless the day's cap is reached. `xp` overrides the rule's amount. */
-const grant = (run: Run, fact: ScoringFact, day: string, xp?: number): void => {
+/**
+ * Counts one scoring fact and grants its XP, unless the day's cap is reached. `xp` overrides the rule's amount; a
+ * graded prompt's `grade` rides on the grant, so the mod can say what earned it.
+ */
+const grant = (run: Run, fact: ScoringFact, day: string, xp?: number, grade?: number): void => {
   const { rules } = run.context
   const rule = fact === "prompt.graded" ? promptRule : rules.xp[fact]
   // Verified-tier facts are granted when the verifier confirms them; a hint alone earns nothing.
@@ -251,7 +266,13 @@ const grant = (run: Run, fact: ScoringFact, day: string, xp?: number): void => {
   if (amount === 0) return
   run.events.push({
     type: "xp.granted",
-    data: { amount, tier: "reported", reason: fact, totalAfter: totalXp(run.state) },
+    data: {
+      amount,
+      tier: "reported",
+      reason: fact,
+      totalAfter: totalXp(run.state),
+      ...(grade === undefined ? {} : { grade }),
+    },
   })
   levelUp(run, before)
 }
@@ -359,7 +380,7 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, weights?
     id: drop.entryId,
     itemId: drop.itemId,
     acquiredAt: context.now,
-    source: { kind: "drop", ref: String(record.number) },
+    source: { kind: run.isDev ? "dev" : "drop", ref: String(record.number) },
     dye: null,
   }
   const gold = run.state.holdings.gold + drop.gold
@@ -369,7 +390,10 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, weights?
   if (item !== undefined) {
     run.events.push({ type: "loot.dropped", data: { entry, item, gold: drop.gold, pity, tier: drop.rarity } })
   }
-  if (drop.gold > 0) run.events.push({ type: "gold.changed", data: { delta: drop.gold, totalAfter: gold, reason: "drop" } })
+  if (drop.gold > 0) {
+    const reason = run.isDev ? "dev" : "drop"
+    run.events.push({ type: "gold.changed", data: { delta: drop.gold, totalAfter: gold, reason } })
+  }
 }
 
 /** Keeps the tallies to the last 7 days and the active days to the current streak (never fewer than 7 days). */
@@ -434,5 +458,59 @@ const unequip = (state: PlayerState, slot: Slot, context: Context): Step => {
   const equipped = Object.fromEntries(Object.entries(holdings.equipped).filter(([key]) => key !== slot))
   const run = begin({ ...state, holdings: { ...holdings, equipped } }, context)
   run.events.push({ type: "item.unequipped", data: { slot } })
+  return finish(run)
+}
+
+/**
+ * A dev command, which the caller has let through: an item or every band style not owned yet, XP that levels up as
+ * play would (its drops marked `dev` too), or the gold set. It counts no scoring fact and moves no streak.
+ */
+const runDev = (state: PlayerState, command: DevCommand, context: Context): Step => {
+  const run = begin(state, context, true)
+  const { holdings } = state
+  const give = (item: ItemDef): void => {
+    const entry: InventoryEntry = {
+      id: run.newId(),
+      itemId: item.id,
+      acquiredAt: context.now,
+      source: { kind: "dev", ref: command.type },
+      dye: null,
+    }
+    setHoldings(run, { inventory: [...run.state.holdings.inventory, entry] })
+    const pity = run.state.holdings.loot.pity
+    run.events.push({ type: "loot.dropped", data: { entry, item, gold: 0, pity, tier: item.rarity } })
+  }
+  switch (command.type) {
+    case "dev.grantItem": {
+      const item = context.catalog.find((def) => def.id === command.data.itemId)
+      if (item === undefined) return refuse(state, { code: "invalid", message: "No item in the catalogue has that id" })
+      give(item)
+      break
+    }
+    case "dev.grantStyles": {
+      const owned = new Set(holdings.inventory.map((entry) => entry.itemId))
+      for (const item of context.catalog) if (item.category === "bandStyle" && !owned.has(item.id)) give(item)
+      break
+    }
+    case "dev.grantXp": {
+      const before = levelOf(state, context.rules).level
+      const xp = state.progress.xp
+      setProgress(run, { xp: { ...xp, reported: xp.reported + command.data.amount } })
+      run.events.push({
+        type: "xp.granted",
+        data: { amount: command.data.amount, tier: "reported", reason: "dev", totalAfter: totalXp(run.state) },
+      })
+      levelUp(run, before)
+      break
+    }
+    case "dev.setGold": {
+      const delta = command.data.gold - holdings.gold
+      setHoldings(run, { gold: command.data.gold })
+      if (delta !== 0) {
+        run.events.push({ type: "gold.changed", data: { delta, totalAfter: command.data.gold, reason: "dev" } })
+      }
+      break
+    }
+  }
   return finish(run)
 }
