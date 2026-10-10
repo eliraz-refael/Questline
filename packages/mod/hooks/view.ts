@@ -1,6 +1,6 @@
-import type { ScoringFact, ServerEvent, Snapshot } from '@questline/schema'
+import type { PlayerStats, ScoringFact, ServerEvent, Snapshot } from '@questline/schema'
 import type { PluginOptions } from 'claude-code'
-import type { BandView, GainLine, OwnedItem, Wardrobe } from '../types'
+import type { BandView, GainLine, OwnedItem, StatsView, Wardrobe } from '../types'
 import { tierOf } from './celebrate'
 
 // What the band draws, worked out from the server's snapshot and stream; no game rule is computed here.
@@ -42,6 +42,59 @@ export const wardrobeOf = (snapshot: Snapshot): Wardrobe => {
   for (const [slot, entryId] of worn)
     if (typeof entryId === 'string') equipped[slot] = entryId
   return { items, equipped }
+}
+
+/** A count or a share as the snapshot has it; `fallback` for one an older server doesn't send. */
+const numberOr = <A,>(value: unknown, fallback: A): number | A =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback
+
+/**
+ * The Stats tab's numbers. An older server counts fewer stats, or sends none: what it lacks reads as nothing yet,
+ * and the best grade, the best streak and the profile, which the tab says it can't show, as null.
+ */
+export const statsViewOf = (snapshot: Snapshot): StatsView => {
+  const stats: Partial<PlayerStats> = snapshot.stats ?? {}
+  const prompts: Partial<PlayerStats['prompts']> = stats.prompts ?? {}
+  const peak: Partial<PlayerStats['contextPeak']> = stats.contextPeak ?? {}
+  const crossed: Partial<PlayerStats['contextCrossed']> = stats.contextCrossed ?? {}
+  const compactions: Partial<PlayerStats['compactions']> = stats.compactions ?? {}
+  const dimensions: Readonly<Record<string, unknown>> | null = stats.grades?.dimensions ?? null
+  const streak: Partial<Snapshot['character']['streak']> = snapshot.character.streak ?? {}
+  const xp: Partial<Snapshot['character']['xp']> = snapshot.character.xp ?? {}
+  const commands = Object.entries(stats.commands ?? {})
+    .map(([name, uses]) => ({ name, uses: numberOr(uses, 0) }))
+    .filter((command) => command.uses > 0)
+    .sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name))
+  return {
+    streak: {
+      days: numberOr(streak.days, 0),
+      best: numberOr(streak.best, null),
+      restDaysLeftThisWeek: numberOr(streak.restDaysLeftThisWeek, 0),
+    },
+    prompts: {
+      graded: numberOr(prompts.graded, 0),
+      today: numberOr(prompts.gradedToday, 0),
+      average: numberOr(prompts.averageScore, 0),
+      best: numberOr(stats.grades?.best, null),
+      regretted: numberOr(prompts.regretted, 0),
+    },
+    profile:
+      dimensions === null
+        ? null
+        : Object.entries(dimensions).map(([dimension, average]) => ({ dimension, average: numberOr(average, 0) })),
+    context: {
+      lastSession: numberOr(peak.lastSession, 0),
+      average: numberOr(peak.average, 0),
+      pct50: numberOr(crossed.pct50, 0),
+      pct75: numberOr(crossed.pct75, 0),
+      pct100: numberOr(crossed.pct100, 0),
+    },
+    clears: numberOr(stats.clears, 0),
+    compactions: { manual: numberOr(compactions.manual, 0), auto: numberOr(compactions.auto, 0) },
+    commands,
+    xp: { verified: numberOr(xp.verified, 0), reported: numberOr(xp.reported, 0) },
+    items: Array.isArray(snapshot.inventory) ? snapshot.inventory.length : 0,
+  }
 }
 
 /** The egg hatches once the character reaches level 1. */

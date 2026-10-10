@@ -36,7 +36,20 @@ import { answerOf, initOf, isCommand, isEvents, isSession, isStream, ServerDown,
 import { ownedLooks, ratesOf, wornLooks } from './looks'
 import type { Choice } from './pane'
 import { brand, headerGap, headerOf, lookSections, otherItems, paneId, tabBarOf, tabOf } from './pane'
-import { batchesOf, batchGainOf, canHatch, fadeMs, hearts, sprite, toastOf, toastsOf, viewOf, wardrobeOf } from './view'
+import { statsLayout, titleRow } from './stats'
+import {
+  batchesOf,
+  batchGainOf,
+  canHatch,
+  fadeMs,
+  hearts,
+  sprite,
+  statsViewOf,
+  toastOf,
+  toastsOf,
+  viewOf,
+  wardrobeOf,
+} from './view'
 
 // Questline's mod: it reports what happens in the session to the local game server, keeps one long-poll open for
 // what the server decides, draws the character in a band above the prompt in the looks the player equipped, and
@@ -48,6 +61,7 @@ const gain = atom({ plugin: 'questline', key: 'gain' }, null)
 const stage = atom({ plugin: 'questline', key: 'stage' }, null)
 const queue = atom({ plugin: 'questline', key: 'queue' }, [])
 const wardrobe = atom({ plugin: 'questline', key: 'wardrobe' }, null)
+const stats = atom({ plugin: 'questline', key: 'stats' }, null)
 const loops = atom({ plugin: 'questline', key: 'loops' }, null)
 const tab = atom({ plugin: 'questline', key: 'tab' }, 'inventory')
 
@@ -368,8 +382,10 @@ const refresh = async ($: EngineInterface, fromScratch: boolean) => {
   if (fromScratch) cursor = opened.snapshot.cursor
   const next = viewOf(opened.snapshot)
   const owned = wardrobeOf(opened.snapshot)
+  const counted = statsViewOf(opened.snapshot)
   await update($, view, () => next)
   await update($, wardrobe, () => owned)
+  await update($, stats, () => counted)
   await update($, link, () => 'online')
   await syncLoop($)
 }
@@ -614,7 +630,7 @@ export const register: Register = (on, options) => {
     await $.command
       .register({
         name: 'questline',
-        description: 'Open the Questline pane: your inventory and band styles (`dev …` on the dev server)',
+        description: 'Open the Questline pane: your inventory, band styles and stats (`dev …` on the dev server)',
       })
       .catch(() => undefined)
     return result
@@ -831,7 +847,7 @@ export const register: Register = (on, options) => {
   })
 
   // The pane: a hub of tabs over the game, the inventory first. Each band style is listed with a live preview, drawn
-  // by the band's own code, and a button that puts it on.
+  // by the band's own code, and a button that puts it on. The stats are cards that stats.ts lays out.
   on('ui.render', { component: 'Pane', requestId: paneId }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const status = await read($, link)
@@ -893,6 +909,40 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" paddingX={1}>
           {header}
           <Text dimColor>{why}</Text>
+        </Box>
+      )
+    }
+
+    if (shownTab === 'stats') {
+      const counted = await read($, stats)
+      if (counted === null) {
+        return (
+          <Box flexDirection="column" paddingX={1}>
+            {header}
+            <Text dimColor>Counting…</Text>
+          </Box>
+        )
+      }
+      // Cards of label and number rows, each as wide as its card: one column, or two side by side on a wide pane.
+      const layout = statsLayout(counted, current, columns, { looks: wornLooks(owned), loop: moving })
+      return (
+        <Box flexDirection="column" paddingX={1}>
+          {header}
+          {draw(Text, layout.intro, 'stats:intro')}
+          {layout.note === null ? null : draw(Text, layout.note, 'stats:note')}
+          <Text> </Text>
+          <Box key="stats" columnGap={layout.gap}>
+            {layout.columns.map((cards, i) => (
+              <Box key={`stats:column:${i}`} flexDirection="column" width={layout.width}>
+                {cards.map((card) => (
+                  <Box key={`stats:${card.key}`} flexDirection="column" marginBottom={1}>
+                    {draw(Text, titleRow(card.title, layout.width), `stats:${card.key}:title`)}
+                    {card.rows.map((row, j) => draw(Text, row, `stats:${card.key}:${j}`))}
+                  </Box>
+                ))}
+              </Box>
+            ))}
+          </Box>
         </Box>
       )
     }

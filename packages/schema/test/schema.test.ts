@@ -310,7 +310,7 @@ describe("Snapshot", () => {
       prestige: 0,
       gold: 0,
       shards: { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 },
-      streak: { days: 0, restDaysLeftThisWeek: 1, lastDay: "2026-10-08" },
+      streak: { days: 0, restDaysLeftThisWeek: 1, lastDay: "2026-10-08", best: 0 },
       equipped: {},
     },
     pet: null,
@@ -329,6 +329,10 @@ describe("Snapshot", () => {
       contextCrossed: { pct50: 0, pct75: 0, pct100: 0 },
       contextPeak: { lastSession: 0, average: 0 },
       prompts: { graded: 0, gradedToday: 0, averageScore: 0, regretted: 0 },
+      grades: {
+        best: 0,
+        dimensions: { clarity: 0, grammar: 0, specificity: 0, instructive: 0, context: 0, doneCriteria: 0, focus: 0 },
+      },
     },
     cursor: 0,
   }

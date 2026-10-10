@@ -96,5 +96,41 @@ export const statsOf = (state: PlayerState, now: string): PlayerStats => {
       averageScore: prompts.graded === 0 ? 0 : Math.min(10, thousandth(prompts.scoreSum / prompts.graded)),
       regretted: prompts.regretted,
     },
+    grades: {
+      best: prompts.best,
+      dimensions: averages(prompts.dimensions, prompts.graded),
+    },
   }
 }
+
+/** Each quality score's average over `graded` prompts, to the thousandth, 0 before the first. */
+const averages = (
+  sums: Readonly<Record<QualityDimension, number>>,
+  graded: number,
+): Record<QualityDimension, number> => {
+  const average = (dimension: QualityDimension) =>
+    graded === 0 ? 0 : Math.min(10, thousandth(sums[dimension] / graded))
+  return {
+    clarity: average("clarity"),
+    grammar: average("grammar"),
+    specificity: average("specificity"),
+    instructive: average("instructive"),
+    context: average("context"),
+    doneCriteria: average("doneCriteria"),
+    focus: average("focus"),
+  }
+}
+
+/** A grade's quality scores added to the running sums the profile averages. */
+export const addScores = (
+  sums: Readonly<Record<QualityDimension, number>>,
+  scores: Readonly<Record<GradeDimension, number>>,
+): Record<QualityDimension, number> => ({
+  clarity: sums.clarity + scores.clarity,
+  grammar: sums.grammar + scores.grammar,
+  specificity: sums.specificity + scores.specificity,
+  instructive: sums.instructive + scores.instructive,
+  context: sums.context + scores.context,
+  doneCriteria: sums.doneCriteria + scores.doneCriteria,
+  focus: sums.focus + scores.focus,
+})

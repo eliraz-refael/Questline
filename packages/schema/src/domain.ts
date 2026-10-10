@@ -10,6 +10,7 @@ import {
   Name,
   Percent,
   PetSlot,
+  QualityDimension,
   Rarity,
   Slot,
   Ulid,
@@ -42,6 +43,8 @@ export const Streak = Schema.Struct({
   days: Count,
   restDaysLeftThisWeek: Count,
   lastDay: IsoDate,
+  /** The longest streak reached, in days; never below the current one. */
+  best: Count,
 })
 export interface Streak extends Schema.Schema.Type<typeof Streak> {}
 
@@ -299,6 +302,9 @@ export interface Boost extends Schema.Schema.Type<typeof Boost> {}
 export const Pity = Schema.Struct({ sinceRare: Count, sinceEpic: Count })
 export interface Pity extends Schema.Schema.Type<typeof Pity> {}
 
+/** A grade or an average of grades, 0-10. */
+const Grade = Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 10 })))
+
 /** Counted by the server from stats events and graded prompts. They earn no XP; missions and achievements read them. */
 export const PlayerStats = Schema.Struct({
   /** `/clear` uses. */
@@ -318,9 +324,15 @@ export const PlayerStats = Schema.Struct({
   prompts: Schema.Struct({
     graded: Count,
     gradedToday: Count,
-    averageScore: Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 10 }))),
+    averageScore: Grade,
     regretted: Count,
   }),
+  /**
+   * The best weighted grade a prompt got, and the prompting profile: each quality score's average over every graded
+   * prompt, 0-10, so a player sees what to work on. Apart from `prompts`, so a `stats.changed` stored before them
+   * still reads.
+   */
+  grades: Schema.Struct({ best: Grade, dimensions: Schema.Record(QualityDimension, Grade) }),
 })
 export interface PlayerStats extends Schema.Schema.Type<typeof PlayerStats> {}
 

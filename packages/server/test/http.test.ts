@@ -78,6 +78,10 @@ describe("POST /v1/events: prompts and stats", () => {
           contextCrossed: { pct50: 1, pct75: 1, pct100: 0 },
           contextPeak: { lastSession: 80, average: 80 },
           prompts: { graded: 2, gradedToday: 2, averageScore: 10, regretted: 2 },
+          grades: {
+            best: 10,
+            dimensions: { clarity: 10, grammar: 10, specificity: 10, instructive: 10, context: 10, doneCriteria: 10, focus: 10 },
+          },
         })
         expect(opened.rules.prompt.maxXp).toBe(20)
       }),

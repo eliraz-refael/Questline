@@ -12,6 +12,7 @@ export const initialState = (options: { characterName: string; timezone: string;
     prestigeXp: 0,
     tallies: [],
     activeDays: [],
+    bestStreak: 0,
     quests: [],
     boosts: [],
     tests: { armed: [] },
@@ -21,7 +22,13 @@ export const initialState = (options: { characterName: string; timezone: string;
       compactions: { manual: 0, auto: 0 },
       commands: {},
       context: { crossed: { pct50: 0, pct75: 0, pct100: 0 }, sessions: 0, peakSum: 0, recent: [] },
-      prompts: { graded: 0, scoreSum: 0, regretted: 0 },
+      prompts: {
+        graded: 0,
+        scoreSum: 0,
+        regretted: 0,
+        best: 0,
+        dimensions: { clarity: 0, grammar: 0, specificity: 0, instructive: 0, context: 0, doneCriteria: 0, focus: 0 },
+      },
     },
   },
   holdings: {
