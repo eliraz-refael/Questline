@@ -19,7 +19,7 @@ import type {
   XpRule,
 } from "@questline/schema"
 import { addDays, isLater, localDay } from "./days.ts"
-import { formFor, formsFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
+import { formFor, formsFor, glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import type { RarityWeights } from "./loot.ts"
 import { pityAfter, raiseRare, rollLoot } from "./loot.ts"
 import { ulids } from "./random.ts"
@@ -270,6 +270,7 @@ const levelUp = (run: Run, before: number): void => {
       to: after,
       // Staged like a rare drop; a new title or evolution makes it a bigger moment.
       tier: titled || evolves ? "epic" : "rare",
+      glyph: glyphFor(rules, after),
       ...(titled ? { title } : {}),
       ...(evolves ? { evolution: form } : {}),
     },

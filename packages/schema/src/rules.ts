@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Count, IsoDateTime, Probability, QualityDimension, Rarity, XpTier } from "./primitives.ts"
+import { Count, Glyph, IsoDateTime, Probability, QualityDimension, Rarity, XpTier } from "./primitives.ts"
 
 /** The scoring facts an `XpRule` prices: every one but a graded prompt, which the `prompt` section prices. */
 export const XpFact = Schema.Literals([
@@ -67,6 +67,18 @@ export const PromptRules = Schema.Struct({
 )
 export interface PromptRules extends Schema.Schema.Type<typeof PromptRules> {}
 
+/** The level glyph from `fromLevel` on, up to the next band's; the bands rise, and the first is the glyph below it. */
+export const GlyphBand = Schema.Struct({ fromLevel: Count, glyph: Glyph })
+export interface GlyphBand extends Schema.Schema.Type<typeof GlyphBand> {}
+
+// At least one band: the snapshot and every level-up name a glyph, and an empty one is no glyph.
+const GlyphBands = Schema.Array(GlyphBand).check(
+  Schema.isMinLength(1),
+  Schema.makeFilter((bands) =>
+    bands.every((band, i) => i === 0 || (bands[i - 1]?.fromLevel ?? -1) < band.fromLevel) || "glyph bands must rise",
+  ),
+)
+
 /** The game's tuning. The mod never hard-codes a number from it. */
 export const RulesConfig = Schema.Struct({
   /** Tuning version. */
@@ -77,6 +89,8 @@ export const RulesConfig = Schema.Struct({
   appliesFrom: Schema.NullOr(IsoDateTime),
   levelCurve: LevelCurve,
   titles: Schema.Array(Schema.Struct({ fromLevel: Count, title: Schema.String })),
+  /** The icon before "Lv" by level band, so progress shows at a glance. */
+  glyphs: GlyphBands,
   /** A graded prompt has no rule here: the `prompt` section prices it, always reported and uncapped. */
   xp: Schema.Record(XpFact, XpRule),
   loot: Schema.Struct({

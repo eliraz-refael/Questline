@@ -1,5 +1,17 @@
 import { Schema } from "effect"
-import { CharacterSlot, Count, IsoDate, IsoDateTime, Name, Percent, PetSlot, Rarity, Slot, Ulid } from "./primitives.ts"
+import {
+  CharacterSlot,
+  Count,
+  Glyph,
+  IsoDate,
+  IsoDateTime,
+  Name,
+  Percent,
+  PetSlot,
+  Rarity,
+  Slot,
+  Ulid,
+} from "./primitives.ts"
 
 // The snapshot is everything the mod draws, sent whole when a session opens and kept current by server events.
 
@@ -38,6 +50,8 @@ export const Character = Schema.Struct({
   xp: Xp,
   /** From the rules config's level bands. */
   title: Schema.String,
+  /** The icon before "Lv", from the rules config's glyph bands. */
+  glyph: Glyph,
   prestige: Count,
   gold: Count,
   shards: Schema.Record(Rarity, Count),

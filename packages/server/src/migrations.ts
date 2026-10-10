@@ -121,11 +121,32 @@ const celebrationTiers = Effect.gen(function* () {
   `
 })
 
+// Level-ups gained the level's glyph: the ones written before it get the starter's glyph for their level, written out
+// here so this migration means the same thing whatever the rules later become.
+const levelGlyphs = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    UPDATE server_events
+    SET data = data || jsonb_build_object(
+      'glyph',
+      CASE
+        WHEN (data ->> 'to')::integer >= 20 THEN '🐉'
+        WHEN (data ->> 'to')::integer >= 15 THEN '👑'
+        WHEN (data ->> 'to')::integer >= 10 THEN '🛡️'
+        WHEN (data ->> 'to')::integer >= 5 THEN '🗡️'
+        ELSE '⚔'
+      END
+    )
+    WHERE type = 'level.up' AND data -> 'glyph' IS NULL
+  `
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
   "0002_player_stats": playerStats,
   "0003_celebration_tiers": celebrationTiers,
+  "0004_level_glyphs": levelGlyphs,
 }
 
 /** Runs the migrations not applied yet, in order. */

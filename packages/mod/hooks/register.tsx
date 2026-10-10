@@ -1,7 +1,10 @@
 import type { ClientEvent, Command, ServerEvent } from '@questline/schema'
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
-import type { BandView, Gain, Link } from '../types'
+import type { BandView, Celebration, Gain, Link, Motion, Stage } from '../types'
+import { celebrationOf, chimeOf, chimeWav, gapMs, idleMs, joinQueue, motionOf, queueOf, scriptOf } from './celebrate'
+import { barLabel, barRow, glyphSlot, slotRow, stageRows } from './frames'
+import type { Row } from './frames'
 import {
   answerTail,
   askFor,
@@ -27,7 +30,7 @@ import {
 } from './observe'
 import type { Repo } from './observe'
 import { answerOf, initOf, isCommand, isEvents, isSession, isStream, ServerDown, socketPathOf, urlOf } from './server'
-import { announce, bar, canHatch, hearts, ruleOf, sprite, viewOf } from './view'
+import { announce, canHatch, hearts, ruleOf, sprite, viewOf } from './view'
 
 // Questline's mod: it reports what happens in the session to the local game server, keeps one long-poll open for
 // what the server decides, and draws the character in a band above the prompt. The server computes every number.
@@ -35,6 +38,11 @@ import { announce, bar, canHatch, hearts, ruleOf, sprite, viewOf } from './view'
 const view = atom({ plugin: 'questline', key: 'view' }, null)
 const link = atom({ plugin: 'questline', key: 'link' }, 'connecting')
 const gain = atom({ plugin: 'questline', key: 'gain' }, null)
+const stage = atom({ plugin: 'questline', key: 'stage' }, null)
+
+/** Cells the band's rows are set in from each side, and the rows it takes of its own: the edge, a gap, two rows. */
+const inset = 2
+const ownRows = 4
 
 const toneColor: Record<Gain['tone'], 'text' | 'suggestion' | 'claude'> = {
   xp: 'text',
@@ -67,6 +75,14 @@ let lastPrompt = ''
 let lastAnswer = ''
 /** The fullest the context got since the last turn ended, or null when nothing measured it. */
 let turnPeak: number | null = null
+// Celebrations: the `animations` option, the queue, the one playing (its frames in the `stage` atom), the timer of
+// its next frame or of the next celebration, and whether a main-loop turn is running, which holds them all.
+let motion: Motion = 'full'
+let lineup: Array<Celebration> = []
+let playing: Celebration | null = null
+let frame: Timer | null = null
+let isTurnRunning = false
+let seed = 0
 
 /** One request to the local server. A failure to reach it at all is `ServerDown`. */
 async function call<A>(
@@ -154,6 +170,77 @@ const show = async ($: EngineInterface, event: ServerEvent) => {
     await update($, gain, () => next)
   }
   if (said.toast !== undefined) $.ui.toast(said.toast)
+  const celebration = motion === 'off' ? null : celebrationOf(event, (await read($, view))?.glyph ?? '')
+  if (celebration !== null) {
+    lineup = joinQueue(lineup, celebration)
+    playSoon($, 0)
+  }
+}
+
+/** Starts the next celebration after `ms`, unless one plays, a turn holds them, or a start is already set. */
+const playSoon = ($: EngineInterface, ms: number) => {
+  if (playing !== null || isTurnRunning || frame !== null) return
+  frame = $.clock.after(ms, () => void playNext($).catch(() => undefined))
+}
+
+const playNext = async ($: EngineInterface) => {
+  frame = null
+  const next = lineup[0]
+  if (playing !== null || isTurnRunning || next === undefined || motion === 'off') return
+  lineup = lineup.slice(1)
+  playing = next
+  seed += 1
+  const first: Stage = { celebration: next, tick: 0, seed, motion }
+  await update($, stage, () => first)
+  // A turn that began while the first frame was being set has held this one: take back the frame it left.
+  if (playing !== next) {
+    await update($, stage, (shown) => (shown?.celebration === next ? null : shown))
+    return
+  }
+  await frameAt($, next, 0)
+}
+
+/** Draws frame `tick` of the celebration playing, and sets the timer for the next one, or for the end. */
+const frameAt = async ($: EngineInterface, celebration: Celebration, tick: number) => {
+  // The timer that called this one has fired: a start set from here on must not take it for one still waiting.
+  frame = null
+  if (playing !== celebration || motion === 'off') return
+  const script = scriptOf(celebration, motion)
+  if (tick >= script.ticks) {
+    playing = null
+    await update($, stage, () => null)
+    playSoon($, gapMs)
+    return
+  }
+  if (tick > 0) await update($, stage, (shown) => (shown === null ? null : { ...shown, tick }))
+  // A turn that began during the redraw has held this one: it must leave no timer behind to block the next start.
+  if (playing !== celebration) return
+  const chime = chimeOf(celebration, motion)
+  // A sound is a flourish: a terminal with no player, or a refused clip, changes nothing else.
+  if (chime !== null && tick === chime.tick)
+    $.audio.play({ base64: chimeWav(chime.tier), mime: 'audio/wav' }, { gain: 0.6 }).catch(() => undefined)
+  frame = $.clock.after(script.frameMs, () => void frameAt($, celebration, tick + 1).catch(() => undefined))
+}
+
+/** A main-loop turn began: what plays stops and waits, to play whole once the prompt is idle again. */
+const holdCelebrations = async ($: EngineInterface) => {
+  isTurnRunning = true
+  frame?.cancel()
+  frame = null
+  if (playing === null) return
+  lineup = queueOf([playing, ...lineup])
+  playing = null
+  await update($, stage, () => null)
+}
+
+/** Clears what a reload left: the module's queue starts empty, so the band must not hold a frame of the old one. */
+const resetCelebrations = async ($: EngineInterface) => {
+  frame?.cancel()
+  frame = null
+  lineup = []
+  playing = null
+  isTurnRunning = false
+  await update($, stage, () => null)
 }
 
 /** Reloads the character from the server; `fromScratch` also moves the cursor to the snapshot's. */
@@ -182,7 +269,7 @@ const poll = async ($: EngineInterface): Promise<void> => {
     $.clock.after(0, () => void poll($))
   } catch {
     isPolling = false
-    await update($, link, () => 'offline')
+    await update($, link, () => 'offline').catch(() => undefined)
     retryLater($)
   }
 }
@@ -321,9 +408,11 @@ const begin = async ($: EngineInterface, cwd: string) => {
 
 export const register: Register = (on, options) => {
   const minWords = minWordsOf(options)
+  motion = motionOf(options)
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
+    await resetCelebrations($)
     await begin($, e.cwd)
     flushTimer?.cancel()
     flushTimer = $.clock.every(flushEveryMs, () => void flush($))
@@ -420,8 +509,16 @@ export const register: Register = (on, options) => {
     return result
   }).catch(($, e, next) => next(e))
 
+  // A celebration never plays over a main-loop turn: it waits for the idle prompt.
+  on('turn.start', async ($, e, next) => {
+    await holdCelebrations($)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
+      isTurnRunning = false
+      playSoon($, idleMs)
       // A turn the person interrupted, or one an error ended, is no finished piece of work.
       if (e.reason === 'answer') {
         const data = {
@@ -474,37 +571,67 @@ export const register: Register = (on, options) => {
     }
     if (current === null) return next(e)
 
-    const cells = bar(current, 12)
+    // What a celebration draws: its flourish on the XP bar, in the gain's place or in rows the band grows by. A
+    // running turn draws none, whatever the timers say.
+    const shown = e.props.isWorking ? null : await read($, stage)
+    const columns = Math.max(0, e.props.bodyColumns - 2 * inset)
+    const rows = shown === null ? [] : stageRows(shown, columns, Math.max(0, e.props.maxRows - ownRows))
+    const slot = shown === null ? null : slotRow(shown, rows.length > 0)
+    const line = (row: Row, key: string) => (
+      <Text key={key} wrap="truncate">
+        {row.map((run, i) => (
+          <Text
+            key={String(i)}
+            {...(run.color === undefined ? {} : { color: run.color })}
+            {...(run.bold === undefined ? {} : { bold: run.bold })}
+            {...(run.dim === undefined ? {} : { dimColor: run.dim })}
+          >
+            {run.text}
+          </Text>
+        ))}
+      </Text>
+    )
     const pet = current.pet
+    // Under the edge, a row of air, then the XP bar alone and everything else under it, both set in from the sides.
     return (
       <Box flexDirection="column">
         {rule}
-        <Box flexWrap="wrap" columnGap={2}>
-          <Text>
-            <Text color="claude" bold>
-              ⚔ Lv {current.level}
-            </Text>{' '}
-            {current.title}
+        <Text> </Text>
+        <Box flexDirection="column" paddingX={inset}>
+          <Text wrap="truncate">
+            {line(barRow(current, columns, shown), 'bar')}
+            {barLabel(current)}
           </Text>
-          <Text>
-            <Text color="success">{'▰'.repeat(cells.filled)}</Text>
-            <Text dimColor>{'▱'.repeat(cells.empty)}</Text> {current.xp.intoLevel}/{current.xp.forNextLevel} xp
-          </Text>
-          <Text color="warning">🔥 {current.streakDays}</Text>
-          <Text color="suggestion">◈ {current.gold}</Text>
-          {pet !== null ? (
+          <Box flexWrap="wrap" columnGap={2}>
             <Text>
-              {sprite(pet)} {pet.name} <Text color="error">{hearts(pet.mood)}</Text>
+              <Text color="claude" bold>
+                {/* A view kept in the session's state from before glyphs has none until the snapshot comes in. */}
+                {glyphSlot(current.glyph || '⚔')} Lv {current.level}
+              </Text>{' '}
+              {current.title}
             </Text>
-          ) : canHatch(current) ? (
-            <Button key="hatch" label="🥚 Hatch your egg" variant="primary" onPress={() => void hatch($)} />
-          ) : (
-            <Text dimColor>🥚 hatches at Lv 1</Text>
-          )}
-          {last === null ? null : (
-            <Text color={toneColor[last.tone]} dimColor={last.tone === 'quiet'}>
-              {last.text}
-            </Text>
+            <Text color="suggestion">◈ {current.gold}</Text>
+            {pet !== null ? (
+              <Text>
+                {sprite(pet)} {pet.name} <Text color="error">{hearts(pet.mood)}</Text>
+              </Text>
+            ) : canHatch(current) ? (
+              <Button key="hatch" label="🥚 Hatch your egg" variant="primary" onPress={() => void hatch($)} />
+            ) : (
+              <Text dimColor>🥚 hatches at Lv 1</Text>
+            )}
+            {slot !== null ? (
+              line(slot, 'slot')
+            ) : last === null ? null : (
+              <Text color={toneColor[last.tone]} dimColor={last.tone === 'quiet'}>
+                {last.text}
+              </Text>
+            )}
+          </Box>
+          {rows.length === 0 ? null : (
+            <Box key="stage" flexDirection="column">
+              {rows.map((row, i) => line(row, `stage-${i}`))}
+            </Box>
           )}
         </Box>
       </Box>

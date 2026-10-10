@@ -10,6 +10,9 @@ import type {
   SessionMessage,
   SessionStartInput,
 } from 'claude-code'
+import type { Celebration } from '../types'
+import { joinQueue, queueOf } from './celebrate'
+import { cellsOf, glyphSlot } from './frames'
 import { hmac } from './ids'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
 
@@ -18,7 +21,7 @@ import { exitIsTheRuns, githubName, testRunner } from './observe'
 
 type Sent = { path: string; body: unknown }
 
-const snapshot = (level: number, pet: unknown = null, cursor = 0) => ({
+const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔') => ({
   serverId: 'local-test',
   streamEpoch: 1,
   cursor,
@@ -27,6 +30,7 @@ const snapshot = (level: number, pet: unknown = null, cursor = 0) => ({
     name: 'Player',
     level,
     title: 'Apprentice',
+    glyph,
     xp: { total: 130, verified: 0, reported: 130, intoLevel: 30, forNextLevel: 203 },
     gold: 25,
     streak: { days: 2, restDaysLeftThisWeek: 1, lastDay: '2026-10-09' },
@@ -41,6 +45,7 @@ const ran = (exitCode: number, stdout: string) => ({
 /** A session's bottom: what the engine itself answers beneath every plugin. */
 const engineBeneath = (on: On) => {
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('session.cwd', () => ({ value: '/work/widgets' }))
@@ -69,7 +74,9 @@ const until = async (clock: Clock, check: () => boolean | Promise<boolean>) => {
   throw new Error('the mod never got there')
 }
 
-const fakeServer = (on: On, clock: Clock, options: { level?: number; isDown?: boolean } = {}) => {
+type ServerOptions = { level?: number; glyph?: string; isDown?: boolean; stream?: Array<{ seq: number }> }
+
+const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
   const sent: Array<Sent> = []
   const tried: Array<string> = []
   engineBeneath(on)
@@ -79,7 +86,8 @@ const fakeServer = (on: On, clock: Clock, options: { level?: number; isDown?: bo
     const path = new URL(e.url).pathname
     const body: unknown = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
     sent.push({ path, body })
-    if (path === '/v1/sessions') return reply(200, { snapshot: snapshot(options.level ?? 0), rules: {}, minClientVersion: '0.0.0', acceptedEventTypes: [] })
+    if (path === '/v1/sessions')
+      return reply(200, { snapshot: snapshot(options.level ?? 0, null, 0, options.glyph), rules: {}, minClientVersion: '0.0.0', acceptedEventTypes: [] })
     if (path === '/v1/events') {
       const events = typeof body === 'object' && body !== null && 'events' in body && Array.isArray(body.events) ? body.events : []
       // A type from a newer mod than this server knows, as `future.*` stands for here.
@@ -90,8 +98,13 @@ const fakeServer = (on: On, clock: Clock, options: { level?: number; isDown?: bo
       return reply(200, { results: events.map(resultOf), events: [] })
     }
     if (path === '/v1/commands') return reply(200, { status: 'refused', code: 'not_allowed', message: 'The egg hatches at level 1' })
-    await clock.sleep(25_000)
-    return reply(200, { events: [], cursor: 0, rulesVersion: 1, minClientVersion: '0.0.0' })
+    // The stream answers as soon as the test hands it events, or after 25 seconds with none.
+    const stream = options.stream ?? []
+    if (options.stream === undefined) await clock.sleep(25_000)
+    else for (let waited = 0; waited < 25_000 && stream.length === 0; waited += 100) await clock.sleep(100)
+    const events = stream.splice(0)
+    const cursor = Math.max(0, ...events.map((event) => event.seq))
+    return reply(200, { events, cursor, rulesVersion: 1, minClientVersion: '0.0.0' })
   })
   on('process.run', ($, e) => {
     const args = e.argv.join(' ')
@@ -462,6 +475,302 @@ describe('the link', () => {
     await until(clock, () => opens() === 4)
     await clock.advance(5_000)
     expect(opens()).toBe(5)
+  })
+})
+
+// Server events as the stream carries them, numbered in order.
+let seq = 0
+const serverEvent = (type: string, data: Record<string, unknown>) => ({
+  seq: ++seq,
+  at: '2026-10-09T08:00:00.000Z',
+  cause: null,
+  type,
+  data,
+})
+const drop = (tier: string, name: string, gold = 0) =>
+  serverEvent('loot.dropped', {
+    entry: { id: '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', itemId: name, acquiredAt: '2026-10-09T08:00:00Z', source: { kind: 'drop', ref: '1' }, dye: null },
+    item: { id: name, name, rarity: tier, category: 'wearable', slot: 'head', sprite: null, lore: null, effect: null },
+    gold,
+    pity: { sinceRare: 0, sinceEpic: 0 },
+    tier,
+  })
+const levelUp = (from: number, to: number, tier: string, more: Record<string, unknown> = {}) =>
+  serverEvent('level.up', { from, to, tier, glyph: '🗡️', ...more })
+const xpGranted = (amount: number) => serverEvent('xp.granted', { amount, tier: 'reported', reason: 'prompt.graded', totalAfter: 150 })
+
+/** What the band draws now: every text, and how many rows the celebration grew it by. */
+const band = async ($: Parameters<TestBody>[0], maxRows = 20) => {
+  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: { ...bandOf(), maxRows } })
+  // The gain's own line names the latest drop the whole time; what plays is the rest.
+  const texts = (await ui.findAll({ type: 'Text' }))
+    .map((one) => one.text)
+    .filter((text) => !/^(Common|Uncommon|Rare|Epic|Legendary) drop: /.test(text))
+  const grown = (await ui.find({ type: 'Box', key: 'stage' }))?.children.length ?? 0
+  await ui.unmount()
+  return { all: texts.join('\n'), grown }
+}
+
+/** A session with the server up and its stream open, which hands the mod `events` when `send` is called. */
+const streaming = async ($: Parameters<TestBody>[0], on: On) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
+  mock.store(on, { explored: ['acme/widgets'] })
+  mock.env(on, { HOME: '/home/player' })
+  const stream: Array<{ seq: number }> = []
+  const { sent } = fakeServer(on, clock, { level: 4, stream })
+  const played: Array<string> = []
+  on('audio.play', ($, e) => {
+    played.push(e.clip.mime ?? e.clip.asset ?? '')
+    return { value: undefined }
+  })
+  await $.session.start(start)
+  await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
+  const send = async (...events: Array<{ seq: number }>) => {
+    stream.push(...events)
+    await clock.advance(100)
+    await until(clock, () => stream.length === 0)
+    await clock.settle()
+  }
+  return { clock, send, played }
+}
+
+/** Samples the band every 100 ms for `ms`, keeping which of `names` it draws at each sample, without repeats. */
+const watch = async ($: Parameters<TestBody>[0], clock: Clock, ms: number, names: ReadonlyArray<string>) => {
+  const seen: Array<string> = []
+  for (let at = 0; at < ms; at += 100) {
+    const { all } = await band($)
+    const shown = names.filter((name) => all.includes(name))
+    // Two at once would be two celebrations overlapping.
+    expect(shown.length).toBeLessThanOrEqual(1)
+    const one = shown[0]
+    if (one !== undefined && seen[seen.length - 1] !== one) seen.push(one)
+    await clock.advance(100)
+  }
+  return seen
+}
+
+describe('the level glyph', () => {
+  test('draws the glyph the snapshot names before Lv, in a slot two cells wide', async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
+    mock.store(on)
+    mock.env(on, { HOME: '/home/player' })
+    const { sent } = fakeServer(on, clock, { level: 15, glyph: '👑' })
+    await $.session.start(start)
+    await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
+    const { all } = await band($)
+    expect(all).toContain('👑 Lv 15')
+    expect(glyphSlot('⚔')).toBe('⚔ ')
+    expect(cellsOf(glyphSlot('🛡️'))).toBe(2)
+    expect(cellsOf(glyphSlot('⚔'))).toBe(2)
+  })
+
+  test('sets the XP bar alone on its row under a gap, as wide as the band leaves inside its margins, without the streak', async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
+    mock.store(on)
+    mock.env(on, { HOME: '/home/player' })
+    const { sent } = fakeServer(on, clock, { level: 1 })
+    await $.session.start(start)
+    await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
+    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
+    const barRow = await ui.find({ type: 'Text', text: /^[▰▱]+ 30\/203 xp$/ })
+    expect(cellsOf(barRow?.text ?? '')).toBe(bandOf().bodyColumns - 4)
+    expect(await ui.find({ type: 'Text', text: /^ $/ })).toBeDefined()
+    expect((await ui.findAll({ type: 'Box' })).filter((box) => box.props['paddingX'] === 2)).toHaveLength(1)
+    expect(await ui.find({ type: 'Text', text: /🔥/ })).toBeUndefined()
+    await ui.unmount()
+  })
+})
+
+describe('celebrations', () => {
+  test('a common drop spins a coin beside its name for about a second, in the band as it is', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(drop('common', 'Plain Cap', 10))
+    const playing = await band($)
+    expect(playing.all).toMatch(/[◐◓◑◒] Plain Cap/)
+    expect(playing.grown).toBe(0)
+    await clock.advance(1_200)
+    expect((await band($)).all).not.toContain('Plain Cap')
+  })
+
+  test('an XP gain runs a glint along the bar and twinkles at its head', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(xpGranted(20))
+    expect((await band($)).all).toMatch(/▰✦▱/)
+    await clock.advance(1_100)
+    expect((await band($)).all).not.toMatch(/[✦✧·]▱/)
+  })
+
+  test('a rare drop grows the band by a few rows while a chest opens on its name, then shrinks back', async ($, on) => {
+    const { clock, send, played } = await streaming($, on)
+    await send(drop('rare', 'Wizard Hat', 70))
+    const closed = await band($)
+    expect(closed.grown).toBe(4)
+    expect(closed.all).toContain('R A R E   D R O P')
+    expect(closed.all).not.toContain('Wizard Hat ✦')
+    await clock.advance(1_500)
+    expect((await band($)).all).toContain('✦ Wizard Hat')
+    await clock.advance(600)
+    expect((await band($)).grown).toBe(0)
+    expect(played).toEqual([])
+  })
+
+  test('epic and legendary drops take the band up to its height with a burst and a chime, legendary bigger and longer', async ($, on) => {
+    const { clock, send, played } = await streaming($, on)
+    await send(drop('epic', 'Pixel Dragon', 175))
+    const epic = await band($, 30)
+    expect(epic.grown).toBe(8)
+    expect((await band($, 7)).grown).toBe(3)
+    await clock.advance(700)
+    expect((await band($)).all).toContain('Pixel Dragon')
+    expect(played).toEqual(['audio/wav'])
+    await clock.advance(2_600)
+    expect((await band($)).grown).toBe(0)
+    await send(drop('legendary', 'Aurora Crown', 400))
+    expect((await band($, 30)).grown).toBe(11)
+    await clock.advance(700)
+    expect((await band($)).all).toContain('L E G E N D A R Y')
+    // Past where an epic would have ended, a legendary still plays.
+    await clock.advance(3_000)
+    expect((await band($)).all).toContain('Aurora Crown  ✦')
+    await clock.advance(1_200)
+    expect((await band($)).grown).toBe(0)
+    expect(played).toEqual(['audio/wav', 'audio/wav'])
+  })
+
+  test('a level-up shows the new level and its glyph: a banner for rare, the whole band for a new title', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(levelUp(4, 5, 'rare'))
+    const rising = await band($)
+    expect(rising.grown).toBe(4)
+    expect(rising.all).toContain('🗡️')
+    await clock.advance(700)
+    expect((await band($)).all).toContain('Lv 5')
+    await clock.advance(2_000)
+    await send(levelUp(9, 10, 'epic', { title: 'Adept', glyph: '🛡️' }))
+    await clock.advance(1_200)
+    const titled = await band($)
+    expect(titled.grown).toBe(8)
+    expect(titled.all).toContain('🛡️ Level 10 🛡️')
+    expect(titled.all).toContain('You are now an Adept')
+  })
+
+  test('several at once play one after another, the biggest last, never two at a time', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(drop('legendary', 'Aurora Crown'), drop('common', 'Plain Cap'), drop('rare', 'Wizard Hat'))
+    const names = ['Plain Cap', 'Wizard Hat', 'Aurora Crown']
+    expect(await watch($, clock, 10_000, names)).toEqual(names)
+  })
+
+  test('a backlog of small drops collapses into one, counting the rest', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(
+      drop('common', 'Plain Cap'),
+      drop('common', 'Paper Scarf'),
+      drop('uncommon', 'Knit Scarf'),
+      drop('common', 'Trail Mix'),
+    )
+    const names = ['Plain Cap', 'Paper Scarf', 'Knit Scarf', 'Trail Mix']
+    const playing = await band($)
+    expect(playing.all).toContain('Knit Scarf ')
+    expect(playing.all).toContain('+3 more')
+    expect(await watch($, clock, 3_000, names.filter((name) => name !== 'Knit Scarf'))).toEqual([])
+  })
+
+  test('one that arrives during a turn waits for the idle prompt, and one playing when a turn starts plays again after', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await $.turn.start({ text: 'fix the parser', turnId: 't1' })
+    await send(drop('rare', 'Wizard Hat'))
+    await clock.advance(3_000)
+    expect((await band($)).grown).toBe(0)
+    await $.turn.complete({ answer: 'Done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+    await clock.advance(700)
+    expect((await band($)).grown).toBe(4)
+    await $.turn.start({ text: 'and the tests', turnId: 't2' })
+    expect((await band($)).grown).toBe(0)
+    await $.turn.complete({ answer: 'Done', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' })
+    await clock.advance(700)
+    const again = await band($)
+    expect(again.grown).toBe(4)
+    expect(again.all).not.toContain('Wizard Hat ✦')
+  })
+
+  test("a subagent's turn holds nothing", async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(drop('rare', 'Wizard Hat'))
+    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 'a1', reason: 'answer', agentId: 'agent-1' })
+    await clock.advance(200)
+    expect((await band($)).grown).toBe(4)
+  })
+
+  test('off plays nothing and only names the drop', { options: { animations: 'off' } }, async ($, on) => {
+    const { clock, send, played } = await streaming($, on)
+    await send(drop('legendary', 'Aurora Crown'), xpGranted(20))
+    for (let at = 0; at < 4_000; at += 500) {
+      const { all, grown } = await band($)
+      expect(grown).toBe(0)
+      expect(all).not.toContain('L E G E N D A R Y')
+      expect(all).not.toMatch(/[✦✧·]▱/)
+      await clock.advance(500)
+    }
+    expect(played).toEqual([])
+  })
+
+  test('reduced shows one still frame in the band as it is, with no sound', { options: { animations: 'reduced' } }, async ($, on) => {
+    const { clock, send, played } = await streaming($, on)
+    await send(drop('epic', 'Pixel Dragon'))
+    const still = await band($)
+    expect(still.grown).toBe(0)
+    expect(still.all).toContain('✦ Pixel Dragon ✦')
+    await clock.advance(1_000)
+    expect((await band($)).all).toContain('✦ Pixel Dragon ✦')
+    await clock.advance(1_700)
+    expect((await band($)).all).not.toContain('✦ Pixel Dragon ✦')
+    expect(played).toEqual([])
+  })
+
+  test('a reload mid-celebration leaves no frame behind', async ($, on) => {
+    const { clock, send } = await streaming($, on)
+    await send(drop('rare', 'Wizard Hat'))
+    expect((await band($)).grown).toBe(4)
+    await $.session.start(start)
+    await clock.settle()
+    expect((await band($)).grown).toBe(0)
+  })
+})
+
+describe('the celebration queue', () => {
+  const loot = (tier: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary', name: string): Celebration => ({
+    kind: 'loot',
+    tier,
+    name,
+    gold: 0,
+    more: 0,
+  })
+
+  test('orders by size, keeping arrival order among equals', () => {
+    const queue = queueOf([loot('epic', 'a'), loot('rare', 'b'), { kind: 'xp', amount: 5 }, loot('rare', 'c')])
+    expect(queue.map((one) => (one.kind === 'loot' ? one.name : one.kind))).toEqual(['xp', 'b', 'c', 'a'])
+  })
+
+  test('adds up XP gains, keeps the best small drop counting the rest, and lets the smallest big ones go past three', () => {
+    const queue = queueOf([
+      { kind: 'xp', amount: 5 },
+      { kind: 'xp', amount: 7 },
+      loot('uncommon', 'u'),
+      loot('common', 'c'),
+      loot('rare', 'r1'),
+      loot('rare', 'r2'),
+      loot('epic', 'e'),
+      loot('legendary', 'l'),
+    ])
+    expect(queue).toEqual([
+      { kind: 'xp', amount: 12 },
+      { ...loot('uncommon', 'u'), more: 1 },
+      loot('rare', 'r2'),
+      loot('epic', 'e'),
+      loot('legendary', 'l'),
+    ])
+    expect(joinQueue([loot('common', 'old')], loot('common', 'new'))).toEqual([{ ...loot('common', 'new'), more: 1 }])
   })
 })
 

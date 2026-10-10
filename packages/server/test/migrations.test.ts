@@ -61,4 +61,40 @@ describe("migrations", () => {
       expect(tiers.map((row) => row.tier)).toEqual(["rare", "epic", "uncommon", "legendary"])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
   )
+
+  it.effect("give level-ups stored before glyphs the starter's glyph for their level", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* Migrator.make({})({
+        loader: Migrator.fromRecord({
+          "0001_initial": migrations["0001_initial"],
+          "0002_player_stats": migrations["0002_player_stats"],
+          "0003_celebration_tiers": migrations["0003_celebration_tiers"],
+        }),
+      })
+      yield* sql`
+        INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
+        VALUES ('p', NULL, NULL, 'Player', 'seed', ${start})
+      `
+      const rows: Array<[number, unknown]> = [
+        [1, { from: 3, to: 4, tier: "rare" }],
+        [2, { from: 4, to: 5, tier: "rare" }],
+        [3, { from: 9, to: 10, tier: "epic", title: "Adept" }],
+        [4, { from: 14, to: 15, tier: "rare" }],
+        [5, { from: 19, to: 22, tier: "rare" }],
+        [6, { from: 22, to: 23, tier: "rare", glyph: "✦" }],
+      ]
+      for (const [seq, data] of rows) {
+        yield* sql`
+          INSERT INTO server_events (player_id, seq, at, cause, type, data)
+          VALUES ('p', ${seq}, ${start}, NULL, 'level.up', ${JSON.stringify(data)}::jsonb)
+        `
+      }
+      yield* migrate
+      const glyphs = yield* sql<{ glyph: string }>`
+        SELECT data ->> 'glyph' AS glyph FROM server_events WHERE player_id = 'p' ORDER BY seq
+      `
+      expect(glyphs.map((row) => row.glyph)).toEqual(["⚔", "🗡️", "🛡️", "👑", "🐉", "✦"])
+    }).pipe(Effect.provide(PgliteClient.layer({}))),
+  )
 })

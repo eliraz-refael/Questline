@@ -12,6 +12,13 @@
       "title": "Words to grade a prompt",
       "description": "A prompt you type earns XP from Haiku's grade once it has this many words, pasted text included. Shorter ones, slash commands and prompts you didn't type go ungraded. Only the scores leave your machine, never the prompt.",
       "default": 6
+    },
+    "animations": {
+      "type": "string",
+      "title": "Celebrations",
+      "description": "How loot drops and level-ups play in the band: full animations (the band grows for the big ones, epic and legendary chime), reduced (one still frame in the band's own rows, no sound), or off.",
+      "options": ["full", "reduced", "off"],
+      "default": "full"
     }
   }
 }
