@@ -69,6 +69,8 @@ export const project = (
         days: streak.days,
         restDaysLeftThisWeek: streak.restDaysLeftThisWeek,
         lastDay: progress.activeDays[progress.activeDays.length - 1] ?? today,
+        // A save from before the best was kept starts it at 0, and the current streak stands in until it passes it.
+        best: Math.max(progress.bestStreak, streak.days),
       },
       equipped: slotsOf(holdings.equipped, characterSlots),
     },

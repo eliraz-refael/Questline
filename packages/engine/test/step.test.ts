@@ -288,7 +288,15 @@ describe("step: graded prompts", () => {
     expect(statsOf(state, minutesLater(24 * 60)).prompts.gradedToday).toBe(0)
     expect(events.filter((e) => e.type === "stats.changed").at(-1)).toEqual({
       type: "stats.changed",
-      data: { stats: { prompts: { graded: 2, gradedToday: 2, averageScore: 7.5, regretted: 1 } } },
+      data: {
+        stats: {
+          prompts: { graded: 2, gradedToday: 2, averageScore: 7.5, regretted: 1 },
+          grades: {
+            best: 10,
+            dimensions: { clarity: 7.5, grammar: 7.5, specificity: 7.5, instructive: 7.5, context: 7.5, doneCriteria: 7.5, focus: 7.5 },
+          },
+        },
+      },
     })
   })
 
@@ -363,6 +371,73 @@ describe("step: player stats", () => {
     expect(after.progress.stats.commands["/code-review"]).toBeUndefined()
     expect(after.progress.stats.commands["custom"]).toBe(1)
     expect(after.progress.stats.commands["/plugin:deploy"]).toBe(5)
+  })
+})
+
+describe("step: the prompting profile and the bests", () => {
+  const player = { id: session, githubUserId: null, githubLogin: null, displayName: "Player", createdAt: start }
+  const meta = { player, serverId: "local", streamEpoch: 1, cursor: 0 }
+  const snapshotAt = (state: PlayerState, now: string) =>
+    project(state, { rules: starterRules, catalog: starterCatalog, questPacks: [], now }, meta)
+
+  it("averages each quality score over the graded prompts, regret left out, to the thousandth", () => {
+    const sharp = { clarity: 9, grammar: 8, specificity: 7, instructive: 6, context: 2, doneCriteria: 1, focus: 10, regret: 9 }
+    const loose = { clarity: 3, grammar: 8, specificity: 4, instructive: 6, context: 3, doneCriteria: 0, focus: 9, regret: 0 }
+    const { state } = play([graded(sharp), graded(loose, 1), graded(flat(1), 2)])
+    expect(statsOf(state, start).grades.dimensions).toEqual({
+      clarity: 4.333,
+      grammar: 5.667,
+      specificity: 4,
+      instructive: 4.333,
+      context: 2,
+      doneCriteria: 0.667,
+      focus: 6.667,
+    })
+    expect(statsOf(fresh(), start).grades).toEqual({
+      best: 0,
+      dimensions: { clarity: 0, grammar: 0, specificity: 0, instructive: 0, context: 0, doneCriteria: 0, focus: 0 },
+    })
+  })
+
+  it("keeps the best weighted grade, which a worse prompt after it never lowers", () => {
+    const rules = { ...starterRules, prompt: { ...starterRules.prompt, weights: { ...starterRules.prompt.weights, focus: 3 } } }
+    const sharp = { ...flat(6), focus: 10 }
+    const { state, events } = play([graded(flat(4)), graded(sharp, 1), graded(flat(2), 2)], rules)
+    // (6 * 6 + 10 * 3) / 9, the grade the rules priced it at.
+    expect(statsOf(state, start).grades.best).toBe(7.333)
+    expect(events.filter((e) => e.type === "stats.changed").at(-1)).toMatchObject({
+      data: { stats: { grades: { best: 7.333 } } },
+    })
+  })
+
+  it("keeps the best streak past a broken one, and the snapshot never shows it below the current streak", () => {
+    const days = (...offsets: Array<number>) => offsets.map((day) => client("commit.made", day * 24 * 60))
+    // Three days, then a gap of three, which the one rest day a week can't bridge, then two more.
+    const { state } = play(days(0, 1, 2, 6, 7))
+    expect(state.progress.bestStreak).toBe(3)
+    expect(snapshotAt(state, minutesLater(7 * 24 * 60)).character.streak).toMatchObject({ days: 2, best: 3 })
+    // A save from before the best was kept: the current streak stands in for it.
+    const before = { ...state, progress: { ...state.progress, bestStreak: 0 } }
+    expect(snapshotAt(before, minutesLater(7 * 24 * 60)).character.streak.best).toBe(2)
+  })
+
+  it("counts a late event that bridges a gap toward the best streak", () => {
+    const late = client("commit.made", 24 * 60)
+    const { state } = play([client("commit.made"), client("commit.made", 2 * 24 * 60), client("commit.made", 3 * 24 * 60)])
+    expect(state.progress.bestStreak).toBe(3)
+    // Day 1 arrives on day 3: the streak from day 0 runs unbroken, four days.
+    const bridged = step(state, late, context(4, minutesLater(3 * 24 * 60 + 60)))
+    expect(bridged.state.progress.bestStreak).toBe(4)
+  })
+})
+
+describe("step: review fixes, the best streak", () => {
+  it("counts a late event that joins two past runs into one ending after it", () => {
+    // Days 0-1 and 4, apart by a gap of two the one rest day can't bridge; the streak is broken by day 8.
+    const { state } = play([client("commit.made"), client("commit.made", 24 * 60), client("commit.made", 4 * 24 * 60)])
+    // Day 2 arrives on day 8: 0, 1, 2, then day 3 rested, then 4 — four active days.
+    const joined = step(state, client("commit.made", 2 * 24 * 60), context(3, minutesLater(8 * 24 * 60)))
+    expect(joined.state.progress.bestStreak).toBe(4)
   })
 })
 

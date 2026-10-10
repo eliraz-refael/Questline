@@ -20,6 +20,8 @@ import { sheenHead } from './looks'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
 import { headerOf, tabBarOf } from './pane'
 import { socketPathOf } from './server'
+import { statsLayout, twoColumnsFrom } from './stats'
+import { statsViewOf } from './view'
 
 // A fake local server beneath the mod: it answers the four routes, records what the mod sends, and holds the
 // stream until the test's clock passes 25 seconds, as the real one does.
@@ -29,7 +31,10 @@ type Sent = { path: string; body: unknown }
 /** What the player owns in the fake server: entries, their definitions, and what is equipped where. */
 type Owned = { inventory: Array<{ id: string; itemId: string }>; items: Array<unknown>; equipped: Record<string, string> }
 
-const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔', owned?: Owned, isDev = false) => ({
+/** What the stats tab reads: the player stats, and the streak the character carries. */
+type Counted = { stats: unknown; streak: unknown }
+
+const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔', owned?: Owned, isDev = false, counted?: Counted) => ({
   ...(isDev ? { dev: true } : {}),
   serverId: 'local-test',
   streamEpoch: 1,
@@ -42,9 +47,10 @@ const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔',
     glyph,
     xp: { total: 130, verified: 0, reported: 130, intoLevel: 30, forNextLevel: 203 },
     gold: 25,
-    streak: { days: 2, restDaysLeftThisWeek: 1, lastDay: '2026-10-09' },
+    streak: counted?.streak ?? { days: 2, restDaysLeftThisWeek: 1, lastDay: '2026-10-09' },
     equipped: { ...owned?.equipped },
   },
+  ...(counted === undefined ? {} : { stats: counted.stats }),
   inventory: (owned?.inventory ?? []).map((entry) => ({
     ...entry,
     acquiredAt: '2026-10-09T08:00:00Z',
@@ -120,6 +126,8 @@ type ServerOptions = {
   isDev?: boolean
   /** The status the command route answers with, when not 200. */
   commandStatus?: number
+  /** The stats the snapshot carries; none, as from a server older than the stats, when not given. */
+  counted?: Counted
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
@@ -156,7 +164,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     sent.push({ path, body })
     if (path === '/v1/sessions')
       return reply(200, {
-        snapshot: snapshot(options.level ?? 0, null, 0, options.glyph, options.owned, options.isDev === true),
+        snapshot: snapshot(options.level ?? 0, null, 0, options.glyph, options.owned, options.isDev === true, options.counted),
         rules: {},
         minClientVersion: '0.0.0',
         acceptedEventTypes: [],
@@ -1125,9 +1133,11 @@ describe('the /questline pane', () => {
     for (const surface of surfaces) {
       const ui = await $.ui.mount({ plugin: 'questline', surface, component: 'Pane', requestId: 'questline', props: paneProps() })
       const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')
-      for (const shown of ['◆ Inventory', 'Stats', 'soon', 'XP bar', 'Top edge', 'Solid Bar', 'Starlit Edge', 'Plain Cap']) {
+      for (const shown of ['◆ Inventory', '◇ Missions', 'soon', 'XP bar', 'Top edge', 'Solid Bar', 'Starlit Edge', 'Plain Cap']) {
         expect(texts).toContain(shown)
       }
+      // Stats is built: a tab to switch to, not one still to come.
+      expect(await ui.find({ type: 'Button', key: 'tab:stats' })).toBeDefined()
       // Each look's preview is drawn by the band's own code, the still one exactly as the band would.
       expect(texts).toMatch(/^█+░+ 30\/203 xp$/m)
       expect(await ui.find({ type: 'Button', key: 'equip:topEdge:starlit-edge' })).toBeDefined()
@@ -1301,13 +1311,16 @@ describe('the pane fits its width', () => {
     const header = narrow.texts.find((text) => text.startsWith('✦ QUESTLINE ✦')) ?? ''
     expect(header).toBe('✦ QUESTLINE ✦  Lv 4 Apprentice · ◈ 25')
     expect(cellsOf(header)).toBeLessThanOrEqual(38)
-    expect(narrow.texts.join('\n')).not.toContain('soon')
+    // With Stats built, only Missions is still to come: its label still fits at 40, with the gaps closed to 2.
+    expect(narrow.texts.join('\n')).toContain('◇ Missions soon')
     expect(narrow.tabs?.props['columnGap']).toBe(2)
     expect(narrow.tabs?.props['flexWrap']).toBeUndefined()
+    const narrower = await paneTexts($, 36)
+    expect(narrower.texts.join('\n')).not.toContain('soon')
 
     const wide = await paneTexts($, 120)
     expect(wide.texts).toContain('✦ QUESTLINE ✦  Player · Lv 4 Apprentice · ◈ 25')
-    expect(wide.texts.join('\n')).toContain('◇ Stats soon')
+    expect(wide.texts.join('\n')).toContain('◇ Missions soon')
     expect(wide.tabs?.props['columnGap']).toBe(3)
   })
 
@@ -1315,8 +1328,9 @@ describe('the pane fits its width', () => {
     const widthOf = (bar: ReturnType<typeof tabBarOf>) =>
       bar.chips.reduce((sum, chip) => sum + cellsOf(chip.text) + (chip.soon ? 5 : 0), 0) + bar.gap * (bar.chips.length - 1)
     for (const columns of [20, 28, 32, 38, 44, 60]) expect(widthOf(tabBarOf('inventory', columns))).toBeLessThanOrEqual(Math.max(columns, 11))
-    expect(tabBarOf('inventory', 60)).toMatchObject({ gap: 3, chips: [{ kind: 'shown' }, { soon: true }, { soon: true }] })
-    expect(tabBarOf('inventory', 20).chips.map((chip) => chip.text)).toEqual(['◆ Inventory'])
+    expect(tabBarOf('inventory', 60)).toMatchObject({ gap: 3, chips: [{ kind: 'shown' }, { kind: 'ready', soon: false }, { soon: true }] })
+    expect(tabBarOf('stats', 60).chips.map((chip) => chip.kind)).toEqual(['ready', 'shown', 'later'])
+    expect(tabBarOf('inventory', 20).chips.map((chip) => chip.text)).toEqual(['◆ Inventory', '◇ Stats'])
     const view = { name: 'Player', level: 12, title: 'Adept', gold: 1500 }
     expect(headerOf(view, 80)).toBe('Player · Lv 12 Adept · ◈ 1500')
     expect(headerOf(view, 30)).toBe('Lv 12 · ◈ 1500')
@@ -1456,5 +1470,210 @@ describe('reading the work', () => {
     expect(await hmac(secret, 'repo|acme/widgets')).toBe(await hmac(secret, 'repo|acme/widgets'))
     expect(await hmac(secret, 'repo|acme/widgets')).not.toBe(await hmac('cd'.repeat(32), 'repo|acme/widgets'))
     expect(await hmac(secret, 'repo|acme/widgets')).toMatch(/^[0-9a-f]{64}$/)
+  })
+})
+
+/** A player some way in: every stat counted, and a streak with a better one behind it. */
+const playing: Counted = {
+  streak: { days: 12, restDaysLeftThisWeek: 1, lastDay: '2026-10-09', best: 15 },
+  stats: {
+    clears: 8,
+    compactions: { manual: 3, auto: 1 },
+    commands: { '/code-review': 12, '/compact': 3, custom: 5, '/pr-watch:watch': 2, '/clear': 7, '/help': 1 },
+    contextCrossed: { pct50: 12, pct75: 5, pct100: 1 },
+    contextPeak: { lastSession: 62, average: 48.4 },
+    prompts: { graded: 1420, gradedToday: 9, averageScore: 7.24, regretted: 71 },
+    grades: {
+      best: 9.571,
+      dimensions: { clarity: 8.1, grammar: 7.4, specificity: 5.2, instructive: 6.6, context: 4.9, doneCriteria: 3.1, focus: 7.9 },
+    },
+  },
+}
+
+/** A new player's stats, as a server that counts them all sends them. */
+const newPlayer: Counted = {
+  streak: { days: 0, restDaysLeftThisWeek: 1, lastDay: '2026-10-09', best: 0 },
+  stats: {
+    clears: 0,
+    compactions: { manual: 0, auto: 0 },
+    commands: {},
+    contextCrossed: { pct50: 0, pct75: 0, pct100: 0 },
+    contextPeak: { lastSession: 0, average: 0 },
+    prompts: { graded: 0, gradedToday: 0, averageScore: 0, regretted: 0 },
+    grades: {
+      best: 0,
+      dimensions: { clarity: 0, grammar: 0, specificity: 0, instructive: 0, context: 0, doneCriteria: 0, focus: 0 },
+    },
+  },
+}
+
+/** Opens the pane and switches it to its Stats tab with the tab bar's button. */
+const openStats = async ($: Parameters<TestBody>[0]) => {
+  await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+  await ui.press({ key: 'tab:stats' })
+  await ui.unmount()
+}
+
+describe('the Stats tab', () => {
+  test('switches from the tab bar and back, and draws every section from the snapshot', async ($, on) => {
+    await streaming($, on, ownedOf(wearing), false, { counted: playing })
+    await openStats($)
+    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+    const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')
+    expect(texts).toContain('◆ Stats')
+    expect(texts).not.toContain('Band styles')
+    for (const title of ['Progress', 'Streak', 'Prompts', 'Prompting profile', 'Context habits', 'Top commands']) {
+      expect(texts).toMatch(new RegExp(`^${title} ─+$`, 'm'))
+    }
+    // Progress, the XP bar and gold in the styles worn.
+    expect(texts).toMatch(/^ {2}⚔ {2}Lv 4 Apprentice$/m)
+    expect(texts).toMatch(/^ {2}█+░+ 30\/203 xp$/m)
+    expect(texts).toMatch(/^ {2}Total XP +130$/m)
+    expect(texts).toMatch(/^ {2}├ reported +130$/m)
+    expect(texts).toMatch(/^ {2}To Lv 5 +173 xp$/m)
+    expect(texts).toMatch(/^ {2}Gold +◆ 25 [✧✦·]?$/m)
+    expect(texts).toMatch(/^ {2}Items owned +4$/m)
+    // The streak, which left the band for here.
+    expect(texts).toMatch(/^ {2}🔥 Current +12 days$/m)
+    expect(texts).toMatch(/^ {2}Best +15 days$/m)
+    expect(texts).toMatch(/^ {2}Rest days left this week +1$/m)
+    // Prompts, the grades as bars.
+    expect(texts).toMatch(/^ {2}Graded +1,420$/m)
+    expect(texts).toMatch(/^ {2}Today +9$/m)
+    expect(texts).toMatch(/^ {2}Average grade +▰+▱+ 7\.2$/m)
+    expect(texts).toMatch(/^ {2}Best grade +▰+▱+ 9\.6$/m)
+    expect(texts).toMatch(/^ {2}Regretted +71 · 5%$/m)
+    // The profile: a bar a quality score, the strongest and the weakest marked, and what to work on.
+    expect(texts).toMatch(/^ {2}Clarity +▰+▱+ 8\.1 ▲$/m)
+    expect(texts).toMatch(/^ {2}Done criteria +▰+▱+ 3\.1 ▼$/m)
+    expect(texts).toMatch(/^ {2}Focus +▰+▱+ 7\.9 {2}$/m)
+    expect(texts).toContain('▼ Work on done criteria: say how to know it is done')
+    // Context habits.
+    expect(texts).toMatch(/^ {2}Last session +▰+▱+ 62%$/m)
+    expect(texts).toMatch(/^ {2}Average peak +▰+▱+ 48%$/m)
+    expect(texts).toMatch(/^ {2}Sessions past 75% +5$/m)
+    expect(texts).toMatch(/^ {2}Compactions +3 manual · 1 auto$/m)
+    // The top five commands, most used first, the player's own under one name; the sixth is left out.
+    const commands = texts.split('\n').filter((text) => /^ {2}(\/|your own)\S* +▰/.test(text))
+    expect(commands.map((text) => text.trim().split(/ +/)[0])).toEqual(['/code-review', '/clear', 'your', '/compact', '/pr-watch:watch'])
+    expect(texts).toMatch(/^ {2}\/code-review +▰+ +12$/m)
+    expect(texts).not.toContain('/help')
+    // An up-to-date server: no word about restarting it.
+    expect(texts).not.toContain('Restart')
+
+    await ui.press({ key: 'tab:inventory' })
+    await ui.unmount()
+    const back = (await paneTexts($, 72)).texts.join('\n')
+    expect(back).toContain('◆ Inventory')
+    expect(back).toContain('Band styles')
+  })
+
+  test('fits a 40-column pane with every number on the right edge, and sets two columns side by side on a wide one', async ($, on) => {
+    await streaming($, on, ownedOf(wearing), false, { counted: playing })
+    await openStats($)
+    const narrow = await paneTexts($, 40)
+    for (const text of narrow.texts) expect(cellsOf(text)).toBeLessThanOrEqual(38)
+    for (const row of ['  Graded', '  Clarity', '  Last session', '  /code-review', '  Total XP']) {
+      const found = narrow.texts.find((text) => text.startsWith(row)) ?? ''
+      expect(cellsOf(found)).toBe(38)
+    }
+    // The tip that fits: the weakest score's, without its name.
+    expect(narrow.texts).toContain('  ▼ say how to know it is done')
+
+    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: { ...paneProps(), bodyColumns: 120 } })
+    const cards = await ui.find({ type: 'Box', key: 'stats' })
+    expect(cards?.children).toHaveLength(2)
+    const left = await ui.find({ type: 'Box', key: 'stats:column:0' })
+    expect(left?.props['width']).toBe(56)
+    const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
+    for (const text of texts.filter((one) => one.startsWith('  '))) expect(cellsOf(text)).toBeLessThanOrEqual(56)
+    expect(texts.find((text) => text.startsWith('  Graded'))?.length).toBe(56)
+    await ui.unmount()
+  })
+
+  test('a new player sees every section, each saying what fills it', async ($, on) => {
+    await streaming($, on, undefined, false, { counted: newPlayer })
+    await openStats($)
+    const { texts } = await paneTexts($, 40)
+    const all = texts.join('\n')
+    for (const shown of [
+      'none yet',
+      'Any work today starts one.',
+      'Prompts you type are graded.',
+      'Fills in as your prompts are graded,',
+      'Measured each turn, at its fullest.',
+      'Slash commands you run count here.',
+    ]) {
+      expect(all).toContain(shown)
+    }
+    expect(all).toMatch(/^ {2}Graded +0$/m)
+    expect(all).toMatch(/^ {2}Items owned +0$/m)
+    expect(all).toMatch(/^ {2}Compactions +0 manual · 0 auto$/m)
+    expect(all).not.toContain('Restart')
+    expect(all).not.toContain('▲')
+    for (const text of texts) expect(cellsOf(text)).toBeLessThanOrEqual(38)
+  })
+
+  test('a server older than the stats shows what it sends, and says to restart it for the rest', async ($, on) => {
+    await streaming($, on, ownedOf())
+    await openStats($)
+    const all = (await paneTexts($, 72)).texts.join('\n')
+    expect(all).toContain('The server predates the bests and the profile: restart it.')
+    expect(all).toContain('Needs a newer server: restart it.')
+    expect(all).toMatch(/^ {2}Best +—$/m)
+    expect(all).toMatch(/^ {2}🔥 Current +2 days$/m)
+    expect(all).toMatch(/^ {2}Graded +0$/m)
+  })
+
+  test('lays every row inside its card at any width, the cards never wider than the pane', () => {
+    const view: BandView = {
+      name: 'Player',
+      level: 12,
+      title: 'Adept',
+      glyph: '🛡️',
+      xp: { total: 12_345, intoLevel: 300, forNextLevel: 1200 },
+      gold: 1500,
+      isDev: false,
+      pet: null,
+    }
+    const long = { name: '/a-plugin-with-a-long-name:and-a-long-command', uses: 1234 }
+    const stats = {
+      streak: { days: 120, best: 365, restDaysLeftThisWeek: 0 },
+      prompts: { graded: 123_456, today: 40, average: 10, best: 10, regretted: 9999 },
+      profile: [
+        { dimension: 'clarity', average: 10 },
+        { dimension: 'doneCriteria', average: 0 },
+        { dimension: 'a-dimension-from-a-newer-rubric', average: 5 },
+      ],
+      context: { lastSession: 100, average: 99.6, pct50: 10_000, pct75: 9000, pct100: 800 },
+      clears: 1_000_000,
+      compactions: { manual: 12_345, auto: 67_890 },
+      commands: [long, { name: 'custom', uses: 3 }],
+      xp: { verified: 2345, reported: 10_000 },
+      items: 512,
+    }
+    for (const columns of [20, 30, 38, 40, 56, 83, twoColumnsFrom, 118, 200]) {
+      const layout = statsLayout(stats, view, columns, { looks: {}, loop: null })
+      expect(layout.width).toBeLessThanOrEqual(Math.max(20, columns))
+      expect(layout.columns).toHaveLength(columns >= twoColumnsFrom ? 2 : 1)
+      const rows = layout.columns.flat().flatMap((card) => card.rows)
+      for (const row of rows) expect(row.reduce((sum, run) => sum + cellsOf(run.text), 0)).toBeLessThanOrEqual(layout.width)
+    }
+    // A name too long for its card is cut, never wrapped.
+    const narrow = statsLayout(stats, view, 38, { looks: {}, loop: null }).columns.flat()
+    const commands = narrow.find((card) => card.key === 'commands')?.rows ?? []
+    expect(commands[0]?.map((run) => run.text).join('')).toMatch(/^ {2}\/a-plugin-\S*… +▰+ 1,234$/)
+  })
+
+  test('reads a snapshot from an older server as nothing yet, with the bests and the profile unknown', () => {
+    const view = statsViewOf(JSON.parse(JSON.stringify(snapshot(4))))
+    expect(view).toMatchObject({
+      streak: { days: 2, best: null, restDaysLeftThisWeek: 1 },
+      prompts: { graded: 0, best: null },
+      profile: null,
+      commands: [],
+      items: 0,
+    })
   })
 })

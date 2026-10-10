@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { Boost, ClaimKind, ClaimStatus, InventoryEntry, Pet, Pity, PlayerStats } from "./domain.ts"
-import { Count, IsoDate, IsoDateTime, Name, Percent, Rarity, Slot, Ulid } from "./primitives.ts"
+import { Count, IsoDate, IsoDateTime, Name, Percent, QualityDimension, Rarity, Slot, Ulid } from "./primitives.ts"
 import { ScoringFact } from "./rules.ts"
 import { CheckoutRef, GitHubWork } from "./subjects.ts"
 
@@ -66,8 +66,17 @@ export const StatCounters = Schema.Struct({
     /** The latest sessions measured, latest last. */
     recent: Schema.Array(SessionPeak),
   }),
-  /** Graded prompts, the sum of their weighted quality grades (0-10 each), and those regretted (`prompt.regretAt`). */
-  prompts: Schema.Struct({ graded: Count, scoreSum: NonNegative, regretted: Count }),
+  /**
+   * Graded prompts, the sum of their weighted quality grades (0-10 each), those regretted (`prompt.regretAt`), the
+   * best grade, and the sum of each quality score over them, which the profile averages.
+   */
+  prompts: Schema.Struct({
+    graded: Count,
+    scoreSum: NonNegative,
+    regretted: Count,
+    best: PlayerStats.fields.grades.fields.best,
+    dimensions: Schema.Record(QualityDimension, NonNegative),
+  }),
 })
 export interface StatCounters extends Schema.Schema.Type<typeof StatCounters> {}
 
@@ -84,6 +93,8 @@ export const Progress = Schema.Struct({
   tallies: Schema.Array(DayTally),
   /** Local days with activity, sorted, back to the current streak's start and never fewer than the last 7. */
   activeDays: Schema.Array(IsoDate),
+  /** The longest streak reached, in days, as the active days stood when each was added. */
+  bestStreak: Count,
   quests: Schema.Array(ActiveQuest),
   /** Food boosts; a new one replaces the running one, they never stack. */
   boosts: Schema.Array(Boost),

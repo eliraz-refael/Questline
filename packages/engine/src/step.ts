@@ -27,7 +27,7 @@ import type { RarityWeights } from "./loot.ts"
 import { pityAfter, raiseRare, rollLoot } from "./loot.ts"
 import { petSlots } from "./project.ts"
 import { ulids } from "./random.ts"
-import { bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
+import { addScores, bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
 // This version covers the proof of concept: reported XP with daily caps, XP for graded prompts, levels, the streak,
@@ -188,12 +188,14 @@ const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>,
       graded: prompts.graded + 1,
       scoreSum: prompts.scoreSum + grade,
       regretted: prompts.regretted + (scores.regret >= rules.prompt.regretAt ? 1 : 0),
+      best: Math.max(prompts.best, grade),
+      dimensions: addScores(prompts.dimensions, scores),
     },
   })
   const { loot } = rules
   const weights = grade >= loot.promptGreatAt ? raiseRare(loot.weights, loot.promptGreatRareFactor) : loot.weights
   roll(run, "prompt", (loot.promptChanceAtTen * grade) / 10, weights)
-  statsChanged(run, (stats) => ({ prompts: stats.prompts }))
+  statsChanged(run, (stats) => ({ prompts: stats.prompts, grades: stats.grades }))
 }
 
 const applyCommand = (state: PlayerState, command: Command, context: Context): Step => {
@@ -320,6 +322,11 @@ const markActive = (run: Run, day: string): void => {
   const current = streakAsOf(activeDays, today, rules.streak.restDaysPerWeek)
   // A late event lands on its own day, where the streak may have been shorter.
   const reached = day === today ? current : streakAsOf(activeDays, day, rules.streak.restDaysPerWeek)
+  // A late day can join two past runs into one that ends on a later active day, so each day from it on is measured.
+  const joined = activeDays
+    .filter((other) => other > day && other < today)
+    .map((other) => streakAsOf(activeDays, other, rules.streak.restDaysPerWeek).days)
+  setProgress(run, { bestStreak: Math.max(progress.bestStreak, current.days, reached.days, ...joined) })
   grant(run, "streak.day", day, Math.min(rules.streak.xpPerDay * reached.days, rules.streak.maxXp))
   run.events.push({
     type: "streak.changed",

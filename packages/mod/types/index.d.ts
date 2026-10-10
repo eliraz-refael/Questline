@@ -91,6 +91,26 @@ export type Wardrobe = { items: ReadonlyArray<OwnedItem>; equipped: Readonly<Rec
  */
 export type Loop = { ticks: Readonly<Record<string, number>> }
 
+/**
+ * The Stats tab's numbers, as the server counted them. `best` and `profile` are null from a server older than this
+ * mod, which counts neither.
+ */
+export type StatsView = {
+  streak: { days: number; best: number | null; restDaysLeftThisWeek: number }
+  prompts: { graded: number; today: number; average: number; best: number | null; regretted: number }
+  /** Each quality score's average over the graded prompts, 0-10, in the rubric's order. */
+  profile: ReadonlyArray<{ dimension: string; average: number }> | null
+  /** Percent: the latest session's peak and the average, and the sessions that crossed each fill. */
+  context: { lastSession: number; average: number; pct50: number; pct75: number; pct100: number }
+  clears: number
+  compactions: { manual: number; auto: number }
+  /** Uses by command name, most used first. */
+  commands: ReadonlyArray<{ name: string; uses: number }>
+  xp: { verified: number; reported: number }
+  /** Inventory entries owned. */
+  items: number
+}
+
 /** The `/questline` pane's tabs. */
 export type PaneTab = 'inventory' | 'stats' | 'missions'
 
@@ -104,6 +124,7 @@ declare module 'claude-code' {
       /** The celebrations still to play, the one playing first, so a reload of the mod plays them again. */
       queue: ReadonlyArray<Celebration>
       wardrobe: Wardrobe | null
+      stats: StatsView | null
       /** Under a new key: a copy of the mod from before kept `{ tick, rate }` under `loop`. */
       loops: Loop | null
       tab: PaneTab

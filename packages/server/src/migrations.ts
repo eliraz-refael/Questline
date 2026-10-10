@@ -152,6 +152,64 @@ const bandLooks = Effect.gen(function* () {
   `
 })
 
+// The stats gained the best grade, the prompting profile (each quality score's sum, which the profile averages) and the
+// best streak. The grades are worked out again from the graded prompts the log accepted, priced by the starter's
+// weights (all 1), written out here so this migration means the same thing whatever the rules later become. The best
+// streak starts at 0: the current streak stands in for it until it passes it.
+const statsProfile = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    WITH graded AS (
+      SELECT player_id, input -> 'event' -> 'data' -> 'scores' AS s
+      FROM event_log
+      WHERE status = 'accepted' AND input ->> 'kind' = 'client' AND input -> 'event' ->> 'type' = 'prompt.graded'
+    ),
+    sums AS (
+      SELECT
+        p.player_id,
+        COALESCE(SUM((s ->> 'clarity')::numeric), 0) AS clarity,
+        COALESCE(SUM((s ->> 'grammar')::numeric), 0) AS grammar,
+        COALESCE(SUM((s ->> 'specificity')::numeric), 0) AS specificity,
+        COALESCE(SUM((s ->> 'instructive')::numeric), 0) AS instructive,
+        COALESCE(SUM((s ->> 'context')::numeric), 0) AS context,
+        COALESCE(SUM((s ->> 'doneCriteria')::numeric), 0) AS done_criteria,
+        COALESCE(SUM((s ->> 'focus')::numeric), 0) AS focus,
+        COALESCE(MAX(ROUND((
+          (s ->> 'clarity')::numeric + (s ->> 'grammar')::numeric + (s ->> 'specificity')::numeric +
+          (s ->> 'instructive')::numeric + (s ->> 'context')::numeric + (s ->> 'doneCriteria')::numeric +
+          (s ->> 'focus')::numeric
+        ) / 7, 3)), 0) AS best
+      FROM player_state p
+      LEFT JOIN graded g ON g.player_id = p.player_id
+      GROUP BY p.player_id
+    )
+    UPDATE player_state p
+    SET state = jsonb_set(
+      p.state,
+      '{progress,stats,prompts}',
+      (p.state -> 'progress' -> 'stats' -> 'prompts') || jsonb_build_object(
+        'best', sums.best,
+        'dimensions', jsonb_build_object(
+          'clarity', sums.clarity,
+          'grammar', sums.grammar,
+          'specificity', sums.specificity,
+          'instructive', sums.instructive,
+          'context', sums.context,
+          'doneCriteria', sums.done_criteria,
+          'focus', sums.focus
+        )
+      )
+    )
+    FROM sums
+    WHERE sums.player_id = p.player_id AND p.state -> 'progress' -> 'stats' -> 'prompts' -> 'best' IS NULL
+  `
+  yield* sql`
+    UPDATE player_state
+    SET state = jsonb_set(state, '{progress,bestStreak}', '0'::jsonb)
+    WHERE state -> 'progress' -> 'bestStreak' IS NULL
+  `
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
@@ -159,6 +217,7 @@ export const migrations = {
   "0003_celebration_tiers": celebrationTiers,
   "0004_level_glyphs": levelGlyphs,
   "0005_band_looks": bandLooks,
+  "0006_stats_profile": statsProfile,
 }
 
 /** Runs the migrations not applied yet, in order. */

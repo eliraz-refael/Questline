@@ -6,7 +6,7 @@ import { Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
 import { migrate, migrations } from "../src/index.ts"
-import { profile, start } from "./fixtures.ts"
+import { commit, profile, prompt, start } from "./fixtures.ts"
 
 // Each test starts a fresh PGlite and runs every migration: the first cold start can take seconds on a CI runner.
 const coldStart = 30_000
@@ -132,6 +132,69 @@ describe("migrations", () => {
         { item: { id: "solid-bar", rarity: "common", look }, tier: "common" },
         { delta: 10, totalAfter: 10, reason: "drop" },
       ])
+    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
+  )
+  it.effect("work out the best grade and the profile from the graded prompts the log accepted, the best streak at 0", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      const { "0006_stats_profile": _profile, ...before } = migrations
+      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      const fresh = initialState({ ...profile, now: start })
+      const { bestStreak: _best, ...progress } = fresh.progress
+      const { best: _grade, dimensions: _dimensions, ...prompts } = fresh.progress.stats.prompts
+      const saved = { ...fresh, progress: { ...progress, stats: { ...fresh.progress.stats, prompts: { ...prompts, graded: 2 } } } }
+      const newer = { ...fresh, progress: { ...fresh.progress, bestStreak: 5 } }
+      for (const [id, state] of [["old", saved], ["quiet", saved], ["new", newer]] satisfies Array<[string, unknown]>) {
+        yield* sql`
+          INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
+          VALUES (${id}, NULL, NULL, 'Player', 'seed', ${start})
+        `
+        yield* sql`
+          INSERT INTO player_state (player_id, state, log_seq, server_seq, stream_epoch, engine_version, rules_version)
+          VALUES (${id}, ${JSON.stringify(state)}::jsonb, 0, 0, 1, 6, 5)
+        `
+      }
+      const sharp = prompt(9)
+      const loose = prompt(2)
+      const graded = (one: typeof sharp, scores: Partial<typeof sharp.data.scores>) => ({
+        kind: "client",
+        event: { ...one, data: { ...one.data, scores: { ...one.data.scores, ...scores } } },
+      })
+      const rows: Array<[string, number, unknown, string]> = [
+        ["old", 1, graded(sharp, { focus: 10, doneCriteria: 4 }), "accepted"],
+        ["old", 2, graded(loose, {}), "accepted"],
+        // Neither a rejected prompt nor other work counts.
+        ["old", 3, graded(prompt(10), {}), "rejected"],
+        ["old", 4, { kind: "client", event: commit("c") }, "accepted"],
+        ["new", 1, graded(prompt(3), {}), "accepted"],
+      ]
+      for (const [player, logSeq, input, status] of rows) {
+        yield* sql`
+          INSERT INTO event_log (
+            player_id, log_seq, input_id, natural_key, schema_version, input, received_at,
+            engine_version, rules_version, catalog_version, status, reason, refusal
+          ) VALUES (
+            ${player}, ${logSeq}, ${`id-${logSeq}`}, NULL, 1, ${JSON.stringify(input)}::jsonb, ${start},
+            6, 5, 3, ${status}, NULL, NULL
+          )
+        `
+      }
+      yield* migrate
+      const stored = yield* sql`SELECT state FROM player_state ORDER BY player_id DESC`
+      const states = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ state: PlayerState })))(stored)
+      const [quiet, old, kept] = states.map((row) => row.state.progress)
+      expect(old?.stats.prompts).toEqual({
+        graded: 2,
+        scoreSum: 0,
+        regretted: 0,
+        // (9 * 5 + 10 + 4) / 7, the starter's weights.
+        best: 8.429,
+        dimensions: { clarity: 11, grammar: 11, specificity: 11, instructive: 11, context: 11, doneCriteria: 6, focus: 12 },
+      })
+      expect(old?.bestStreak).toBe(0)
+      expect(quiet?.stats.prompts).toEqual({ ...fresh.progress.stats.prompts, graded: 2 })
+      expect(kept).toEqual(newer.progress)
     }).pipe(Effect.provide(PgliteClient.layer({}))),
     coldStart,
   )

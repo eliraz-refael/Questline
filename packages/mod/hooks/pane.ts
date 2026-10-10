@@ -11,7 +11,7 @@ export const paneId = 'questline'
 /** The tabs in order; one not ready yet shows dim, as what is coming. */
 export const tabs: ReadonlyArray<{ id: PaneTab; label: string; isReady: boolean }> = [
   { id: 'inventory', label: 'Inventory', isReady: true },
-  { id: 'stats', label: 'Stats', isReady: false },
+  { id: 'stats', label: 'Stats', isReady: true },
   { id: 'missions', label: 'Missions', isReady: false },
 ]
 
