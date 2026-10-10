@@ -2,8 +2,29 @@ import type { ClientEvent, Command, ServerEvent } from '@questline/schema'
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 import type { BandView, Gain, Link } from '../types'
+import {
+  answerTail,
+  askFor,
+  isGradable,
+  isSlashCommand,
+  minWordsOf,
+  RUBRIC,
+  rubricVersion,
+  scoresOf,
+  wordsOf,
+} from './grade'
 import { isSecret, newSecret, ulid } from './ids'
-import { checkoutRef, commitRef, exitIsTheRuns, repoOf, repoRef, testRunner, workRef } from './observe'
+import {
+  checkoutRef,
+  commandNameOf,
+  commitRef,
+  compactionOf,
+  exitIsTheRuns,
+  repoOf,
+  repoRef,
+  testRunner,
+  workRef,
+} from './observe'
 import type { Repo } from './observe'
 import { answerOf, initOf, isCommand, isEvents, isSession, isStream, ServerDown, socketPathOf, urlOf } from './server'
 import { announce, bar, canHatch, hearts, ruleOf, sprite, viewOf } from './view'
@@ -40,6 +61,12 @@ let isFlushing = false
 let isPolling = false
 let reconnect: Timer | null = null
 let flushTimer: Timer | null = null
+// What the grader reads beside a prompt: the player's last one, graded or not, and the end of the main loop's last
+// answer.
+let lastPrompt = ''
+let lastAnswer = ''
+/** The fullest the context got since the last turn ended, or null when nothing measured it. */
+let turnPeak: number | null = null
 
 /** One request to the local server. A failure to reach it at all is `ServerDown`. */
 async function call<A>(
@@ -243,9 +270,45 @@ const hatch = async ($: EngineInterface) => {
   }
 }
 
+/**
+ * Grades a prompt the player typed with Haiku, from what the grader is asked (`askFor`), and queues the scores. A
+ * failed call or a reply that doesn't parse sends nothing.
+ */
+const grade = async ($: EngineInterface, prompt: string, words: number) => {
+  const stamped = await stamp($)
+  const result = await $.model.complete({
+    model: 'haiku',
+    system: [{ text: RUBRIC, cache: true }],
+    prompt,
+    maxTokens: 120,
+    effort: 'low',
+    timeoutMs: 30_000,
+  })
+  const scores = result.isAnswered ? scoresOf(result.text) : null
+  if (scores === null) return
+  await enqueue($, { ...stamped, type: 'prompt.graded', data: { scores, rubricVersion, words, grader: 'haiku' } })
+}
+
+/** A slash command the player ran, by the name the stats count it under. */
+const commandUsed = async ($: EngineInterface, command: string) => {
+  const stamped = await stamp($)
+  const listed = (await $.command.list()).find((info) => info.name === command)
+  await enqueue($, { ...stamped, type: 'command.used', data: { command: commandNameOf(command, listed?.source) } })
+}
+
+/** Runs `work` once the hook has returned; whatever it throws stays here, so it never fails a prompt or a command. */
+const later = ($: EngineInterface, work: () => Promise<unknown>) => {
+  $.clock.after(0, () => {
+    work().catch(() => undefined)
+  })
+}
+
 /** A new session: a fresh id, then the repo, its first exploration and the server, after the hook returns. */
 const begin = async ($: EngineInterface, cwd: string) => {
   $.ui.status(undefined)
+  lastPrompt = ''
+  lastAnswer = ''
+  turnPeak = null
   sessionId = ulid(await $.clock.now())
   socket = socketPathOf(await $.env.get('QUESTLINE_HOME'), await $.env.get('HOME'))
   secret = await machineSecret($)
@@ -256,7 +319,9 @@ const begin = async ($: EngineInterface, cwd: string) => {
   })
 }
 
-export const register: Register = (on) => {
+export const register: Register = (on, options) => {
+  const minWords = minWordsOf(options)
+
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     await begin($, e.cwd)
@@ -268,8 +333,53 @@ export const register: Register = (on) => {
   // A /clear ends the conversation without a new session.start, and the band's state goes with it: start again.
   on('session.end', async ($, e, next) => {
     const result = await next(e)
-    if (e.reason === 'clear') await begin($, await $.session.cwd())
+    if (e.reason === 'clear') {
+      // Counted under the session it ends.
+      await enqueue($, { ...(await stamp($)), type: 'session.cleared', data: {} })
+      await begin($, await $.session.cwd())
+    }
     return result
+  })
+
+  // The prompt goes on first and untouched: grading runs after the hook returns and never holds one back.
+  on('prompt.submit', async ($, e, next) => {
+    const result = await next(e)
+    const byPlayer = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+    if (result.drop !== undefined || !byPlayer || isSlashCommand(e.text)) return result
+    const text = e.text.trim()
+    const words = wordsOf(e.text)
+    // What the grader reads is taken now: a prompt typed before the grading runs must not become this one's previous.
+    if (isGradable(e.origin.kind, e.text, words, minWords)) {
+      const asked = askFor(text, lastPrompt, lastAnswer)
+      later($, () => grade($, asked, words))
+    }
+    lastPrompt = text
+    return result
+  }).catch(($, e, next) => next(e))
+
+  on('command.run', async ($, e, next) => {
+    const result = await next(e)
+    if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') later($, () => commandUsed($, e.command))
+    return result
+  }).catch(($, e, next) => next(e))
+
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    const trigger = compactionOf(e.trigger)
+    // A subagent's own transcript is no compaction of the player's conversation; a skipped one changed nothing.
+    if (e.agentId === undefined && trigger !== null && result.messages !== undefined) {
+      await enqueue($, { ...(await stamp($)), type: 'session.compacted', data: { trigger } })
+    }
+    return result
+  }).catch(($, e, next) => next(e))
+
+  // The context is reported once a turn, at its fullest: a compaction mid-turn would hide a fill the end didn't reach.
+  on('session.measure', ($, e, next) => {
+    const pct = e.context.percent
+    if (e.changed.includes('context') && pct !== undefined) {
+      turnPeak = Math.max(turnPeak ?? 0, Math.min(100, Math.max(0, pct)))
+    }
+    return next(e)
   })
 
   on('tool.call', ($, e, next) => {
@@ -321,6 +431,11 @@ export const register: Register = (on) => {
         await enqueue($, { ...(await stamp($)), type: 'turn.completed', data })
       }
       toolCalls = 0
+      if (e.answer !== '') lastAnswer = e.answer.slice(-answerTail)
+      if (turnPeak !== null) {
+        await enqueue($, { ...(await stamp($)), type: 'context.measured', data: { pct: turnPeak } })
+        turnPeak = null
+      }
       $.clock.after(0, () => void flush($))
     }
     return next(e)

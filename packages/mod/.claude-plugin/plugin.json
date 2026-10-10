@@ -5,5 +5,13 @@
   "types": "./types/index.d.ts",
   "author": { "name": "eliraz-refael" },
   "repository": "https://github.com/eliraz-refael/Questline",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "minWords": {
+      "type": "number",
+      "title": "Words to grade a prompt",
+      "description": "A prompt you type earns XP from Haiku's grade once it has this many words, pasted text included. Shorter ones, slash commands and prompts you didn't type go ungraded. Only the scores leave your machine, never the prompt.",
+      "default": 6
+    }
+  }
 }

@@ -1,4 +1,5 @@
-import type { CheckoutRef, CommitRef, RepoRef, WorkRef } from '@questline/schema'
+import type { CheckoutRef, ClientEvent, CommitRef, RepoRef, WorkRef } from '@questline/schema'
+import type { CommandSource, SessionCompactTrigger } from 'claude-code'
 import { hmac } from './ids'
 
 // What the mod reads off the work around it: which repo a session is in, and what a Bash call did. It only ever
@@ -75,3 +76,28 @@ export const testRunner = (command: string): string | null => {
  * (`2>&1`, `&>`) are no separators.
  */
 export const exitIsTheRuns = (command: string): boolean => !/[|;\n]|(?<![&>])&(?![&>])/.test(command)
+
+type DataOf<Type extends ClientEvent['type']> = Extract<ClientEvent, { type: Type }>['data']
+
+// The server's pattern for a command's name; one it would refuse goes as `custom`.
+const commandPattern = /^\/[A-Za-z0-9][A-Za-z0-9:._-]{0,63}$/
+
+/**
+ * The name a slash command is counted under: a built-in's or a plugin's by name (`/compact`, `/plugin:name`), and
+ * the player's own, an MCP server's or one the session doesn't list as `custom`, since those names may reveal
+ * private work.
+ */
+export const commandNameOf = (
+  command: string,
+  source: CommandSource | undefined,
+): DataOf<'command.used'>['command'] => {
+  const name = `/${command}`
+  return (source === 'builtin' || source === 'plugin') && commandPattern.test(name) ? name : 'custom'
+}
+
+/**
+ * A compaction as the stats count it: the player's `/compact` is manual, the engine's or a plugin's auto. A
+ * precompute installs nothing, so it is no compaction.
+ */
+export const compactionOf = (trigger: SessionCompactTrigger): DataOf<'session.compacted'>['trigger'] | null =>
+  trigger === 'manual' ? 'manual' : trigger === 'precompute' ? null : 'auto'
