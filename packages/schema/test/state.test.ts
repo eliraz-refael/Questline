@@ -161,6 +161,8 @@ describe("Duplicates", () => {
     expect(Schema.decodeUnknownExit(RollRecord)(missable)._tag).toBe("Failure")
     expect(Schema.decodeUnknownExit(RollRecord)({ ...missable, trigger: "turn" })._tag).toBe("Success")
     expect(Schema.decodeUnknownExit(RollRecord)({ ...missable, trigger: "prompt" })._tag).toBe("Success")
+    expect(Schema.decodeUnknownExit(RollRecord)({ ...missable, trigger: "levelUp" })._tag).toBe("Failure")
+    expect(Schema.decodeUnknownExit(RollRecord)({ ...missable, trigger: "levelUp", chance: 1 })._tag).toBe("Success")
   })
 
   it("salvage into shards tuned per rarity", () => {

@@ -21,7 +21,8 @@ const quality: ReadonlyArray<QualityDimension> = [
 export const gradeOf = (rules: PromptRules, scores: Readonly<Record<GradeDimension, number>>): number => {
   const total = quality.reduce((sum, dimension) => sum + rules.weights[dimension], 0)
   const weighted = quality.reduce((sum, dimension) => sum + rules.weights[dimension] * scores[dimension], 0)
-  return total === 0 ? 0 : weighted / total
+  // To the thousandth, so float error in the weights never puts a grade past 10 or just under a threshold.
+  return total === 0 ? 0 : Math.round((weighted / total) * 1000) / 1000
 }
 
 /** The share, in percent, the `nth` graded prompt of a local day earns; nothing past the last band. */

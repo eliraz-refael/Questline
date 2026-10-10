@@ -1,6 +1,6 @@
 import { it as prop } from "@effect/vitest"
 import type { ClientEvent, Context, GradeDimension, Input, PlayerState, Recorded, RulesConfig, Step } from "@questline/schema"
-import { Step as StepSchema } from "@questline/schema"
+import { RulesConfig as RulesSchema, Step as StepSchema } from "@questline/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {
@@ -111,7 +111,7 @@ const replay = (inputs: ReadonlyArray<Input>, recorded: ReadonlyArray<Recorded>,
   return { state, events }
 }
 
-const always: RulesConfig = { ...starterRules, loot: { ...starterRules.loot, chancePerTurn: 1 } }
+const always: RulesConfig = { ...starterRules, loot: { ...starterRules.loot, chancePerTurn: 1, promptChanceAtTen: 1 } }
 
 describe("step: XP", () => {
   it("grants a commit's reported XP, and the day's first event starts the streak", () => {
@@ -237,14 +237,34 @@ describe("step: graded prompts", () => {
     expect(promptXp(play([client("prompt.graded"), client("prompt.graded", 1)], rules).events)).toEqual([20])
   })
 
-  it("rolls loot at the turn's chance, and a drop names its rarity as the celebration's tier", () => {
+  it("rolls loot, and a drop names its rarity as the celebration's tier", () => {
     const { state, steps } = play([client("prompt.graded")], always)
     expect(steps[0]?.rolls).toEqual([expect.objectContaining({ number: 0, trigger: "prompt", chance: 1 })])
     const dropped = steps[0]?.events.find((e) => e.type === "loot.dropped")
     if (dropped?.type !== "loot.dropped") throw new Error("expected a drop")
     expect(dropped.data.tier).toBe(dropped.data.item.rarity)
     expect(state.holdings.inventory).toHaveLength(1)
-    expect(play([client("prompt.graded")]).steps[0]?.rolls[0]).toMatchObject({ trigger: "prompt", chance: 0.12 })
+  })
+
+  it("rolls at a chance in a line with the weighted grade: 0 at 0, 12% at 5, 24% at 10", () => {
+    const chanceAt = (n: number) => play([client("prompt.graded", 0, session, n)]).steps[0]?.rolls[0]?.chance
+    expect(chanceAt(0)).toBe(0)
+    expect(chanceAt(5)).toBeCloseTo(0.12)
+    expect(chanceAt(10)).toBeCloseTo(0.24)
+    // The weights, not regret, make the grade the chance follows.
+    expect(play([graded({ ...flat(10), regret: 0 })]).steps[0]?.rolls[0]?.chance).toBeCloseTo(0.24)
+  })
+
+  it("raises the rare-and-better weights for a prompt graded at least promptGreatAt", () => {
+    const weights = { common: 999, uncommon: 0, rare: 1, epic: 0, legendary: 0 }
+    const odds = (promptGreatAt: number): RulesConfig => ({
+      ...always,
+      loot: { ...always.loot, weights, promptGreatAt, promptGreatRareFactor: 1_000_000 },
+    })
+    const rarity = (rules: RulesConfig) =>
+      play([client("prompt.graded", 0, session, 9)], rules).steps[0]?.rolls[0]?.drop?.rarity
+    expect(rarity(odds(10))).toBe("common")
+    expect(rarity(odds(9))).toBe("rare")
   })
 
   it("counts graded prompts, today's, the average grade and the regrets, and says so on the stream", () => {
@@ -333,6 +353,40 @@ describe("step: review fixes, prompts and stats", () => {
   })
 })
 
+describe("step: level-up loot", () => {
+  it("drops one item on a level-up, always, by the level-up's own weights, and replays it", () => {
+    const legendary = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 1 }
+    const rules = { ...starterRules, loot: { ...starterRules.loot, onLevelUp: { weights: legendary } } }
+    const inputs = [client("change.merged")]
+    const { state, steps } = play(inputs, rules)
+    expect(steps[0]?.rolls).toEqual([
+      expect.objectContaining({
+        number: 0,
+        trigger: "levelUp",
+        chance: 1,
+        drop: expect.objectContaining({ rarity: "legendary" }),
+      }),
+    ])
+    expect(steps[0]?.events.map((e) => e.type)).toEqual([
+      "xp.granted",
+      "streak.changed",
+      "xp.granted",
+      "level.up",
+      "loot.dropped",
+      "gold.changed",
+    ])
+    expect(state.holdings.inventory).toHaveLength(1)
+    const recorded = steps.map((s) => ({ rolls: s.rolls, refusal: s.refusal }))
+    expect(replay(inputs, recorded, rules).state).toEqual(state)
+  })
+
+  it("rolls nothing for a level already reached", () => {
+    const state = fresh()
+    const reached = { ...state, holdings: { ...state.holdings, peakLevel: 1 } }
+    expect(play([client("change.merged")], starterRules, reached).steps[0]?.rolls).toEqual([])
+  })
+})
+
 describe("step: celebration tiers", () => {
   it("stages a level-up as rare, and as epic when it brings a new title", () => {
     expect(play([client("change.merged")]).events.find((e) => e.type === "level.up")).toMatchObject({
@@ -407,6 +461,39 @@ describe("step: review fixes", () => {
     const early: Input = { kind: "client", event: { ...event, type: "repo.explored" } }
     const result = step(fresh(), early, context(1, now))
     expect(result.state.progress.activeDays).toEqual(["2026-10-09"])
+  })
+})
+
+describe("step: review fixes, graded prompt loot", () => {
+  const weightsOf = (values: ReadonlyArray<number>) => {
+    const [clarity = 0, grammar = 0, specificity = 0, instructive = 0, context = 0, doneCriteria = 0, focus = 0] = values
+    return { clarity, grammar, specificity, instructive, context, doneCriteria, focus }
+  }
+
+  it("never rolls a perfect grade at a chance past 1, whatever float error the weights carry", () => {
+    const weights = weightsOf([7.85, 1.58, 3.05, 0.7, 4.64, 3.45, 7.6])
+    const rules = { ...always, prompt: { ...always.prompt, weights } }
+    const { steps } = play([client("prompt.graded", 0, session, 10)], rules)
+    expect(steps[0]?.rolls[0]?.chance).toBe(1)
+    for (const s of steps) expect(Schema.decodeUnknownExit(StepSchema)(s)._tag).toBe("Success")
+  })
+
+  it("gives a grade of exactly promptGreatAt the raised weights, whatever float error the weights carry", () => {
+    const weights = weightsOf([4.92, 5.56, 5.83, 2.92, 7.44, 4.31, 4.48])
+    const loot = { ...always.loot, weights: { common: 999, uncommon: 0, rare: 1, epic: 0, legendary: 0 }, promptGreatRareFactor: 1_000_000 }
+    const rules = { ...always, loot, prompt: { ...always.prompt, weights } }
+    expect(play([client("prompt.graded", 0, session, 9)], rules).steps[0]?.rolls[0]?.drop?.rarity).toBe("rare")
+  })
+})
+
+describe("starter rules", () => {
+  it("pass the rules schema, which prices a graded prompt only in its prompt section", () => {
+    const decode = Schema.decodeUnknownSync(RulesSchema)
+    expect(decode(starterRules)).toEqual(starterRules)
+    const xp = { ...starterRules.xp, "prompt.graded": { xp: 20, tier: "reported", dailyCap: null } }
+    expect(decode({ ...starterRules, xp }).xp).toEqual(starterRules.xp)
+    const loot = { ...starterRules.loot, promptGreatAt: 11 }
+    expect(Schema.decodeUnknownExit(RulesSchema)({ ...starterRules, loot })._tag).toBe("Failure")
   })
 })
 

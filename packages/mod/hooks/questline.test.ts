@@ -1,5 +1,15 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { On, RenderPropsOf, SessionStartInput } from 'claude-code'
+import type { TestBody } from 'claude-code/testing'
+import type {
+  CommandInfo,
+  ModelCompleteInput,
+  ModelCompleteResult,
+  On,
+  PromptOrigin,
+  RenderPropsOf,
+  SessionMessage,
+  SessionStartInput,
+} from 'claude-code'
 import { hmac } from './ids'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
 
@@ -34,7 +44,19 @@ const engineBeneath = (on: On) => {
   on('turn.complete', () => ({ text: '' }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('session.cwd', () => ({ value: '/work/widgets' }))
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('command.run', ($, e) => ({ text: `ran ${e.command}` }))
+  on('command.list', () => ({ value: commands }))
+  on('session.compact', ($, e) => ({ messages: e.messages }))
+  on('session.measure', ($, e) => ({ changed: e.changed }))
 }
+
+/** The commands the session lists: a built-in, a plugin's, and the player's own. */
+const commands: Array<CommandInfo> = [
+  { name: 'compact', description: 'Compact the conversation', source: 'builtin' },
+  { name: 'pr-watch:watch', description: 'Watch a PR', source: 'plugin', plugin: 'pr-watch' },
+  { name: 'ship-acme-secret', description: 'Ship it', source: 'user' },
+]
 
 type Clock = ReturnType<typeof mock.clock>
 
@@ -249,6 +271,179 @@ describe('reporting work', () => {
     await until(clock, () => flushes() === 2)
     await clock.advance(30_000)
     expect(flushes()).toBe(3)
+  })
+})
+
+const USAGE = { input_tokens: 812, output_tokens: 41, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
+const REPLY =
+  '{"clarity":7,"grammar":8,"specificity":5,"instructive":6,"context":4,"doneCriteria":3,"focus":9,"regret":1,"note":"clear ask"}'
+const composer: PromptOrigin = { kind: 'composer' }
+const presentation = { isFullscreen: false, columns: 100 }
+const typed = 'why did that explode, please fix the parser and add a failing test first'
+
+/** Haiku beneath the mod: it records what it was asked and answers `answer` (a reply text, a failure or a throw). */
+const grader = (on: On, answer: string | ModelCompleteResult | Error = REPLY) => {
+  const asked: Array<ModelCompleteInput> = []
+  on('model.complete', ($, e) => {
+    asked.push(e)
+    if (answer instanceof Error) throw answer
+    return { value: typeof answer === 'string' ? { isAnswered: true, text: answer, usage: USAGE } : answer }
+  })
+  return asked
+}
+
+/** A started session with the server up, its stream held; `flushed` sends what queued and reads all it has sent. */
+const started = async ($: Parameters<TestBody>[0], on: On) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
+  mock.store(on, { explored: ['acme/widgets'] })
+  mock.env(on, { HOME: '/home/player' })
+  const { sent } = fakeServer(on, clock)
+  await $.session.start(start)
+  await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
+  const flushed = async () => {
+    await clock.settle()
+    await clock.advance(30_000)
+    await clock.settle()
+    return eventsOf(sent)
+  }
+  return { clock, sent, flushed }
+}
+
+const ofType = (events: ReadonlyArray<Record<string, unknown>>, type: string) => events.filter((event) => event['type'] === type)
+
+describe('grading prompts', () => {
+  test('grades a typed prompt with Haiku and sends the scores, never the text', async ($, on) => {
+    const asked = grader(on)
+    const { sent, flushed } = await started($, on)
+    await $.turn.complete({ answer: 'I refactored the parser.', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+    const entered = await $.prompt.submit({ text: typed, wait: false, origin: composer })
+    expect(entered).toEqual({ text: typed })
+    const graded = ofType(await flushed(), 'prompt.graded')
+    expect(graded).toHaveLength(1)
+    expect(graded[0]?.['data']).toEqual({
+      scores: { clarity: 7, grammar: 8, specificity: 5, instructive: 6, context: 4, doneCriteria: 3, focus: 9, regret: 1 },
+      rubricVersion: 1,
+      words: 14,
+      grader: 'haiku',
+    })
+    expect(asked[0]).toMatchObject({ model: 'haiku', maxTokens: 120 })
+    expect(asked[0]?.systemBlocks?.[0]?.cache).toBe(true)
+    expect(asked[0]?.prompt).toContain(typed)
+    expect(asked[0]?.prompt).toContain('I refactored the parser.')
+    const wire = JSON.stringify(sent)
+    expect(wire).not.toContain('explode')
+    expect(wire).not.toContain('clear ask')
+  })
+
+  test('reads the previous graded prompt beside the next one', async ($, on) => {
+    const asked = grader(on)
+    const { flushed } = await started($, on)
+    await $.prompt.submit({ text: typed, wait: false, origin: composer })
+    await $.prompt.submit({ text: 'now also cover the empty input case in that test', wait: false, origin: composer })
+    expect(ofType(await flushed(), 'prompt.graded')).toHaveLength(2)
+    expect(asked[1]?.prompt).toContain(`Previous prompt by the user:\n${typed}`)
+  })
+
+  test('reads the prompt the player typed last beside the next one, even one too short to grade', async ($, on) => {
+    const asked = grader(on)
+    const { flushed } = await started($, on)
+    await $.prompt.submit({ text: typed, wait: false, origin: composer })
+    await $.prompt.submit({ text: 'yes do it', wait: false, origin: composer })
+    await $.prompt.submit({ text: 'now also cover the empty input case in that test', wait: false, origin: composer })
+    expect(ofType(await flushed(), 'prompt.graded')).toHaveLength(2)
+    expect(asked[1]?.prompt).toContain('Previous prompt by the user:\nyes do it')
+  })
+
+  test('grades a prompt that opens with a path, not a command', async ($, on) => {
+    const asked = grader(on)
+    const { flushed } = await started($, on)
+    await $.prompt.submit({ text: '/src/parser.ts throws on empty input, add a failing test and fix it', wait: false, origin: composer })
+    expect(ofType(await flushed(), 'prompt.graded')).toHaveLength(1)
+    expect(asked).toHaveLength(1)
+  })
+
+  test('sends nothing for a short prompt, a slash command or a prompt the player did not type', async ($, on) => {
+    const asked = grader(on)
+    const { flushed } = await started($, on)
+    await $.prompt.submit({ text: 'yes do it', wait: false, origin: composer })
+    await $.prompt.submit({ text: '/code-review medium with plenty of words here', wait: false, origin: composer })
+    await $.prompt.submit({ text: typed, wait: false, origin: { kind: 'task-notification' } })
+    expect(ofType(await flushed(), 'prompt.graded')).toEqual([])
+    expect(asked).toEqual([])
+  })
+
+  test('grades from the minWords option', { options: { minWords: 3 } }, async ($, on) => {
+    grader(on)
+    const { flushed } = await started($, on)
+    await $.prompt.submit({ text: 'yes do it', wait: false, origin: composer })
+    await $.prompt.submit({ text: 'go', wait: false, origin: composer })
+    expect(ofType(await flushed(), 'prompt.graded').map((event) => event['data'])).toMatchObject([{ words: 3 }])
+  })
+
+  const failures: ReadonlyArray<[string, string | ModelCompleteResult | Error]> = [
+    ['an API error', { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: USAGE }],
+    ['a call that throws', new Error('refused')],
+    ['a reply that is no JSON', 'Sure! The prompt is pretty good.'],
+    ['a score out of range', REPLY.replace('"focus":9', '"focus":12')],
+    ['a missing score', REPLY.replace('"regret":1,', '')],
+  ]
+  for (const [what, answer] of failures) {
+    test(`sends nothing on ${what}, and the prompt goes on`, async ($, on) => {
+      grader(on, answer)
+      const { flushed } = await started($, on)
+      expect(await $.prompt.submit({ text: typed, wait: false, origin: composer })).toEqual({ text: typed })
+      const events = await flushed()
+      expect(ofType(events, 'prompt.graded')).toEqual([])
+    })
+  }
+})
+
+describe('counting stats', () => {
+  test('a /clear counts under the session it ends', async ($, on) => {
+    const { flushed, sent } = await started($, on)
+    const opened = sent.find((one) => one.path === '/v1/sessions')?.body
+    await $.session.end({ reason: 'clear', sessionId: 'first', resume: { id: 'first' } })
+    const cleared = ofType(await flushed(), 'session.cleared')
+    expect(cleared).toMatchObject([{ data: {} }])
+    expect(opened).toEqual({ sessionId: cleared[0]?.['sessionId'] })
+  })
+
+  test("counts the player's compactions by trigger, not a subagent's, a precompute or a skipped one", async ($, on) => {
+    on('session.compact', { trigger: 'plugin' }, () => ({ skip: 'nothing to compact' }))
+    const { flushed } = await started($, on)
+    const messages: Array<SessionMessage> = [{ role: 'user', text: 'Fix the parser', toolUses: [] }]
+    await $.session.compact({ trigger: 'manual', messages })
+    await $.session.compact({ trigger: 'auto', messages })
+    await $.session.compact({ trigger: 'auto', agentId: 'agent-1', messages })
+    await $.session.compact({ trigger: 'precompute', messages })
+    await $.session.compact({ trigger: 'plugin', messages })
+    const compacted = ofType(await flushed(), 'session.compacted').map((event) => event['data'])
+    expect(compacted).toEqual([{ trigger: 'manual' }, { trigger: 'auto' }])
+  })
+
+  test("counts a command the player ran by name, their own as custom, and none a plugin ran", async ($, on) => {
+    const { flushed } = await started($, on)
+    await $.command.run({ command: 'compact', args: 'keep the plan', origin: composer, presentation })
+    await $.command.run({ command: 'pr-watch:watch', args: '', origin: { kind: 'bridge' }, presentation })
+    await $.command.run({ command: 'ship-acme-secret', args: '', origin: composer, presentation })
+    await $.command.run({ command: 'compact', args: '', origin: { kind: 'plugin', name: 'other' }, presentation })
+    const used = ofType(await flushed(), 'command.used').map((event) => event['data'])
+    expect(used).toEqual([{ command: '/compact' }, { command: '/pr-watch:watch' }, { command: 'custom' }])
+    expect(JSON.stringify(used)).not.toContain('keep the plan')
+  })
+
+  test('reports the fullest the context got once a turn, and nothing for a turn nothing measured', async ($, on) => {
+    const { flushed } = await started($, on)
+    const measure = (percent: number | undefined, changed: Array<'context' | 'cost'>) =>
+      $.session.measure({ context: { window: 200_000, ...(percent === undefined ? {} : { percent }) }, rateLimits: [], changed })
+    await measure(40, ['context'])
+    await measure(85, ['context'])
+    await measure(30, ['context'])
+    await measure(99, ['cost'])
+    await measure(undefined, ['context'])
+    await $.turn.complete({ answer: 'Done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+    await $.turn.complete({ answer: 'Done', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' })
+    expect(ofType(await flushed(), 'context.measured').map((event) => event['data'])).toEqual([{ pct: 85 }])
   })
 })
 

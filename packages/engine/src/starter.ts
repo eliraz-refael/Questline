@@ -4,8 +4,8 @@ import type { ItemDef, RulesConfig } from "@questline/schema"
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
 
 export const starterRules: RulesConfig = {
-  version: 1,
-  schemaVersion: 1,
+  version: 2,
+  schemaVersion: 2,
   appliesFrom: null,
   levelCurve: { base: 100, exponent: 1.6 },
   titles: [
@@ -27,13 +27,16 @@ export const starterRules: RulesConfig = {
     "tests.green": { xp: 20, tier: "reported", dailyCap: 5 },
     "repo.explored": { xp: 25, tier: "reported", dailyCap: 3 },
     "streak.day": { xp: 10, tier: "reported", dailyCap: 1 },
-    // The grade prices a prompt (see `prompt`); this rule gives its tier and cap. No cap: the day's bands taper it.
-    "prompt.graded": { xp: 20, tier: "reported", dailyCap: null },
   },
   loot: {
     chancePerTurn: 0.12,
+    // 12% at an average grade of 5, the turn's chance; 24% at 10. A grade of 9 or more doubles rare and better.
+    promptChanceAtTen: 0.24,
+    promptGreatAt: 9,
+    promptGreatRareFactor: 2,
     chanceOnVerified: 1,
     weights: { common: 60, uncommon: 25, rare: 10, epic: 4, legendary: 1 },
+    onLevelUp: { weights: { common: 50, uncommon: 30, rare: 15, epic: 4, legendary: 1 } },
     pity: { rareAfter: 25, epicAfter: 80 },
     gold: { common: 10, uncommon: 25, rare: 70, epic: 175, legendary: 400 },
     shardsToCraft: 10,

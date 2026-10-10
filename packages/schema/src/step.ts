@@ -16,10 +16,10 @@ export const RollRecord = Schema.Struct({
   /** Per player, from 0; draws from hash(rollSeed, number). */
   number: Count,
   /**
-   * turn: a finished agent turn; prompt: a graded prompt; verified: a verified fact; reward: a quest or milestone
-   * that always drops; reroll: a duplicate traded in, which keeps its rarity.
+   * turn: a finished agent turn; prompt: a graded prompt; verified: a verified fact; levelUp: a level reached;
+   * reward: a quest or milestone that always drops; reroll: a duplicate traded in, which keeps its rarity.
    */
-  trigger: Schema.Literals(["turn", "prompt", "verified", "reward", "reroll"]),
+  trigger: Schema.Literals(["turn", "prompt", "verified", "levelUp", "reward", "reroll"]),
   /** Chance of any drop; 1 for everything but a turn or a prompt. */
   chance: Probability,
   pityBefore: Pity,

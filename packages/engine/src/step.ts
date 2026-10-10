@@ -16,16 +16,19 @@ import type {
   StatCounters,
   Step,
   SystemEvent,
+  XpRule,
 } from "@questline/schema"
 import { addDays, isLater, localDay } from "./days.ts"
 import { formFor, formsFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
-import { pityAfter, rollLoot } from "./loot.ts"
+import type { RarityWeights } from "./loot.ts"
+import { pityAfter, raiseRare, rollLoot } from "./loot.ts"
 import { ulids } from "./random.ts"
 import { bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
 // This version covers the proof of concept: reported XP with daily caps, XP for graded prompts, levels, the streak,
-// a loot roll per turn and per graded prompt, the player stats, and hatching the pet. Verified-tier facts wait for
+// a loot roll per turn, per graded prompt (better odds for a better grade) and per level-up, the player stats, and
+// hatching the pet. Verified-tier facts wait for
 // the verifier, and other commands are refused for now.
 
 /** What one step builds up. It lives only inside `step`, so the function stays pure. */
@@ -162,7 +165,8 @@ const statsChanged = (run: Run, pick: (stats: PlayerStats) => Partial<PlayerStat
 
 /**
  * A graded prompt: XP from its weighted quality grade, tapered by how many the day has seen already, a loot roll
- * like a finished turn's, and the prompt stats. The grade is priced whatever rubric version made it.
+ * whose chance rises with the grade (a great grade also raises the rare-and-better weights), and the prompt stats.
+ * The grade is priced whatever rubric version made it.
  */
 const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>, day: string): void => {
   const { rules } = run.context
@@ -179,7 +183,9 @@ const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>,
       regretted: prompts.regretted + (scores.regret > 0 ? 1 : 0),
     },
   })
-  roll(run, "prompt", rules.loot.chancePerTurn)
+  const { loot } = rules
+  const weights = grade >= loot.promptGreatAt ? raiseRare(loot.weights, loot.promptGreatRareFactor) : loot.weights
+  roll(run, "prompt", (loot.promptChanceAtTen * grade) / 10, weights)
   statsChanged(run, (stats) => ({ prompts: stats.prompts }))
 }
 
@@ -211,10 +217,13 @@ const bonusPct = (run: Run): number => {
   return happy + Math.max(0, ...boosts)
 }
 
+/** A graded prompt's rule: the `prompt` section sets its XP, and the day's bands, not a cap, taper it. */
+const promptRule: XpRule = { xp: 0, tier: "reported", dailyCap: null }
+
 /** Counts one scoring fact and grants its XP, unless the day's cap is reached. `xp` overrides the rule's amount. */
 const grant = (run: Run, fact: ScoringFact, day: string, xp?: number): void => {
   const { rules } = run.context
-  const rule = rules.xp[fact]
+  const rule = fact === "prompt.graded" ? promptRule : rules.xp[fact]
   // Verified-tier facts are granted when the verifier confirms them; a hint alone earns nothing.
   if (rule.tier === "verified") return
   const progress = run.state.progress
@@ -241,7 +250,10 @@ const grant = (run: Run, fact: ScoringFact, day: string, xp?: number): void => {
   levelUp(run, before)
 }
 
-/** A level above the highest one reached since the last prestige: the banner, a new title, maybe an evolution. */
+/**
+ * A level above the highest one reached since the last prestige: the banner, a new title, maybe an evolution, and
+ * one drop that always lands, by the level-up's own rarity weights. A jump of several levels at once drops once.
+ */
 const levelUp = (run: Run, before: number): void => {
   const { rules } = run.context
   const after = levelOf(run.state, rules).level
@@ -266,6 +278,7 @@ const levelUp = (run: Run, before: number): void => {
   const forms = evolves ? [...new Set([...pet.forms, ...formsFor(rules, after)])].sort((a, b) => a - b) : []
   setHoldings(run, { peakLevel: after, pet: evolves ? { ...pet, forms, form } : pet })
   if (evolves) run.events.push({ type: "pet.changed", data: { form } })
+  roll(run, "levelUp", 1, rules.loot.onLevelUp.weights)
 }
 
 /** The first event of a local day extends the streak and earns its XP. */
@@ -305,8 +318,8 @@ const disarm = (run: Run, passed: ArmedTestRun): boolean => {
   return left.length < armed.length
 }
 
-/** Rolls loot, or in a replay applies the roll the log recorded. */
-const roll = (run: Run, trigger: RollRecord["trigger"], chance: number): void => {
+/** Rolls loot, by `weights` if the trigger has its own odds, or in a replay applies the roll the log recorded. */
+const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, weights?: RarityWeights): void => {
   const { context } = run
   const { rules, catalog } = context
   const loot = run.state.holdings.loot
@@ -317,7 +330,7 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number): void =>
     if (recorded === undefined) return
     record = recorded
   } else {
-    const drop = rollLoot(context.rollSeed, loot.nextRoll, chance, rules, catalog, loot.pity)
+    const drop = rollLoot(context.rollSeed, loot.nextRoll, chance, rules, catalog, loot.pity, weights)
     record = {
       number: loot.nextRoll,
       trigger,

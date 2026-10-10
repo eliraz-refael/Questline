@@ -1,8 +1,8 @@
 import { Schema } from "effect"
 import { Count, IsoDateTime, Probability, QualityDimension, Rarity, XpTier } from "./primitives.ts"
 
-/** Scoring facts are derived by the server from client events and GitHub; quest goals use the same names. */
-export const ScoringFact = Schema.Literals([
+/** The scoring facts an `XpRule` prices: every one but a graded prompt, which the `prompt` section prices. */
+export const XpFact = Schema.Literals([
   "change.merged",
   "change.opened",
   "commit.made",
@@ -13,8 +13,11 @@ export const ScoringFact = Schema.Literals([
   "tests.green",
   "repo.explored",
   "streak.day",
-  "prompt.graded",
 ])
+export type XpFact = typeof XpFact.Type
+
+/** Scoring facts are derived by the server from client events and GitHub; quest goals use the same names. */
+export const ScoringFact = Schema.Literals([...XpFact.literals, "prompt.graded"])
 export type ScoringFact = typeof ScoringFact.Type
 
 export const XpRule = Schema.Struct({
@@ -74,12 +77,21 @@ export const RulesConfig = Schema.Struct({
   appliesFrom: Schema.NullOr(IsoDateTime),
   levelCurve: LevelCurve,
   titles: Schema.Array(Schema.Struct({ fromLevel: Count, title: Schema.String })),
-  xp: Schema.Record(ScoringFact, XpRule),
+  /** A graded prompt has no rule here: the `prompt` section prices it, always reported and uncapped. */
+  xp: Schema.Record(XpFact, XpRule),
   loot: Schema.Struct({
-    /** Per finished turn and per graded prompt. */
+    /** Per finished turn. */
     chancePerTurn: Probability,
+    /** Per graded prompt, at a perfect weighted grade; the chance falls in a line to 0 at a grade of 0. */
+    promptChanceAtTen: Probability,
+    /** A prompt graded at least this well rolls with the rare-and-better weights raised. */
+    promptGreatAt: Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 10 }))),
+    /** What those weights are multiplied by. */
+    promptGreatRareFactor: Positive,
     chanceOnVerified: Probability,
     weights: Schema.Record(Rarity, Count),
+    /** Every level-up drops one item, by these rarity weights. */
+    onLevelUp: Schema.Struct({ weights: Schema.Record(Rarity, Count) }),
     pity: Schema.Struct({ rareAfter: Count, epicAfter: Count }),
     gold: Schema.Record(Rarity, Count),
     shardsToCraft: Count,

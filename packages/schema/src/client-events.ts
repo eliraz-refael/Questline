@@ -48,8 +48,8 @@ export const RepoExplored = clientEvent("repo.explored", { repo: Schema.NullOr(R
 export const GradeScore = Schema.Int.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 10 })))
 
 /**
- * The grader scored a prompt the player typed at the prompt box (6+ words). Reported. Scores only: the prompt text
- * and the grader's note stay in the mod.
+ * The grader scored a prompt the player typed at the prompt box (6+ words by default, the mod's `minWords`).
+ * Reported. Scores only: the prompt text and the grader's note stay in the mod.
  */
 export const PromptGraded = clientEvent("prompt.graded", {
   scores: Schema.Record(GradeDimension, GradeScore),
