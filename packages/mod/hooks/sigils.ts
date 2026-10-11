@@ -1,5 +1,6 @@
 import type { ItemDef, RulesConfig } from '@questline/schema'
 import type { OwnedItem, SigilView, Tier, Wardrobe } from '../types'
+import { tierRank } from './celebrate'
 import { cellsOf } from './cells'
 
 // Sigils, as the pane and the band word them: one worn at a time, a multiplier on the XP graded prompts earn. The
@@ -7,13 +8,6 @@ import { cellsOf } from './cells'
 
 /** A multiplier as the player reads it: `×2`, `×2.2`, `×1.25`. */
 export const multiplierText = (multiplier: number): string => `×${Math.round(multiplier * 100) / 100}`
-
-/** A boost's length in its largest unit: `1h`, `90m`, `2h`. */
-const lengthText = (minutes: number): string => (minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`)
-
-/** A mission's XP boost in words: `+10% XP for 1h`. */
-export const boostText = (boost: { readonly pct: number; readonly minutes: number }): string =>
-  `+${boost.pct}% XP for ${lengthText(boost.minutes)}`
 
 /**
  * A sigil's power as a definition carries it, read with care: an older server sends none, and a mark that isn't one
@@ -55,8 +49,6 @@ export type SigilChoice = {
   isWorn: boolean
 }
 
-const rank: Record<Tier, number> = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4 }
-
 /** The owned sigils, the strongest first, copies counted, and one worn the snapshot can't name, so it can come off. */
 export const sigilChoices = (wardrobe: Wardrobe | null): Array<SigilChoice> => {
   const wornId = wardrobe?.equipped['sigil']
@@ -79,7 +71,7 @@ export const sigilChoices = (wardrobe: Wardrobe | null): Array<SigilChoice> => {
   const owned = [...byItem.values()].sort(
     (a, b) =>
       (b.sigil?.multiplier ?? 1) - (a.sigil?.multiplier ?? 1) ||
-      rank[b.rarity ?? 'common'] - rank[a.rarity ?? 'common'] ||
+      tierRank(b.rarity ?? 'common') - tierRank(a.rarity ?? 'common') ||
       a.name.localeCompare(b.name),
   )
   const isNamed = owned.some((choice) => choice.isWorn)

@@ -1,8 +1,8 @@
 import type { PlayerStats, RulesConfig, ScoringFact, ServerEvent, Snapshot } from '@questline/schema'
 import type { PluginOptions } from 'claude-code'
 import type { BandView, GainLine, OwnedItem, StatsView, Wardrobe } from '../types'
-import { tierOf } from './celebrate'
-import { boostText, knowsSigilsOf, multiplierText, sigilOf, wornSigil } from './sigils'
+import { boostText, tierOf } from './celebrate'
+import { knowsSigilsOf, multiplierText, sigilOf, wornSigil } from './sigils'
 
 // What the band draws, worked out from the server's snapshot and stream; no game rule is computed here.
 
@@ -105,14 +105,18 @@ export const statsViewOf = (
     commands,
     xp: { verified: numberOr(xp.verified, 0), reported: numberOr(xp.reported, 0) },
     items: Array.isArray(snapshot.inventory) ? snapshot.inventory.length : 0,
-    sigil: knowsSigilsOf(rules) ? { worn: sigilWornOf(wardrobe) } : null,
+    sigil: knowsSigilsOf(rules) ? sigilStatOf(wardrobe) : null,
   }
 }
 
-/** The sigil worn, with its name and rarity, for the Stats tab; null when none is, or the snapshot can't name it. */
-const sigilWornOf = (wardrobe: Wardrobe): NonNullable<StatsView['sigil']>['worn'] => {
+/**
+ * The sigil worn, with its name and rarity, for the Stats tab: `worn` null when none is, or when the one worn is one
+ * the snapshot can't name, which `isUnknown` says.
+ */
+const sigilStatOf = (wardrobe: Wardrobe): NonNullable<StatsView['sigil']> => {
   const worn = wornSigil(wardrobe)
-  return worn?.sigil === undefined ? null : { ...worn.sigil, name: worn.name, rarity: worn.rarity }
+  if (worn?.sigil !== undefined) return { worn: { ...worn.sigil, name: worn.name, rarity: worn.rarity } }
+  return wardrobe.equipped['sigil'] === undefined ? { worn: null } : { worn: null, isUnknown: true }
 }
 
 /** The egg hatches once the character reaches level 1. */

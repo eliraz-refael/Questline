@@ -1,4 +1,4 @@
-import { ulids } from "@questline/engine"
+import { levelForXp, ulids, xpForLevel } from "@questline/engine"
 import { Clock, Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
 import { randomBytes } from "node:crypto"
@@ -276,20 +276,22 @@ const presence = Effect.gen(function* () {
 // have dropped a level or more. Each one keeps their level and their share of the way to the next: they are given the
 // XP their place takes on the new curve, as reported XP, logged as an `xp.carried` input so a replay of the log adds it
 // too. The curves are written out here, so this migration means the same thing whatever the rules later become.
-// Boosts gained a kind: any stored before it came from food, the only kind there was.
+// Boosts gained a kind: any stored before it came from food, the only kind there was. The rows then read as engine 10
+// and rules 7, which their state now is.
+//
+// It writes the state itself rather than running the engine's `step` on the carry: a database migrated later runs this
+// with the engine and the state schema of that day, which may not read a state shaped for this one. The engine's
+// `xp.carried` keeps to the same effect on such a state (the XP, the peak level already reached), and a test holds
+// the two together.
 const carriedCurve = { from: { base: 100, exponent: 1.6 }, to: { base: 100, exponent: 1.66 }, rulesVersion: 7 }
-
-const xpAt = (curve: { readonly base: number; readonly exponent: number }, level: number): number =>
-  Math.floor(curve.base * level ** curve.exponent)
 
 /** The XP that puts `total` at the same level, and the same share into it, on the steeper curve. */
 export const carriedXp = (total: number): number => {
   const { from, to } = carriedCurve
-  let level = 0
-  while (xpAt(from, level + 1) <= total) level++
-  const share = (total - xpAt(from, level)) / (xpAt(from, level + 1) - xpAt(from, level))
-  const placed = xpAt(to, level) + Math.floor(share * (xpAt(to, level + 1) - xpAt(to, level)))
-  return Math.max(0, placed - total)
+  const was = levelForXp(from, total)
+  const share = was.intoLevel / was.forNextLevel
+  const span = xpForLevel(to, was.level + 1) - xpForLevel(to, was.level)
+  return Math.max(0, xpForLevel(to, was.level) + Math.floor(share * span) - total)
 }
 
 const SavedXp = Schema.Struct({
@@ -301,6 +303,10 @@ const SavedXp = Schema.Struct({
 
 const sigils = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const now = new Date(yield* Clock.currentTimeMillis).toISOString()
+  const rows = yield* sql<{ player_id: string; state: unknown; log_seq: number }>`
+    SELECT player_id, state, log_seq FROM player_state WHERE rules_version < ${carriedCurve.rulesVersion}
+  `
   yield* sql`
     UPDATE player_state
     SET state = jsonb_set(
@@ -314,11 +320,7 @@ const sigils = Effect.gen(function* () {
         FROM jsonb_array_elements(state -> 'progress' -> 'boosts') WITH ORDINALITY AS boosts (boost, i)
       )
     )
-    WHERE jsonb_typeof(state -> 'progress' -> 'boosts') = 'array'
-  `
-  const now = new Date(yield* Clock.currentTimeMillis).toISOString()
-  const rows = yield* sql<{ player_id: string; state: unknown; log_seq: number }>`
-    SELECT player_id, state, log_seq FROM player_state WHERE rules_version < ${carriedCurve.rulesVersion}
+    WHERE jsonb_typeof(state -> 'progress' -> 'boosts') = 'array' AND rules_version < ${carriedCurve.rulesVersion}
   `
   for (const row of rows) {
     const saved = yield* Schema.decodeUnknownEffect(SavedXp)(row.state)
@@ -345,6 +347,10 @@ const sigils = Effect.gen(function* () {
       WHERE player_id = ${row.player_id}
     `
   }
+  yield* sql`
+    UPDATE player_state SET engine_version = 10, rules_version = ${carriedCurve.rulesVersion}
+    WHERE rules_version < ${carriedCurve.rulesVersion}
+  `
 })
 
 /** Every migration, by the name the migrator records it under. */

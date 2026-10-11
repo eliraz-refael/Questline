@@ -1,4 +1,5 @@
 import type { BandLook, BandSlot, BandView, PaneTab, Tier, Wardrobe } from '../types'
+import { tierRank } from './celebrate'
 import { cellsOf } from './cells'
 import { bandSlots, equippedIn, loops } from './looks'
 
@@ -79,7 +80,6 @@ const slotNames: Record<BandSlot, string> = {
   goldDisplay: 'Gold',
 }
 
-const rank: Record<Tier, number> = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4 }
 
 /** One look a band slot can wear: the mod's own (`entryId` null), or an owned band style. */
 export type Choice = {
@@ -144,7 +144,7 @@ export const lookSections = (wardrobe: Wardrobe | null): Array<Section> =>
             },
           ]
     const styles = [...byItem.values()].sort(
-      (a, b) => rank[b.rarity ?? 'common'] - rank[a.rarity ?? 'common'] || a.name.localeCompare(b.name),
+      (a, b) => tierRank(b.rarity ?? 'common') - tierRank(a.rarity ?? 'common') || a.name.localeCompare(b.name),
     )
     const own: Choice = {
       key: 'own',
@@ -174,7 +174,7 @@ export const otherItems = (wardrobe: Wardrobe | null): Array<OtherItem> => {
     const { itemId, name, rarity } = item
     counted.set(itemId, { itemId, name, rarity, kind: kindOf(item.category), count })
   }
-  return [...counted.values()].sort((a, b) => rank[b.rarity] - rank[a.rarity] || a.name.localeCompare(b.name))
+  return [...counted.values()].sort((a, b) => tierRank(b.rarity) - tierRank(a.rarity) || a.name.localeCompare(b.name))
 }
 
 const kinds: Record<string, string> = {

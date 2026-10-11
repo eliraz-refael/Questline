@@ -64,7 +64,7 @@ export interface Recorded extends Schema.Schema.Type<typeof Recorded> {}
 /**
  * What is wrong with a catalogue under the rules' sigil ranges (`prompt.sigilMultiplier`), if anything: a sigil whose
  * multiplier sits outside its rarity's range. The rules hold the ranges and each sigil its own multiplier, so they are
- * checked together.
+ * checked together, by the server as it starts on them.
  */
 export const catalogIssue = (ranges: SigilRanges, catalog: ReadonlyArray<ItemDef>): string | undefined => {
   for (const item of catalog) {
@@ -94,9 +94,7 @@ export const Context = Schema.Struct({
     Schema.Struct({ kind: Schema.Literal("live") }),
     Schema.Struct({ kind: Schema.Literal("replay"), recorded: Recorded }),
   ]),
-}).check(
-  Schema.makeFilter((context) => catalogIssue(context.rules.prompt.sigilMultiplier, context.catalog) ?? true),
-)
+})
 export interface Context extends Schema.Schema.Type<typeof Context> {}
 
 /** The result of one step. A refused command returns the state unchanged and nothing else. */

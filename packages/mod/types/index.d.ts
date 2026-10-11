@@ -125,7 +125,11 @@ export type StatsView = {
    * The sigil worn, with its name; `worn` null when none is. Null itself from a server older than sigils, where the
    * tab shows no row for one.
    */
-  sigil?: { worn: (SigilView & { name: string; rarity: Tier }) | null } | null
+  sigil?: {
+    worn: (SigilView & { name: string; rarity: Tier }) | null
+    /** One is worn that the snapshot can't name, as the catalogue no longer has it. */
+    isUnknown?: boolean
+  } | null
 }
 
 /** What a mission grants when it completes, as the pack promises it: XP, gold, an XP boost, a drop of a rarity. */

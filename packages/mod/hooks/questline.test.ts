@@ -2457,6 +2457,24 @@ describe('sigils', () => {
     expect(rewardsText(rewards)).toBe('+300 XP · +150 gold · +15% XP for 2h · epic drop')
   })
 
+  test('a worn sigil the catalogue lost reads the same in the header, the list and the Stats tab', async ($, on) => {
+    const lost: Owned = { ...withSigils(false), equipped: { sigil: '01K6ZQ8W3J0000000000009099' } }
+    const { sent } = await streaming($, on, lost, false, { counted: playing, rules: sigilRules })
+    const all = (await paneTexts($, 100)).texts.join('\n')
+    expect(all).toContain('the one worn is no longer in the catalogue, and adds nothing')
+    expect(all).not.toContain('none worn')
+    expect(all).toMatch(/● \? Unknown sigil no longer in the catalogue/)
+    await openStats($)
+    expect((await paneTexts($, 72)).texts.join('\n')).toMatch(/^ {2}Sigil +unknown sigil$/m)
+    const stats = await mountPane($)
+    await stats.press({ key: 'tab:inventory' })
+    await stats.unmount()
+    const ui = await mountPane($)
+    await ui.press({ key: 'unequip:sigil' })
+    await ui.unmount()
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'item.unequip', data: { slot: 'sigil' } })
+  })
+
   test('dev mode grants a sigil by its id', async ($, on) => {
     const { sent } = await streaming($, on, ownedOf(), true, { rules: sigilRules })
     const answer = await $.command.run({ command: 'questline', args: 'dev item arcane-sigil', origin: composer, presentation })

@@ -291,19 +291,6 @@ describe("sigils: the catalogue in force", () => {
     expect(promptGrants(gone.events).map((grant) => grant.amount)).toEqual([10, 10, 10])
   })
 
-  it("holds a sigil to its rarity's range in the rules, so a catalogue out of step never pays more", () => {
-    expect(equippedSigil(wearing("arcane-sigil"), { rules: starterRules, catalog: retuned(3) })).toBe(2.2)
-    const lower: RulesConfig = {
-      ...starterRules,
-      prompt: {
-        ...starterRules.prompt,
-        sigilMultiplier: { ...starterRules.prompt.sigilMultiplier, epic: [2.05, 2.2] },
-      },
-    }
-    expect(Schema.is(RulesSchema)(lower)).toBe(true)
-    expect(equippedSigil(wearing("arcane-sigil"), { rules: lower, catalog: starterCatalog })).toBe(2.05)
-  })
-
   it("equips only into the sigil slot, and the snapshot carries the sigil worn and its definition", () => {
     const owned = owning("arcane-sigil", "wizard-hat")
     const [arcane, hat] = entryIds
@@ -378,7 +365,7 @@ describe("sigils: drops only", () => {
     expect(categories(steps[0]?.state ?? fresh())).toEqual(["sigil", "sigil"])
   })
 
-  it("is never handed out by a quest that names one or a sigil pool: the reward rolls, a sigil at the usual share", () => {
+  it("is never handed out by a quest naming one or a sigil pool: the reward rolls, a sigil at the usual share", () => {
     const pack = (loot: QuestPack["quests"][number]["rewards"]["loot"]): QuestPack => ({
       id: "test",
       version: 1,
@@ -410,13 +397,13 @@ describe("sigils: drops only", () => {
     expect(rewarded({ rarity: "common", item: "wizard-hat" }).map((item) => item?.id)).toEqual(["wizard-hat"])
   })
 
-  it("is never made by a shard craft, which refuses one; nor by a re-roll or the shop, which are not built yet", () => {
+  it("is never made by a shard craft, a re-roll or the shop, which are not built yet and refuse all", () => {
     const craft = (itemId: string) => command({ id: nextId(), type: "shards.craft", data: { rarity: "epic", itemId } })
     const reroll = command({ id: nextId(), type: "item.reroll", data: { entryId: entryIds[0] ?? "" } })
     const buy = command({ id: nextId(), type: "shop.buy", data: { offerId: "arcane-sigil" } })
     const { steps, state } = play([craft("arcane-sigil"), craft("pixel-dragon"), reroll, buy], wearing("arcane-sigil"))
     expect(steps.map((s) => [s.refusal?.code, s.refusal?.message])).toEqual([
-      ["not_allowed", "A sigil only drops: shards can't craft one"],
+      ["not_allowed", "Not available in this version yet"],
       ["not_allowed", "Not available in this version yet"],
       ["not_allowed", "Not available in this version yet"],
       ["not_allowed", "Not available in this version yet"],
@@ -549,7 +536,51 @@ describe("XP a curve change carries", () => {
     expect(again.state).toEqual(result.state)
   })
 
-  it("does just what the migration did, in a replay too: no missions rolled, no level-up, only the XP", () => {
+  it("catches a replay's milestones up to the level it brings back, so the next grant raises no level-up", () => {
+    // Saved at level 12 under the old curve, the pet evolved at 10; replayed under the steeper one, the log's XP
+    // reaches a lower level before the carry, the pet evolving at 10 as before.
+    const before = { base: 100, exponent: 1.6 }
+    const saved = xpForLevel(before, 12) + 10
+    const amount = xpForLevel(starterRules.levelCurve, 12) + 10 - saved
+    const state = fresh()
+    const pet: OwnedPet = { ...happyPet, forms: [0, 1], form: 1 }
+    const replayed: PlayerState = {
+      ...state,
+      progress: { ...state.progress, xp: { verified: 0, reported: saved } },
+      holdings: { ...state.holdings, pet },
+    }
+    const peakLevel = levelOf(replayed, starterRules).level
+    expect(peakLevel).toBeLessThan(12)
+    expect(peakLevel).toBeGreaterThanOrEqual(10)
+    const short = { ...replayed, holdings: { ...replayed.holdings, peakLevel } }
+    const replaying: Context["mode"] = { kind: "replay", recorded: { rolls: [], refusal: null } }
+    const result = step(short, carried(amount), contextAt(1, start, {}, replaying))
+    expect(result.events).toEqual([])
+    expect(levelOf(result.state, starterRules).level).toBe(12)
+    expect(result.state.holdings.peakLevel).toBe(12)
+    expect(result.state.holdings.pet).toEqual(pet)
+    // The next grant plays as it did live: XP, no level-up, no drop.
+    const after = step(result.state, commit(1), contextAt(2, minutesLater(1)))
+    expect(after.events.map((e) => e.type)).not.toContain("level.up")
+    expect(after.rolls).toEqual([])
+  })
+
+  it("unlocks a form the carried level reaches, quietly, as the saved state already had it", () => {
+    const state = fresh()
+    const pet: OwnedPet = { ...happyPet, forms: [0], form: 0 }
+    const reported = xpForLevel(starterRules.levelCurve, 9)
+    const nine: PlayerState = {
+      ...state,
+      progress: { ...state.progress, xp: { verified: 0, reported } },
+      holdings: { ...state.holdings, peakLevel: 9, pet },
+    }
+    const amount = xpForLevel(starterRules.levelCurve, 10) - reported
+    const result = step(nine, carried(amount), contextAt(1, start))
+    expect(result.events).toEqual([])
+    expect(result.state.holdings).toMatchObject({ peakLevel: 10, pet: { forms: [0, 1], form: 1 } })
+  })
+
+  it("does just what the migration did, in a replay too: no missions rolled, no banner and no drop", () => {
     const pack: QuestPack = {
       id: "test",
       version: 1,
@@ -571,6 +602,11 @@ describe("XP a curve change carries", () => {
     const result = step(state, carried(150), contextAt(1, start, { rules, packs: [pack] }, replaying))
     expect(result.events).toEqual([])
     expect(result.rolls).toEqual([])
-    expect(result.state).toEqual({ ...state, progress: { ...state.progress, xp: { verified: 0, reported: 150 } } })
+    // The XP, and the level it reaches kept as reached.
+    expect(result.state).toEqual({
+      ...state,
+      progress: { ...state.progress, xp: { verified: 0, reported: 150 } },
+      holdings: { ...state.holdings, peakLevel: 1 },
+    })
   })
 })

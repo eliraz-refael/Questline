@@ -1,12 +1,21 @@
 import type { PluginOptions } from 'claude-code'
 import type { QuestRewards, ServerEvent } from '@questline/schema'
 import type { Celebration, Motion, Tier } from '../types'
-import { boostText } from './sigils'
 
 // What the band celebrates and when: the server's events as celebrations, the queue they wait in, and how long each
 // plays. The server names every tier; nothing here decides how big a moment is, only how a tier is staged.
 
 const tiers: ReadonlyArray<Tier> = ['common', 'uncommon', 'rare', 'epic', 'legendary']
+
+/** A tier's place, common first: rarer sorts later. */
+export const tierRank = (tier: Tier): number => tiers.indexOf(tier)
+
+/** A boost's length in its largest unit: `1h`, `90m`, `2h`. */
+const lengthText = (minutes: number): string => (minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`)
+
+/** A mission's XP boost in words: `+10% XP for 1h`. */
+export const boostText = (boost: { readonly pct: number; readonly minutes: number }): string =>
+  `+${boost.pct}% XP for ${lengthText(boost.minutes)}`
 
 /** A tier from the wire; one this mod doesn't know yet plays as the smallest. */
 export const tierOf = (value: string): Tier => tiers.find((tier) => tier === value) ?? 'common'

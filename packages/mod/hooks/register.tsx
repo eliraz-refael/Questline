@@ -1306,7 +1306,9 @@ export const register: Register = (on, options) => {
     const sigilIntro =
       worn?.sigil !== undefined
         ? `${multiplierText(worn.sigil.multiplier)} on the XP your graded prompts earn · one worn at a time`
-        : sigils.length === 0
+        : owned.equipped['sigil'] !== undefined
+          ? 'the one worn is no longer in the catalogue, and adds nothing · one worn at a time'
+          : sigils.length === 0
           ? 'none yet: they drop like any loot, and multiply the XP your graded prompts earn'
           : 'none worn · one at a time multiplies the XP your graded prompts earn'
     // Only a server that deals in sigils gets the section: an older one has none to show.

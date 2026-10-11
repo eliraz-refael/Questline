@@ -1,10 +1,9 @@
 import type { QuestState, RulesConfig, Snapshot } from '@questline/schema'
 import type { MissionRewards, MissionsView, MissionView, Tier } from '../types'
-import { tierOf } from './celebrate'
+import { boostText, tierOf } from './celebrate'
 import type { Row, Run } from './cells'
 import { blank, cellsOf, cellsOfRow, clip, dim } from './cells'
 import { rarityColors } from './frames'
-import { boostText } from './sigils'
 import { counted, fitting, meter } from './stats'
 
 // Missions, the daily and weekly quests, as the pane's Missions tab and the band's row 2 show them. The server rolls

@@ -69,13 +69,19 @@ interface Run {
 }
 
 /**
+ * System inputs that are bookkeeping, not play: a migration wrote them into the log, and a replay of one must do just
+ * what the migration did, so it rolls no window. XP a curve change carried is one.
+ */
+const bookkeeping: ReadonlyArray<SystemEvent["type"]> = ["xp.carried"]
+
+const isBookkeeping = (input: Input): boolean => input.kind === "system" && bookkeeping.includes(input.event.type)
+
+/**
  * Every step first rolls the missions of a local day or week begun since the last roll, then applies its input. A
- * refused command changes nothing, the roll included: the next step rolls instead. XP a curve change carried is
- * bookkeeping a migration wrote, not play: it rolls nothing, so a replay of it does just what the migration did.
+ * refused command changes nothing, the roll included: the next step rolls instead. Bookkeeping rolls nothing.
  */
 export const step = (state: PlayerState, input: Input, context: Context): Step => {
-  const isCarry = input.kind === "system" && input.event.type === "xp.carried"
-  const rolled = isCarry ? { state, events: [] } : rollQuests(state, context)
+  const rolled = isBookkeeping(input) ? { state, events: [] } : rollQuests(state, context)
   const result = dispatch(rolled.state, input, context)
   if (result.refusal !== null) return refuse(state, result.refusal)
   return rolled.events.length === 0 ? result : { ...result, events: [...rolled.events, ...result.events] }
@@ -299,11 +305,6 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
       return accept(state, command.data.questId, context)
     case "quest.abandon":
       return abandon(state, command.data.questId, context)
-    case "shards.craft":
-      // Shard crafting comes later; a sigil it will never make, as gold and shards never buy XP.
-      return context.catalog.some((def) => def.id === command.data.itemId && isSigil(def))
-        ? refuse(state, { code: "not_allowed", message: "A sigil only drops: shards can't craft one" })
-        : refuse(state, { code: "not_allowed", message: "Not available in this version yet" })
     case "dev.grantItem":
     case "dev.grantStyles":
     case "dev.grantXp":
@@ -335,9 +336,12 @@ const applySystem = (state: PlayerState, event: SystemEvent, context: Context): 
       setProgress(run, { presence: prunePresence(closeSpan(presence, event.sessionId, event.at, now), now) })
       break
     case "xp.carried": {
-      // Carried so the level stays as it was: no banner and no drop, as the migration that wrote it gave none.
+      // Carried so the level stays where it was: no banner and no drop, as the migration that wrote it gave none. A
+      // replay under the steeper curve reached a lower level before the carry, so the carry catches the milestones up
+      // to the level it brings back, quietly, as the saved state already had them.
       const xp = run.state.progress.xp
       setProgress(run, { xp: { ...xp, reported: xp.reported + event.amount } })
+      reach(run, levelOf(run.state, context.rules).level)
       break
     }
     case "fact.verified":
@@ -444,11 +448,24 @@ const levelUp = (run: Run, before: number): void => {
       ...(evolves ? { evolution: form } : {}),
     },
   })
-  // Forms unlocked early, by an evolution stone, stay unlocked.
-  const forms = evolves ? [...new Set([...pet.forms, ...formsFor(rules, after)])].sort((a, b) => a - b) : []
-  setHoldings(run, { peakLevel: after, pet: evolves ? { ...pet, forms, form } : pet })
+  reach(run, after)
   if (evolves) run.events.push({ type: "pet.changed", data: { form } })
   roll(run, "levelUp", 1, { weights: rules.loot.onLevelUp.weights })
+}
+
+/**
+ * What reaching `level` keeps, with nothing to show for it: the peak level and the pet's forms. A level-up shows them;
+ * carried XP only catches them up.
+ */
+const reach = (run: Run, level: number): void => {
+  const { rules } = run.context
+  const { peakLevel, pet } = run.state.holdings
+  if (level <= peakLevel) return
+  const form = formFor(rules, level)
+  const evolves = pet !== null && !pet.forms.includes(form)
+  // Forms unlocked early, by an evolution stone, stay unlocked.
+  const forms = evolves ? [...new Set([...pet.forms, ...formsFor(rules, level)])].sort((a, b) => a - b) : []
+  setHoldings(run, { peakLevel: level, pet: evolves ? { ...pet, forms, form } : pet })
 }
 
 /** The first event of a local day extends the streak and earns its XP. */
