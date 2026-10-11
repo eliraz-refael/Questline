@@ -566,6 +566,8 @@ const runDev = async ($: EngineInterface, ask: DevAsk): Promise<{ text: string; 
     const how = `set the mod's server option to dev, and start it with ${startHint('dev')}`
     return { text: `Dev mode needs the dev server: ${how}`, isDone: false }
   }
+  if ((ask.kind === 'complete' || ask.kind === 'roll') && (await read($, missions))?.isKnown !== true)
+    return { text: `The dev server predates missions: restart it with ${startHint('dev')}`, isDone: false }
   const { id, occurredAt } = await stamp($)
   const command = devCommandOf(ask, id)
   if (command === null) {
@@ -1076,7 +1078,8 @@ export const register: Register = (on, options) => {
               ))}
             </Box>
           ))}
-          {current.isDev ? (
+          {/* A server older than missions would refuse a re-roll: no button for it. */}
+          {current.isDev && quests.isKnown ? (
             <Box key="dev" flexDirection="column">
               <Text>
                 <Text bold color="warning">

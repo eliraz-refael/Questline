@@ -25,10 +25,12 @@ const instantOf = (iso: string | null): number | null => {
 
 /**
  * The missions the snapshot carries, with how many weeklies may run at once and each cadence's tier from the rules. A
- * server older than missions sends neither: the tab says so, and the band shows none.
+ * server older than missions sends no `missions` in its rules: the tab says so, the band shows none, and the pane
+ * offers no dev controls for them. Its snapshot's `quests` can't tell, as servers sent an empty list from the start.
  */
 export const missionsViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>): MissionsView => {
   const states: ReadonlyArray<QuestState> | null = Array.isArray(snapshot.quests) ? snapshot.quests : null
+  const isKnown = typeof rules.missions === 'object' && rules.missions !== null && states !== null
   const missions: Partial<RulesConfig['missions']> = rules.missions ?? {}
   const quests = (states ?? []).flatMap((quest): Array<MissionView> => {
     const status = statuses.find((one) => one === quest.status)
@@ -48,7 +50,7 @@ export const missionsViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>):
     ]
   })
   return {
-    isKnown: states !== null,
+    isKnown,
     quests,
     weeklyActive: typeof missions.weekly?.active === 'number' ? missions.weekly.active : null,
     tiers: {
@@ -104,7 +106,7 @@ const minTitle = 12
  * are done. Null when nothing fits, or there is nothing to say.
  */
 export const missionChip = (shownAt: MissionsView | null, room: number, now: number): Row | null => {
-  if (shownAt === null || room <= 0) return null
+  if (shownAt === null || !shownAt.isKnown || room <= 0) return null
   const missions = missionsAt(shownAt, now)
   const shown = bandMissionOf(missions)
   if (shown === null) {

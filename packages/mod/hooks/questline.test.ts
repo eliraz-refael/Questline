@@ -2103,3 +2103,22 @@ describe('review fixes: missions', () => {
     expect((await band($)).all).not.toContain('offline')
   })
 })
+
+describe('review fixes: a server from before missions', () => {
+  test('one that sends an empty quest list but no missions rules says to restart it, with no mission controls', async ($, on) => {
+    // Servers sent `quests: []` from the start; only one with missions has `missions` in its rules.
+    const { sent } = await streaming($, on, ownedOf(), true, { quests: [] })
+    await openMissions($)
+    const ui = await mountPane($)
+    const texts = await textsOf(ui)
+    expect(texts).toContain('◇ The server predates missions: restart it.')
+    expect(texts).not.toContain('No dailies today')
+    expect(texts).not.toContain('None this week')
+    expect(await ui.find({ type: 'Button', key: 'dev:roll' })).toBeUndefined()
+    await ui.unmount()
+    const answer = await $.command.run({ command: 'questline', args: 'dev roll', origin: composer, presentation })
+    expect(answer.text).toContain('The dev server predates missions: restart it')
+    expect(sent.filter((one) => one.path === '/v1/commands')).toEqual([])
+    expect((await band($)).all).not.toMatch(/◎|missions done/)
+  })
+})
