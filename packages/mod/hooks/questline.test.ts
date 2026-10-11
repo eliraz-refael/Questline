@@ -13,12 +13,12 @@ import type {
 import type { BandLook, BandView, Celebration, MissionsView, MissionView } from '../types'
 import { barCells } from './band'
 import { joinQueue, queueOf } from './celebrate'
-import { cellsOf, glyphSlot } from './cells'
+import { cellsOf, cellsOfRow, glyphSlot } from './cells'
 import { hmac } from './ids'
 import { barRow } from './frames'
 import { sheenHead } from './looks'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
-import { missionChip, timeLeft } from './missions'
+import { missionChip, missionsLayout, timeLeft } from './missions'
 import { headerOf, tabBarOf } from './pane'
 import { socketPathOf } from './server'
 import { statsLayout, twoColumnsFrom } from './stats'
@@ -1916,7 +1916,7 @@ describe('missions on the band', () => {
       weeklyActive: 3,
       tiers: { daily: 'uncommon', weekly: 'rare' },
     }
-    const text = (room: number) => missionChip(running, room)?.map((run) => run.text).join('') ?? null
+    const text = (room: number) => missionChip(running, room, 0)?.map((run) => run.text).join('') ?? null
     // The weekly halfway beats the daily a fifth of the way.
     expect(text(40)).toBe('◎ Clear Thinker ▰▰▰▱▱ 2/4')
     expect(text(23)).toBe('◎ Clear Thin… ▰▰▰▱▱ 2/4')
@@ -1925,10 +1925,10 @@ describe('missions on the band', () => {
     expect(text(6)).toBe('◎ 2/4')
     expect(text(3)).toBeNull()
     const done: MissionsView = { ...running, quests: [mission('c', 'completed', 3, 3), mission('d', 'completed', 1, 1)] }
-    expect(missionChip(done, 40)?.map((run) => run.text).join('')).toBe('✔ 2 missions done')
-    expect(missionChip(done, 10)?.map((run) => run.text).join('')).toBe('✔ 2 done')
-    expect(missionChip({ ...running, quests: [] }, 40)).toBeNull()
-    expect(missionChip(null, 40)).toBeNull()
+    expect(missionChip(done, 40, 0)?.map((run) => run.text).join('')).toBe('✔ 2 missions done')
+    expect(missionChip(done, 10, 0)?.map((run) => run.text).join('')).toBe('✔ 2 done')
+    expect(missionChip({ ...running, quests: [] }, 40, 0)).toBeNull()
+    expect(missionChip(null, 40, 0)).toBeNull()
   })
 
   test('says the time left in its two largest units', () => {
@@ -2020,5 +2020,86 @@ describe('dev mode: missions', () => {
       { type: 'dev.completeQuest', data: { questId: 'light-packer' } },
       { type: 'dev.rollQuests', data: {} },
     ])
+  })
+})
+
+describe('review fixes: missions', () => {
+  const view = (quests: ReadonlyArray<MissionView>): MissionsView => ({
+    isKnown: true,
+    quests,
+    weeklyActive: 3,
+    tiers: { daily: 'uncommon', weekly: 'rare' },
+  })
+  const mission = (questId: string, title: string, cadence: string, status: MissionView['status'], progress: number, goal: number, expiresAt: number | null = null): MissionView => ({
+    questId,
+    title,
+    description: null,
+    cadence,
+    status,
+    progress,
+    goal,
+    rewards: { xp: 50, gold: 0, loot: null },
+    expiresAt,
+  })
+
+  test("a head leaves room for its Abandon, Accept or 'log full' beside it, so none wraps", () => {
+    const long = 'A Very Long Weekly Mission Title That Goes On'
+    for (const columns of [30, 44, 72]) {
+      const layout = missionsLayout(view([mission('run', long, 'weekly', 'active', 1, 5), mission('offer', long, 'weekly', 'offered', 0, 5)]), columns, 0)
+      const entries = layout.sections.flatMap((section) => section.groups.flatMap((group) => group.entries))
+      const room = layout.width - 2
+      const beside = { abandon: '[ Abandon ]', accept: '[ Accept ]', full: 'log full' }
+      for (const entry of entries) {
+        if (entry.action === null) continue
+        expect(cellsOfRow(entry.head) + 2 + cellsOf(beside[entry.action])).toBeLessThanOrEqual(room)
+      }
+      const full = missionsLayout(view([1, 2, 3].map((i) => mission(`run-${i}`, 'Short', 'weekly', 'active', 0, 5)).concat(mission('offer', long, 'weekly', 'offered', 0, 5))), columns, 0)
+      const offered = full.sections.flatMap((section) => section.groups.flatMap((group) => group.entries)).find((entry) => entry.action === 'full')
+      expect(offered).toBeDefined()
+      expect(cellsOfRow(offered?.head ?? []) + 2 + cellsOf('log full')).toBeLessThanOrEqual(room)
+    }
+  })
+
+  test('the band groups a big count by thousands, as the tab does', () => {
+    const chip = missionChip(view([mission('big', 'Marathon', 'weekly', 'active', 1500, 10000)]), 60, 0)
+    expect(chip?.map((run) => run.text).join('')).toBe('◎ Marathon ▰▱▱▱▱ 1,500/10,000')
+  })
+
+  test("a mission whose window has ended reads as ended, however long since the last snapshot", () => {
+    const midnight = Date.parse('2026-10-10T00:00:00Z')
+    const quests = view([
+      mission('daily', 'Clear Thinker', 'daily', 'active', 4, 5, midnight),
+      mission('weekly', 'Ship It', 'weekly', 'active', 0, 1, midnight + 2 * 86_400_000),
+    ])
+    expect(missionChip(quests, 60, midnight - 1)?.map((run) => run.text).join('')).toBe('◎ Clear Thinker ▰▰▰▰▱ 4/5')
+    expect(missionChip(quests, 60, midnight)?.map((run) => run.text).join('')).toBe('◎ Ship It ▱▱▱▱▱ 0/1')
+    const today = missionsLayout(quests, 72, midnight).sections[0]?.groups[0]?.entries[0]
+    expect(today?.mission.status).toBe('expired')
+    expect(today?.meter.map((run) => run.text).join('')).toMatch(/4\/5 · ended$/)
+  })
+
+  test('only the Missions tab redraws each minute while the pane is open', async ($, on) => {
+    const redraws: Array<string> = []
+    on('ui.invalidate', ($, e) => {
+      redraws.push(e.event)
+      return { value: undefined }
+    })
+    const { clock } = await streaming($, on, undefined, false, { quests: missionsNow(), rules: missionRules })
+    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    await clock.advance(60_000)
+    expect(redraws).toEqual([])
+    await openMissions($)
+    await clock.advance(60_000)
+    expect(redraws).toEqual(['ui.render'])
+  })
+
+  test('a pick the server answers oddly says so, and leaves the band online', async ($, on) => {
+    const { toasts } = await streaming($, on, ownedOf(), false, { quests: missionsNow(), rules: missionRules, commandStatus: 500 })
+    await openMissions($)
+    const ui = await mountPane($)
+    await ui.press({ key: 'accept:light-packer' })
+    await ui.unmount()
+    expect(toasts).toEqual(['The server answered something unexpected.'])
+    expect((await band($)).all).not.toContain('offline')
   })
 })

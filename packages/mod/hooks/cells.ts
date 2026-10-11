@@ -67,6 +67,12 @@ export const runsOf = (cells: ReadonlyArray<Cell>): Row => {
   return runs.length === 0 ? [{ text: ' ' }] : runs
 }
 
+/** A dim run of text. */
+export const dim = (text: string): Run => ({ text, dim: true })
+
+/** A run of `cells` spaces; none for a count below one. */
+export const blank = (cells: number): Run => ({ text: ' '.repeat(Math.max(0, cells)) })
+
 /** The cells a row of runs takes. */
 export const cellsOfRow = (row: Row): number => row.reduce((sum, run) => sum + cellsOf(run.text), 0)
 

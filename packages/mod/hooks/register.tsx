@@ -132,7 +132,7 @@ let seed = 0
 const loopTimers = new Map<number, Timer>()
 const loopTicks = new Map<number, number>()
 let isPaneOpen = false
-/** Redraws the open pane each minute, so the missions' time left keeps up. */
+/** Redraws the open pane each minute while it shows the Missions tab, so their time left keeps up. */
 let paneClock: Timer | null = null
 
 /** One request to the local server. A failure to reach it at all is `ServerDown`. */
@@ -510,6 +510,12 @@ const hatch = async ($: EngineInterface) => {
   }
 }
 
+/** A command with no answer: only a server that can't be reached is offline; one that answered oddly is still up. */
+const commandFailed = async ($: EngineInterface, error: unknown) => {
+  if (error instanceof ServerDown) await update($, link, () => 'offline')
+  else $.ui.toast('The server answered something unexpected.')
+}
+
 /** Puts an owned band style in its slot, or with no entry the band's own look back; the band redraws at once. */
 const wear = async ($: EngineInterface, slot: BandSlot, entryId: string | null) => {
   try {
@@ -524,8 +530,8 @@ const wear = async ($: EngineInterface, slot: BandSlot, entryId: string | null) 
       return
     }
     await refresh($, false)
-  } catch {
-    await update($, link, () => 'offline')
+  } catch (error) {
+    await commandFailed($, error)
   }
 }
 
@@ -540,8 +546,8 @@ const takeMission = async ($: EngineInterface, type: 'quest.accept' | 'quest.aba
       return
     }
     await refresh($, false)
-  } catch {
-    await update($, link, () => 'offline')
+  } catch (error) {
+    await commandFailed($, error)
   }
 }
 
@@ -602,7 +608,12 @@ const syncPaneClock = ($: EngineInterface) => {
     paneClock = null
     return
   }
-  paneClock ??= $.clock.every(60_000, () => $.ui.invalidate('ui.render'))
+  // Only the Missions tab tells time: any other leaves the band and the pane undrawn.
+  paneClock ??= $.clock.every(60_000, () => {
+    void read($, tab).then((shown) => {
+      if (tabOf(shown) === 'missions') $.ui.invalidate('ui.render')
+    })
+  })
 }
 
 /**
@@ -872,7 +883,7 @@ export const register: Register = (on, options) => {
           : cellsOf(eggHint)
     const tail = slot !== null ? cellsOfRow(slot) : last === null ? 0 : cellsOf(last.text)
     const widths = [cellsOfRow(level), cellsOfRow(gold), petCells, ...(tail > 0 ? [tail] : [])]
-    const chip = missionChip(await read($, missions), roomBeside(columns, widths, 2))
+    const chip = missionChip(await read($, missions), roomBeside(columns, widths, 2), await $.clock.now())
     // Under the edge, a row of air, then the XP bar alone and everything else under it, both set in from the sides.
     return (
       <Box flexDirection="column">

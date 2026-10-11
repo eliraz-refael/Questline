@@ -2,7 +2,7 @@ import type { QuestState, RulesConfig, Snapshot } from '@questline/schema'
 import type { MissionRewards, MissionsView, MissionView, Tier } from '../types'
 import { tierOf } from './celebrate'
 import type { Row, Run } from './cells'
-import { cellsOf, cellsOfRow, clip } from './cells'
+import { blank, cellsOf, cellsOfRow, clip, dim } from './cells'
 import { rarityColors } from './frames'
 import { counted, fitting, meter } from './stats'
 
@@ -70,6 +70,19 @@ const shareOf = (mission: MissionView): number =>
 
 const isRunning = (mission: MissionView): boolean => mission.status === 'active' && mission.progress < mission.goal
 
+/**
+ * The missions as of clock `now`: one still running or on offer whose window has ended reads as expired, as the
+ * server would say, so a band or a pane left open past midnight never shows yesterday's as running.
+ */
+export const missionsAt = (missions: MissionsView, now: number): MissionsView => ({
+  ...missions,
+  quests: missions.quests.map((one) =>
+    (one.status === 'active' || one.status === 'offered') && one.expiresAt !== null && one.expiresAt <= now
+      ? { ...one, status: 'expired' }
+      : one,
+  ),
+})
+
 /** The mission the band shows: the running one closest to done, a daily before a weekly among equals. */
 export const bandMissionOf = (missions: MissionsView | null): MissionView | null =>
   (missions?.quests ?? [])
@@ -85,16 +98,14 @@ const chipBar = 5
 /** The fewest cells of a cut title worth showing, its space and ellipsis included. */
 const minTitle = 12
 
-const dim = (text: string): Run => ({ text, dim: true })
-const blank = (cells: number): Run => ({ text: ' '.repeat(Math.max(0, cells)) })
-
 /**
  * What row 2 of the band says about the missions in `room` cells: the running mission closest to done, its title, a
  * short bar and its count, giving way in steps (the title cut, then gone, then the bar); with none running, how many
  * are done. Null when nothing fits, or there is nothing to say.
  */
-export const missionChip = (missions: MissionsView | null, room: number): Row | null => {
-  if (missions === null || room <= 0) return null
+export const missionChip = (shownAt: MissionsView | null, room: number, now: number): Row | null => {
+  if (shownAt === null || room <= 0) return null
+  const missions = missionsAt(shownAt, now)
   const shown = bandMissionOf(missions)
   if (shown === null) {
     const done = missions.quests.filter((one) => one.status === 'completed').length
@@ -108,7 +119,7 @@ export const missionChip = (missions: MissionsView | null, room: number): Row | 
   }
   const color = cadenceColor(missions, shown.cadence)
   const mark: Run = { text: '◎', color, bold: true }
-  const count: Run = { text: ` ${shown.progress}/${shown.goal}`, bold: true }
+  const count: Run = { text: ` ${counted(shown.progress)}/${counted(shown.goal)}`, bold: true }
   const bar = [blank(1), ...meter(shareOf(shown), chipBar, color)]
   const title: Run = { text: ` ${shown.title}` }
   const full: Row = [mark, title, ...bar, count]
@@ -160,8 +171,11 @@ export const detailIndent = 4
 /** The widest the tab lays its rows out, so a bar never stretches across a wide pane. */
 const maxWidth = 64
 const maxBar = 24
-/** Cells kept beside a head for its button. */
-const buttonRoom = 12
+/**
+ * Cells kept beside a head for what its action draws, the row's gap of 2 included: `[ Accept ]`, `[ Abandon ]`, or
+ * the dim `log full`.
+ */
+const buttonRoom: Record<Exclude<MissionAction, null>, number> = { accept: 12, abandon: 13, full: 10 }
 
 const glyphs: Record<MissionView['status'], string> = { active: '◎', completed: '✔', offered: '○', expired: '✕' }
 
@@ -210,7 +224,7 @@ const rewardsRow = (rewards: MissionRewards, width: number): Row => {
 
 const entryOf = (missions: MissionsView, mission: MissionView, action: MissionAction, width: number): MissionEntry => {
   const inner = width - detailIndent
-  const headRoom = width - 2 - (action === null || action === 'full' ? 0 : buttonRoom)
+  const headRoom = width - 2 - (action === null ? 0 : buttonRoom[action])
   return {
     mission,
     head: headOf(missions, mission, headRoom),
@@ -245,7 +259,8 @@ const join = (...parts: ReadonlyArray<string | null>): string =>
  * The tab for a pane `columns` wide at clock `now`: today's dailies, then the week's weeklies (running, done, on
  * offer, ended), each with its bar, count and rewards. The pane's buttons go beside the heads, as `action` says.
  */
-export const missionsLayout = (missions: MissionsView, columns: number, now: number): MissionsLayout => {
+export const missionsLayout = (shownAt: MissionsView, columns: number, now: number): MissionsLayout => {
+  const missions = missionsAt(shownAt, now)
   const width = Math.max(20, Math.min(columns, maxWidth))
   const room = Math.max(20, columns)
   const picks = missions.weeklyActive

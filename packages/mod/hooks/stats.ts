@@ -1,7 +1,7 @@
 import type { BandLook, BandSlot, BandView, Loop, StatsView, Tier } from '../types'
 import { goldRow, labelRun, levelRow } from './band'
 import type { Row, Run } from './cells'
-import { cellsOf, cellsOfRow, clip } from './cells'
+import { blank, cellsOf, cellsOfRow, clip, dim } from './cells'
 import { barRow, rarityColors } from './frames'
 
 // The pane's Stats tab, laid out as rows of styled runs that register.tsx draws: cards under a titled rule, a label on
@@ -57,9 +57,6 @@ export const counted = (value: number): string => String(Math.round(value)).repl
 const graded = (value: number): string => value.toFixed(1)
 const percent = (value: number): string => `${Math.round(value)}%`
 const days = (value: number): string => `${counted(value)} ${value === 1 ? 'day' : 'days'}`
-
-const blank = (cells: number): Run => ({ text: ' '.repeat(Math.max(0, cells)) })
-const dim = (text: string): Run => ({ text, dim: true })
 
 /** A label on the left and a value on the right edge of a row `width` wide; a label with no room is cut. */
 const line = (label: Row, value: Row, width: number): Row => {
