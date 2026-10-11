@@ -22,7 +22,11 @@ export const offerParts = (offerId: string): { readonly day: string; readonly it
   return day === undefined || itemId === undefined ? undefined : { day, itemId }
 }
 
-const isFood = (item: ItemDef): boolean => item.category === "food"
+export const isFood = (item: ItemDef): boolean => item.category === "food"
+
+/** The price the rules give an item in the shop: food at the food's prices, anything else at the shelf's. */
+export const listPrice = (rules: ShopContext["rules"], item: ItemDef): number =>
+  (isFood(item) ? rules.shop.food.prices : rules.shop.prices)[item.rarity]
 
 const byRarityThenName = (a: ItemDef, b: ItemDef): number =>
   rarityRank(a.rarity) - rarityRank(b.rarity) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
@@ -66,8 +70,8 @@ export interface Ware {
 export const waresOf = (day: string, context: ShopContext): ReadonlyArray<Ware> => {
   const { shop } = context.rules
   return [
-    ...shelfOf(day, context).map((item) => ({ item, price: shop.prices[item.rarity], stock: shop.stock })),
-    ...pantryOf(context).map((item) => ({ item, price: shop.food.prices[item.rarity], stock: shop.food.stock })),
+    ...shelfOf(day, context).map((item) => ({ item, price: listPrice(context.rules, item), stock: shop.stock })),
+    ...pantryOf(context).map((item) => ({ item, price: listPrice(context.rules, item), stock: shop.food.stock })),
   ]
 }
 

@@ -50,7 +50,7 @@ import {
   windowOf,
 } from "./quests.ts"
 import { ulids } from "./random.ts"
-import { boughtToday, offerParts, waresOf } from "./shop.ts"
+import { boughtToday, isFood, listPrice, offerParts, waresOf } from "./shop.ts"
 import { addScores, bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
@@ -940,10 +940,6 @@ const feed = (state: PlayerState, entryId: string, context: Context): Step => {
   return finish(run)
 }
 
-/** The price the rules give an item in the shop: food at the food's prices, anything else at the shelf's. */
-const listPrice = (rules: Context["rules"], item: ItemDef): number =>
-  (item.category === "food" ? rules.shop.food.prices : rules.shop.prices)[item.rarity]
-
 /**
  * One of today's offers, for its price: the item joins the inventory and the day counts the copy against the offer's
  * stock. An offer of a day gone by has ended. A replay applies what the live run accepted, at the price the rules now
@@ -1000,9 +996,13 @@ const isDuplicate = (state: PlayerState, entry: InventoryEntry): boolean =>
 const isWorn = (state: PlayerState, entryId: string): boolean =>
   Object.values(state.holdings.equipped).some((id) => id === entryId)
 
-/** Why a duplicate can't be traded in, live: an item gone from the catalogue, the only copy, or the copy worn. */
+/**
+ * Why a duplicate can't be traded in, live: an item gone from the catalogue, food (the shop sells it by the copy, so a
+ * spare meal would turn gold into a re-roll or shards on the cheap), the only copy, or the copy worn.
+ */
 const tradeRefusal = (state: PlayerState, entry: InventoryEntry, item: ItemDef | undefined): CommandRefusal | null => {
   if (item === undefined) return { code: "invalid", message: "That item is no longer in the catalogue" }
+  if (isFood(item)) return { code: "not_allowed", message: `${item.name} is food: feed it to your pet` }
   if (!isDuplicate(state, entry)) {
     return { code: "not_allowed", message: `Only a duplicate can be traded in, and you have one ${item.name}` }
   }
@@ -1020,7 +1020,10 @@ const reroll = (state: PlayerState, entryId: string, context: Context): Step => 
   const entry = holdings.inventory.find((owned) => owned.id === entryId)
   if (entry === undefined) return refuse(state, { code: "not_owned", message: "That item is not in the inventory" })
   const item = catalog.find((def) => def.id === entry.itemId)
-  const pool = catalog.filter((def) => def.rarity === item?.rarity && !isSigil(def) && def.id !== entry.itemId)
+  // Never a sigil, so gold never buys XP, and never food, which the re-roll would cost more than: a look for a look.
+  const pool = catalog.filter(
+    (def) => def.rarity === item?.rarity && !isSigil(def) && !isFood(def) && def.id !== entry.itemId,
+  )
   if (context.mode.kind === "live") {
     const refusal = tradeRefusal(state, entry, item)
     if (refusal !== null) return refuse(state, refusal)

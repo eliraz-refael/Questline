@@ -410,6 +410,25 @@ describe("duplicates", () => {
     expect(step(poor, reroll(nextId()), contextAt(1, start)).refusal?.code).toBe("not_owned")
   })
 
+  it("never re-rolls into food, whatever the roll", () => {
+    const dupes = player({ items: ["solid-bar", "solid-bar"] })
+    const made = Array.from({ length: 200 }, (_, n) => {
+      const holdings = { ...dupes.holdings, gold: 1000, loot: { ...dupes.holdings.loot, nextRoll: n } }
+      const rerolled = step({ ...dupes, holdings }, reroll(entryIds[1] ?? ""), contextAt(1, start))
+      return rerolled.state.holdings.inventory.at(-1)?.itemId ?? ""
+    })
+    const kinds = new Set(made.map((itemId) => starterCatalog.find((item) => item.id === itemId)?.category))
+    expect(kinds.has("food")).toBe(false)
+    expect(made.some((itemId) => itemId === "")).toBe(false)
+  })
+
+  it("refuses to trade in spare food, which the shop sells by the copy", () => {
+    const meals = player({ gold: 100, items: ["trail-mix", "trail-mix"] })
+    const refusal = { code: "not_allowed", message: "Trail Mix is food: feed it to your pet" }
+    expect(step(meals, reroll(entryIds[1] ?? ""), contextAt(1, start)).refusal).toEqual(refusal)
+    expect(step(meals, salvage(entryIds[1] ?? ""), contextAt(1, start)).refusal).toEqual(refusal)
+  })
+
   it("a salvage breaks a spare copy into a shard of its rarity", () => {
     const state = player({ items: ["knit-scarf", "knit-scarf"] })
     const { state: after, events } = play([salvage(entryIds[1] ?? ""), salvage(entryIds[0] ?? "")], state)

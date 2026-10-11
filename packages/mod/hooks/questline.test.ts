@@ -173,6 +173,8 @@ type ServerOptions = {
   closeTakes?: number
   /** The shop, the pet, the boosts, the shards and the gold the snapshot carries. */
   kept?: Kept
+  /** A server that goes away once it has answered a command. */
+  downAfterCommand?: boolean
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
@@ -259,6 +261,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     }
     if (path === '/v1/commands') {
       if (options.commandStatus !== undefined) return reply(options.commandStatus, { error: 'internal' })
+      if (options.downAfterCommand === true) options.isDown = true
       return reply(200, commandAnswer(body, options.owned, options.isDev === true, options.quests))
     }
     // The stream answers as soon as the test hands it events, or after 25 seconds with none.
@@ -2638,6 +2641,20 @@ describe('the shop', () => {
     expect(wide).toEqual([])
   })
 
+  test('lists no food among the duplicates: food is eaten, never traded in', async ($, on) => {
+    const meals: Owned = {
+      ...stocked,
+      inventory: [...stocked.inventory, { id: '01K6ZQ8W3J0000000000009004', itemId: 'trail-mix' }],
+    }
+    await streaming($, on, meals, false, { rules: shopRules, kept: kept() })
+    await openShop($)
+    const ui = await mountPane($)
+    expect(await ui.find({ type: 'Button', key: 'reroll:solid-bar' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'reroll:trail-mix' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'salvage:trail-mix' })).toBeUndefined()
+    await ui.unmount()
+  })
+
   test('a server older than the shop says to restart it, and offers nothing', async ($, on) => {
     await streaming($, on, stocked, false, { kept: kept() })
     await openShop($)
@@ -2648,10 +2665,15 @@ describe('the shop', () => {
 
   test('the restock comes by the clock: past midnight the shelf reads as restocking, with no Buy', async ($, on) => {
     const ending = shelf.map((one) => ({ ...one, endsAt: '2026-10-09T08:01:00.000Z' }))
-    const { clock } = await streaming($, on, stocked, false, { rules: shopRules, kept: kept({ gold: 5000, shop: ending }) })
+    const more = { rules: shopRules, kept: kept({ gold: 5000, shop: ending }) }
+    const { clock, sent } = await streaming($, on, stocked, false, more)
     await openShop($)
     expect((await paneTexts($, 72)).texts.join('\n')).toContain('restocks in 1m')
+    const opens = () => sent.filter((one) => one.path === '/v1/sessions').length
+    const before = opens()
     await clock.advance(90_000)
+    // Past the restock, the tab fetches the new day's shelf itself, as no stream event may come to bring it.
+    expect(opens()).toBeGreaterThan(before)
     const all = (await paneTexts($, 72)).texts.join('\n')
     expect(all).toContain('restocking now')
     const ui = await mountPane($)
@@ -2761,6 +2783,14 @@ describe('caring for the pet', () => {
     const answer = await $.command.run({ command: 'pet', args: '', origin: composer, presentation })
     expect(answer.text).toBe('You pet Ember.')
     expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'pet.pet', data: {} })
+  })
+
+  test('/pet says the pat landed even when the snapshot after it cannot be fetched', async ($, on) => {
+    const kept = { pet: ember(50) }
+    const { sent } = await streaming($, on, withFood, false, { rules: careRules, kept, downAfterCommand: true })
+    const answer = await $.command.run({ command: 'pet', args: '', origin: composer, presentation })
+    expect(answer.text).toBe('You pet Ember.')
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'pet.pet' })
   })
 
   test('/pet on a server older than pet care says to restart it, and sends nothing', async ($, on) => {

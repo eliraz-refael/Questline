@@ -73,16 +73,19 @@ export const shopViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>): Sho
       },
     ]
   })
-  // A spare copy is one not worn: trading in the one worn would take the look off.
+  // A spare copy is one not worn: trading in the one worn would take the look off. The latest such copy goes.
   const worn = new Set(
     [...Object.values(snapshot.character.equipped ?? {}), ...Object.values(snapshot.pet?.equipped ?? {})].filter(
       (id) => typeof id === 'string',
     ),
   )
+  const latestSpare = new Map<string, string>()
+  for (const entry of inventory) if (!worn.has(entry.id)) latestSpare.set(entry.itemId, entry.id)
+  // Food is eaten, never traded in: the server refuses a spare meal.
   const spares = [...copies.entries()].flatMap(([itemId, count]): Array<SpareView> => {
     const def = byId.get(itemId)
-    const spare = [...inventory].reverse().find((entry) => entry.itemId === itemId && !worn.has(entry.id))
-    if (count < 2 || def === undefined || spare === undefined) return []
+    const spare = latestSpare.get(itemId)
+    if (count < 2 || def === undefined || spare === undefined || def.category === 'food') return []
     const rarity = tierOf(def.rarity)
     return [
       {
@@ -92,7 +95,7 @@ export const shopViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>): Sho
         category: def.category,
         slot: def.slot,
         copies: count,
-        entryId: spare.id,
+        entryId: spare,
         rerollGold: byRarity(rules.loot?.rerollGold, rarity),
         salvageShards: byRarity(rules.loot?.salvageShards, rarity),
       },

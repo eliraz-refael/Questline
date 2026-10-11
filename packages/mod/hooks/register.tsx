@@ -565,38 +565,17 @@ const commandFailed = async ($: EngineInterface, error: unknown) => {
  * Puts an owned band style or sigil in its slot, or with no entry empties it (the band's own look back); the band
  * redraws at once.
  */
-const wear = async ($: EngineInterface, slot: Slot, entryId: string | null) => {
-  try {
-    const { id } = await stamp($)
-    const command: Command =
-      entryId === null
-        ? { id, type: 'item.unequip', data: { slot } }
-        : { id, type: 'item.equip', data: { entryId, slot } }
-    const answer = await runCommand($, command)
-    if (answer.status === 'refused') {
-      $.ui.toast(answer.message)
-      return
-    }
-    await refresh($, false)
-  } catch (error) {
-    await commandFailed($, error)
-  }
-}
+const wear = ($: EngineInterface, slot: Slot, entryId: string | null) =>
+  act($, (id) =>
+    entryId === null
+      ? { id, type: 'item.unequip', data: { slot } }
+      : { id, type: 'item.equip', data: { entryId, slot } },
+  )
 
 /** Picks an offered weekly, or gives up a running one; a refusal says why, and the pane redraws from the server. */
 const takeMission = async ($: EngineInterface, type: 'quest.accept' | 'quest.abandon', questId: string) => {
   await update($, abandoning, () => null)
-  try {
-    const { id } = await stamp($)
-    const answer = await runCommand($, { id, type, data: { questId } })
-    if (answer.status === 'refused') {
-      $.ui.toast(answer.message)
-      return
-    }
-    await refresh($, false)
-  } catch (error) {
-    await commandFailed($, error)
-  }
+  await act($, (id) => ({ id, type, data: { questId } }))
 }
 
 /** The first press of a running weekly's Abandon asks again, as its progress would go; null takes the ask back. */
@@ -605,8 +584,9 @@ const askAbandon = async ($: EngineInterface, questId: string | null) => {
 }
 
 /**
- * A choice in the pane or the band: a purchase, a meal, a pat or a trade. A refusal says why; otherwise the pane
- * redraws from the server, and what it did arrives on the stream, worded on the band and in a toast.
+ * A choice in the pane or the band: a look worn, a mission taken, a purchase, a meal, a pat or a trade. A refusal says
+ * why; otherwise the pane redraws from the server, and what it did arrives on the stream, worded on the band and in a
+ * toast.
  */
 const act = async ($: EngineInterface, made: (id: string) => Command) => {
   try {
@@ -652,7 +632,8 @@ const patFromPrompt = async ($: EngineInterface): Promise<string> => {
     const { id } = await stamp($)
     const answer = await runCommand($, pat(id))
     if (answer.status === 'refused') return answer.message
-    await refresh($, false)
+    // The pat has landed: a snapshot that can't be fetched now changes nothing about it.
+    await refresh($, false).catch(() => undefined)
     return `You pet ${current.pet.name}.`
   } catch (error) {
     if (!(error instanceof ServerDown)) return 'The server answered something unexpected.'
@@ -730,11 +711,16 @@ const syncPaneClock = ($: EngineInterface) => {
   // Only a tab that tells time redraws: the Missions tab, the Shop's restock, and the pet's meal running out on the
   // Inventory tab. Any other leaves the band and the pane undrawn.
   paneClock ??= $.clock.every(60_000, () => {
-    void Promise.all([read($, tab), read($, care)]).then(([shown, cared]) => {
+    void (async () => {
+      const [shown, cared, sold, now] = await Promise.all([read($, tab), read($, care), read($, shop), $.clock.now()])
       const at = tabOf(shown)
+      // Past the restock the shelf on show has ended: the next snapshot brings the new day's, which no stream event
+      // may bring while the player browses.
+      if (at === 'shop' && (sold?.offers ?? []).some((offer) => offer.endsAt !== null && offer.endsAt <= now))
+        await refresh($, false).catch(() => undefined)
       if (at === 'missions' || at === 'shop' || (at === 'inventory' && (cared?.boost ?? null) !== null))
         $.ui.invalidate('ui.render')
-    })
+    })()
   })
 }
 
