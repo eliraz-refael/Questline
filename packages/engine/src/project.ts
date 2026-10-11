@@ -12,6 +12,7 @@ export const characterSlots: ReadonlyArray<CharacterSlot> = [
   "levelDisplay",
   "topEdge",
   "goldDisplay",
+  "sigil",
 ]
 export const petSlots: ReadonlyArray<PetSlot> = ["head", "neck", "back", "hand", "aura"]
 

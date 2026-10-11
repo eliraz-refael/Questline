@@ -1,5 +1,6 @@
 import type {
   ArmedTestRun,
+  Boost,
   ClientEvent,
   Command,
   CommandRefusal,
@@ -30,6 +31,7 @@ import { formFor, formsFor, glyphFor, levelOf, moodNow, titleFor, totalXp } from
 import type { RarityWeights } from "./loot.ts"
 import { pityAfter, raiseRare, rarityRank, rollLoot } from "./loot.ts"
 import { closeSpan, openSpan, prunePresence, spanAt } from "./presence.ts"
+import { equippedSigil, isSigil } from "./sigils.ts"
 import { petSlots } from "./project.ts"
 import type { QuestSignal } from "./quests.ts"
 import {
@@ -49,11 +51,11 @@ import { ulids } from "./random.ts"
 import { addScores, bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
-// This version covers the proof of concept: reported XP with daily caps, XP for graded prompts, levels, the streak,
-// a loot roll per turn, per graded prompt (better odds for a better grade) and per level-up, the player stats, the
-// daily and weekly missions (parallel ones from the sessions the server says are open), hatching the pet, and equipping
-// items. Verified-tier facts wait for the verifier, and
-// other commands are refused for now.
+// This version covers the proof of concept: reported XP with daily caps, XP for graded prompts (times the equipped
+// sigil), levels, the streak, a loot roll per turn, per graded prompt (better odds for a better grade) and per
+// level-up, the player stats, the daily and weekly missions (parallel ones from the sessions the server says are open)
+// and their XP boosts, hatching the pet, and equipping items. Verified-tier facts wait for the verifier, and other
+// commands are refused for now.
 
 /** What one step builds up. It lives only inside `step`, so the function stays pure. */
 interface Run {
@@ -249,17 +251,20 @@ const statsChanged = (run: Run, pick: (stats: PlayerStats) => Partial<PlayerStat
 }
 
 /**
- * A graded prompt: XP from its weighted quality grade, tapered by how many the day has seen already, a loot roll
- * whose chance rises with the grade (a great grade also raises the rare-and-better weights), and the prompt stats.
- * The grade is priced whatever rubric version made it; it is returned, for the parallel missions.
+ * A graded prompt: XP from its weighted quality grade, tapered by how many the day has seen already, times the sigil
+ * equipped now, a loot roll whose chance rises with the grade (a great grade also raises the rare-and-better weights),
+ * and the prompt stats. The grade is priced whatever rubric version made it, and the sigil at the multiplier the
+ * catalogue in force gives it; the grade is returned, for the parallel missions.
  */
 const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>, day: string): number => {
   const { rules } = run.context
   const grade = gradeOf(rules.prompt, scores)
   const nth = (run.state.progress.tallies.find((t) => t.day === day)?.counts["prompt.graded"] ?? 0) + 1
-  // maxXp * grade / 10 * pct / 100, to the thousandth so float error in the weights never costs a point.
-  const xp = Math.round(rules.prompt.maxXp * grade * bandPct(rules.prompt, nth)) / 1000
-  grant(run, "prompt.graded", day, { xp, prompt: { scores, grade } })
+  const sigil = equippedSigil(run.state, run.context)
+  // maxXp * grade / 10 * pct / 100 * sigil, to the thousandth so float error never costs a point; the flat boosts and
+  // the one rounding down come in `grant`.
+  const xp = Math.round(rules.prompt.maxXp * grade * bandPct(rules.prompt, nth) * sigil) / 1000
+  grant(run, "prompt.graded", day, { xp, prompt: { scores, grade }, ...(sigil > 1 ? { sigil } : {}) })
   const prompts = run.state.progress.stats.prompts
   setStats(run, {
     prompts: {
@@ -292,6 +297,11 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
       return accept(state, command.data.questId, context)
     case "quest.abandon":
       return abandon(state, command.data.questId, context)
+    case "shards.craft":
+      // Shard crafting comes later; a sigil it will never make, as gold and shards never buy XP.
+      return context.catalog.some((def) => def.id === command.data.itemId && isSigil(def))
+        ? refuse(state, { code: "not_allowed", message: "A sigil only drops: shards can't craft one" })
+        : refuse(state, { code: "not_allowed", message: "Not available in this version yet" })
     case "dev.grantItem":
     case "dev.grantStyles":
     case "dev.grantXp":
@@ -322,6 +332,14 @@ const applySystem = (state: PlayerState, event: SystemEvent, context: Context): 
     case "session.closed":
       setProgress(run, { presence: prunePresence(closeSpan(presence, event.sessionId, event.at, now), now) })
       break
+    case "xp.carried": {
+      // Carried so the level stays as it was: no banner, and no drop unless a later rules change moved the level.
+      const before = levelOf(run.state, context.rules).level
+      const xp = run.state.progress.xp
+      setProgress(run, { xp: { ...xp, reported: xp.reported + event.amount } })
+      levelUp(run, before)
+      break
+    }
     case "fact.verified":
     case "claim.resolved":
     case "rules.published":
@@ -331,13 +349,18 @@ const applySystem = (state: PlayerState, event: SystemEvent, context: Context): 
   return finish(run)
 }
 
-/** XP bonus in percent: a happy pet's, plus the strongest running food boost (boosts never stack). */
+/**
+ * The flat XP boosts in percent: a happy pet's, plus the strongest running boost of each kind (food, a mission's),
+ * as boosts of one kind never stack.
+ */
 const bonusPct = (run: Run): number => {
   const { rules, now } = run.context
   const pet = run.state.holdings.pet
   const happy = pet !== null && moodNow(pet, rules, now) > rules.pet.happyAbove ? rules.pet.happyXpBonusPct : 0
-  const boosts = run.state.progress.boosts.filter((boost) => isLater(boost.endsAt, now)).map((boost) => boost.xpBoostPct)
-  return happy + Math.max(0, ...boosts)
+  const running = run.state.progress.boosts.filter((boost) => isLater(boost.endsAt, now))
+  const strongest = (kind: Boost["kind"]): number =>
+    Math.max(0, ...running.filter((boost) => boost.kind === kind).map((boost) => boost.xpBoostPct))
+  return happy + strongest("food") + strongest("quest")
 }
 
 /** A graded prompt's rule: the `prompt` section sets its XP, and the day's bands, not a cap, taper it. */
@@ -345,14 +368,15 @@ const promptRule: XpRule = { xp: 0, tier: "reported", dailyCap: null }
 
 /**
  * Counts one scoring fact and grants its XP, unless the day's cap is reached, and counts it toward the missions whose
- * goal it meets, capped or not. `xp` overrides the rule's amount; a graded prompt's grade rides on the grant, so the
- * mod can say what earned it, and its scores reach the missions that filter on them.
+ * goal it meets, capped or not. `xp` overrides the rule's amount (to the thousandth); the flat boosts multiply it,
+ * and the sum is rounded down once. A graded prompt's grade and sigil ride on the grant, so the mod can say what
+ * earned it, and its scores reach the missions that filter on them.
  */
 const grant = (
   run: Run,
   fact: ScoringFact,
   day: string,
-  options: { readonly xp?: number; readonly prompt?: PromptSignal } = {},
+  options: { readonly xp?: number; readonly prompt?: PromptSignal; readonly sigil?: number } = {},
 ): void => {
   const { rules } = run.context
   const rule = fact === "prompt.graded" ? promptRule : rules.xp[fact]
@@ -374,7 +398,8 @@ const grant = (
   const tallies = [...progress.tallies.filter((t) => t.day !== day), { day, counts }].sort((a, b) =>
     a.day < b.day ? -1 : 1,
   )
-  const amount = Math.floor(((options.xp ?? rule.xp) * (100 + bonusPct(run))) / 100)
+  // In whole thousandths of XP times whole percents, so the one rounding down is exact.
+  const amount = Math.floor((Math.round((options.xp ?? rule.xp) * 1000) * (100 + bonusPct(run))) / 100_000)
   const before = levelOf(run.state, rules).level
   setProgress(run, { totals, tallies, xp: { ...progress.xp, reported: progress.xp.reported + amount } })
   if (amount > 0) {
@@ -386,6 +411,7 @@ const grant = (
         reason: fact,
         totalAfter: totalXp(run.state),
         ...(prompt === undefined ? {} : { grade: prompt.grade }),
+        ...(options.sigil === undefined ? {} : { sigil: options.sigil }),
       },
     })
     levelUp(run, before)
@@ -511,8 +537,8 @@ const joinQuests = (run: Run, sessionId: string, at: string, grade: number, day:
 
 /**
  * A mission done: the banner at its cadence's tier, then its rewards, each as its own event: reported XP (which may
- * level up, with that drop), gold, and a drop that always lands. A mission already granted in this window grants
- * nothing again.
+ * level up, with that drop), gold, an XP boost from now on, and a drop that always lands. A mission already granted
+ * in this window grants nothing again.
  */
 const complete = (run: Run, mission: Mission, def: QuestDef): void => {
   const { rules, now } = run.context
@@ -542,6 +568,16 @@ const complete = (run: Run, mission: Mission, def: QuestDef): void => {
     const gold = run.state.holdings.gold + rewards.gold
     setHoldings(run, { gold })
     run.events.push({ type: "gold.changed", data: { delta: rewards.gold, totalAfter: gold, reason } })
+  }
+  if (rewards.xpBoost !== undefined) {
+    const endsAt = new Date(Date.parse(now) + rewards.xpBoost.minutes * 60_000).toISOString()
+    const boost: Boost = {
+      kind: "quest",
+      source: `${mission.packId}/${mission.questId}`,
+      xpBoostPct: rewards.xpBoost.pct,
+      endsAt,
+    }
+    setProgress(run, { boosts: [...run.state.progress.boosts, boost] })
   }
   if (rewards.loot !== undefined) rewardDrop(run, rewards.loot, `${mission.packId}/${mission.questId}`)
 }
@@ -700,7 +736,10 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, options:
   }
 }
 
-/** Keeps the tallies to the last 7 days and the active days to the current streak (never fewer than 7 days). */
+/**
+ * Keeps the tallies to the last 7 days, the active days to the current streak (never fewer than 7 days), and the
+ * boosts to those still running.
+ */
 const prune = (run: Run): void => {
   const { rules, now } = run.context
   const progress = run.state.progress
@@ -711,6 +750,7 @@ const prune = (run: Run): void => {
   setProgress(run, {
     tallies: progress.tallies.filter((t) => t.day >= weekAgo),
     activeDays: progress.activeDays.filter((day) => day >= keepFrom),
+    boosts: progress.boosts.filter((boost) => isLater(boost.endsAt, now)),
   })
 }
 

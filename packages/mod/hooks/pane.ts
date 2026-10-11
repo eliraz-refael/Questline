@@ -167,7 +167,8 @@ export type OtherItem = { itemId: string; name: string; rarity: Tier; kind: stri
 export const otherItems = (wardrobe: Wardrobe | null): Array<OtherItem> => {
   const counted = new Map<string, OtherItem>()
   for (const item of wardrobe?.items ?? []) {
-    if (item.look !== null) continue
+    // Band styles and, from a server that deals in them, sigils have sections of their own.
+    if (item.look !== null || (item.sigil !== undefined && wardrobe?.knowsSigils === true)) continue
     const seen = counted.get(item.itemId)
     const count = (seen?.count ?? 0) + 1
     const { itemId, name, rarity } = item
@@ -183,6 +184,7 @@ const kinds: Record<string, string> = {
   title: 'title',
   artefact: 'artefact',
   levelUpEffect: 'level-up effect',
+  sigil: 'sigil',
 }
 
 const kindOf = (category: string): string => kinds[category] ?? category

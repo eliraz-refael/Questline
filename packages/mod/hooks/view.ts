@@ -1,7 +1,8 @@
-import type { PlayerStats, ScoringFact, ServerEvent, Snapshot } from '@questline/schema'
+import type { PlayerStats, RulesConfig, ScoringFact, ServerEvent, Snapshot } from '@questline/schema'
 import type { PluginOptions } from 'claude-code'
 import type { BandView, GainLine, OwnedItem, StatsView, Wardrobe } from '../types'
 import { tierOf } from './celebrate'
+import { boostText, knowsSigilsOf, multiplierText, sigilOf, wornSigil } from './sigils'
 
 // What the band draws, worked out from the server's snapshot and stream; no game rule is computed here.
 
@@ -24,8 +25,11 @@ export const viewOf = (snapshot: Snapshot): BandView => ({
       : { species: snapshot.pet.species, name: snapshot.pet.name, form: snapshot.pet.form, mood: snapshot.pet.mood },
 })
 
-/** What the player owns, by the definitions the snapshot carries, and what is equipped where. */
-export const wardrobeOf = (snapshot: Snapshot): Wardrobe => {
+/**
+ * What the player owns, by the definitions the snapshot carries, and what is equipped where; `rules`, the session's,
+ * say whether the server deals in sigils.
+ */
+export const wardrobeOf = (snapshot: Snapshot, rules: Partial<RulesConfig> = {}): Wardrobe => {
   // An older server's snapshot carries no definitions: nothing it can't name is shown.
   const defs = Array.isArray(snapshot.items) ? snapshot.items : []
   const inventory = Array.isArray(snapshot.inventory) ? snapshot.inventory : []
@@ -35,13 +39,16 @@ export const wardrobeOf = (snapshot: Snapshot): Wardrobe => {
     if (def === undefined) return []
     const { name, category, slot, lore } = def
     const look = def.look ?? null
-    return [{ entryId: entry.id, itemId: def.id, name, rarity: tierOf(def.rarity), category, slot, look, lore }]
+    const sigil = sigilOf(def)
+    const rarity = tierOf(def.rarity)
+    const owned: OwnedItem = { entryId: entry.id, itemId: def.id, name, rarity, category, slot, look, lore }
+    return [sigil === null ? owned : { ...owned, sigil }]
   })
   const equipped: Record<string, string> = {}
   const worn = [...Object.entries(snapshot.character.equipped ?? {}), ...Object.entries(snapshot.pet?.equipped ?? {})]
   for (const [slot, entryId] of worn)
     if (typeof entryId === 'string') equipped[slot] = entryId
-  return { items, equipped }
+  return { items, equipped, knowsSigils: knowsSigilsOf(rules) }
 }
 
 /** A count or a share as the snapshot has it; `fallback` for one an older server doesn't send. */
@@ -52,7 +59,7 @@ const numberOr = <A,>(value: unknown, fallback: A): number | A =>
  * The Stats tab's numbers. An older server counts fewer stats, or sends none: what it lacks reads as nothing yet,
  * and the best grade, the best streak and the profile, which the tab says it can't show, as null.
  */
-export const statsViewOf = (snapshot: Snapshot): StatsView => {
+export const statsViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig> = {}): StatsView => {
   const stats: Partial<PlayerStats> = snapshot.stats ?? {}
   const prompts: Partial<PlayerStats['prompts']> = stats.prompts ?? {}
   const peak: Partial<PlayerStats['contextPeak']> = stats.contextPeak ?? {}
@@ -94,7 +101,14 @@ export const statsViewOf = (snapshot: Snapshot): StatsView => {
     commands,
     xp: { verified: numberOr(xp.verified, 0), reported: numberOr(xp.reported, 0) },
     items: Array.isArray(snapshot.inventory) ? snapshot.inventory.length : 0,
+    sigil: knowsSigilsOf(rules) ? { worn: sigilWornOf(snapshot, rules) } : null,
   }
+}
+
+/** The sigil worn, with its name and rarity, for the Stats tab; null when none is, or the snapshot can't name it. */
+const sigilWornOf = (snapshot: Snapshot, rules: Partial<RulesConfig>): NonNullable<StatsView['sigil']>['worn'] => {
+  const worn = wornSigil(wardrobeOf(snapshot, rules))
+  return worn?.sigil === undefined ? null : { ...worn.sigil, name: worn.name, rarity: worn.rarity }
 }
 
 /** The egg hatches once the character reaches level 1. */
@@ -151,22 +165,32 @@ const gradeText = (grade: number): string => String(Math.round(grade * 10) / 10)
 
 const signed = (amount: number): string => (amount < 0 ? `−${-amount}` : `+${amount}`)
 
+/** What a sigil added to a grant, as ` · ×2 sigil`; nothing when none did. */
+const sigilPart = (sigil: number | undefined): string =>
+  typeof sigil === 'number' && sigil > 1 ? ` · ${multiplierText(sigil)} sigil` : ''
+
+/** A dropped item by name, a sigil with its multiplier: `Arcane Sigil ×2`. */
+const dropName = (item: Pick<OwnedItem, 'name'> & Parameters<typeof sigilOf>[0]): string => {
+  const sigil = sigilOf(item)
+  return sigil === null ? item.name : `${item.name} ${multiplierText(sigil.multiplier)}`
+}
+
 /** The line one server event puts at the end of the band, if any. */
 export const gainOf = (event: ServerEvent): GainLine | null => {
   switch (event.type) {
     case 'xp.granted': {
-      const { amount, reason, grade } = event.data
-      // An older server names no grade on a prompt's grant.
+      const { amount, reason, grade, sigil } = event.data
+      // An older server names no grade on a prompt's grant, and none names a sigil when none was worn.
       const why =
         reason === 'prompt.graded' && grade !== undefined ? `prompt graded ${gradeText(grade)}` : wordsFor(xpReasons, reason)
-      return { text: `+${amount} XP · ${why}`, tone: 'xp' }
+      return { text: `+${amount} XP · ${why}${sigilPart(sigil)}`, tone: 'xp' }
     }
     case 'xp.capped':
       return { text: `${wordsFor(xpReasons, event.data.eventType)} · daily XP cap reached`, tone: 'quiet' }
     case 'level.up':
       return { text: `Level ${event.data.to}!`, tone: 'level' }
     case 'loot.dropped':
-      return { text: `${event.data.item.name} · ${event.data.item.rarity}`, tone: 'loot' }
+      return { text: `${dropName(event.data.item)} · ${event.data.item.rarity}`, tone: 'loot' }
     case 'gold.changed':
       if (event.data.delta === 0) return null
       return { text: `${signed(event.data.delta)} gold · ${wordsFor(goldReasons, event.data.reason)}`, tone: 'gold' }
@@ -230,30 +254,36 @@ const toastItems = 3
 export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
   let xp = 0
   let gold = 0
+  let sigil = 0
   const levels: Array<string> = []
   const items: Array<string> = []
   const hatched: Array<string> = []
   const missions: Array<string> = []
+  const boosts: Array<string> = []
   for (const event of events) {
     if (event.type === 'quest.completed') missions.push(`Mission complete: ${event.data.title || 'Mission'}`)
+    const boost = event.type === 'quest.completed' ? event.data.rewards?.xpBoost : undefined
+    if (boost !== undefined) boosts.push(boostText(boost))
     if (event.type === 'xp.granted') xp += event.data.amount
+    if (event.type === 'xp.granted' && typeof event.data.sigil === 'number') sigil = Math.max(sigil, event.data.sigil)
     if (event.type === 'gold.changed') gold += event.data.delta
     if (event.type === 'level.up') {
       const { to, title } = event.data
       levels.push(title === undefined ? `Level ${to}!` : `Level ${to}! New title: ${title}`)
     }
-    if (event.type === 'loot.dropped') items.push(`${event.data.item.name} (${event.data.item.rarity})`)
+    if (event.type === 'loot.dropped') items.push(`${dropName(event.data.item)} (${event.data.item.rarity})`)
     if (event.type === 'pet.hatched') hatched.push(`🥚 ${event.data.name} hatched!`)
   }
   const more = items.length - toastItems
   const parts = [
     ...missions,
     // Grants run to the thousandth; their sum is rounded back, so float error never shows.
-    ...(xp > 0 ? [`+${xp} XP`] : []),
+    ...(xp > 0 ? [sigil > 1 ? `+${xp} XP (${multiplierText(sigil)} sigil)` : `+${xp} XP`] : []),
     ...levels,
     ...items.slice(0, more > 0 ? toastItems - 1 : toastItems),
     ...(more > 0 ? [`${more + 1} more items`] : []),
     ...(gold !== 0 ? [`${signed(gold)} gold`] : []),
+    ...boosts,
     ...hatched,
   ]
   return parts.length === 0 ? null : parts.join(' · ')

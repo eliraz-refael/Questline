@@ -1,5 +1,7 @@
-import { Effect } from "effect"
+import { ulids } from "@questline/engine"
+import { Clock, Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
+import { randomBytes } from "node:crypto"
 
 // The proof of concept's tables (see the design doc's Data model). The event log is the truth; player_state is the
 // engine state at its head. Times the engine reads are kept as the ISO strings it was given, so a replay sees the
@@ -270,6 +272,81 @@ const presence = Effect.gen(function* () {
   `
 })
 
+// Sigils: the level curve steepened from base 100 * L^1.6 to 100 * L^1.66 (rules version 7), so a saved player would
+// have dropped a level or more. Each one keeps their level and their share of the way to the next: they are given the
+// XP their place takes on the new curve, as reported XP, logged as an `xp.carried` input so a replay of the log adds it
+// too. The curves are written out here, so this migration means the same thing whatever the rules later become.
+// Boosts gained a kind: any stored before it came from food, the only kind there was.
+const carriedCurve = { from: { base: 100, exponent: 1.6 }, to: { base: 100, exponent: 1.66 }, rulesVersion: 7 }
+
+const xpAt = (curve: { readonly base: number; readonly exponent: number }, level: number): number =>
+  Math.floor(curve.base * level ** curve.exponent)
+
+/** The XP that puts `total` at the same level, and the same share into it, on the steeper curve. */
+export const carriedXp = (total: number): number => {
+  const { from, to } = carriedCurve
+  let level = 0
+  while (xpAt(from, level + 1) <= total) level++
+  const share = (total - xpAt(from, level)) / (xpAt(from, level + 1) - xpAt(from, level))
+  const placed = xpAt(to, level) + Math.floor(share * (xpAt(to, level + 1) - xpAt(to, level)))
+  return Math.max(0, placed - total)
+}
+
+const SavedXp = Schema.Struct({
+  progress: Schema.Struct({
+    xp: Schema.Struct({ verified: Schema.Number, reported: Schema.Number }),
+    prestigeXp: Schema.Number,
+  }),
+})
+
+const sigils = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    UPDATE player_state
+    SET state = jsonb_set(
+      state,
+      '{progress,boosts}',
+      (
+        SELECT COALESCE(
+          jsonb_agg(CASE WHEN boost ? 'kind' THEN boost ELSE boost || '{"kind":"food"}'::jsonb END ORDER BY i),
+          '[]'::jsonb
+        )
+        FROM jsonb_array_elements(state -> 'progress' -> 'boosts') WITH ORDINALITY AS boosts (boost, i)
+      )
+    )
+    WHERE jsonb_typeof(state -> 'progress' -> 'boosts') = 'array'
+  `
+  const now = new Date(yield* Clock.currentTimeMillis).toISOString()
+  const rows = yield* sql<{ player_id: string; state: unknown; log_seq: number }>`
+    SELECT player_id, state, log_seq FROM player_state WHERE rules_version < ${carriedCurve.rulesVersion}
+  `
+  for (const row of rows) {
+    const saved = yield* Schema.decodeUnknownEffect(SavedXp)(row.state)
+    const { xp, prestigeXp } = saved.progress
+    const amount = carriedXp(Math.max(0, xp.verified + xp.reported - prestigeXp))
+    if (amount === 0) continue
+    const logSeq = row.log_seq + 1
+    const input = { kind: "system", event: { type: "xp.carried", amount, rulesVersion: carriedCurve.rulesVersion } }
+    const id = ulids(randomBytes(16).toString("hex"), logSeq, now)()
+    // The versions the carry was made under: engine 10, rules 7, catalogue 4, the first input schema.
+    yield* sql`
+      INSERT INTO event_log (
+        player_id, log_seq, input_id, natural_key, schema_version, input, received_at,
+        engine_version, rules_version, catalog_version, status, reason, refusal
+      ) VALUES (
+        ${row.player_id}, ${logSeq}, ${id}, ${`xp.carried:${carriedCurve.rulesVersion}`}, 1,
+        ${JSON.stringify(input)}::jsonb, ${now}, 10, ${carriedCurve.rulesVersion}, 4, 'accepted', NULL, NULL
+      )
+    `
+    yield* sql`
+      UPDATE player_state
+      SET state = jsonb_set(state, '{progress,xp,reported}', to_jsonb(${xp.reported + amount}::integer)),
+          log_seq = ${logSeq}
+      WHERE player_id = ${row.player_id}
+    `
+  }
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
@@ -280,6 +357,7 @@ export const migrations = {
   "0006_stats_profile": statsProfile,
   "0007_missions": missions,
   "0008_presence": presence,
+  "0009_sigils": sigils,
 }
 
 /** Runs the migrations not applied yet, in order. */

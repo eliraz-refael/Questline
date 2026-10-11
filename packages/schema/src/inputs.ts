@@ -25,6 +25,11 @@ export const SystemEvent = Schema.Union([
   /** After a rebalance: grants what the replayed progress reached that the kept holdings don't record yet. */
   Schema.Struct({ type: Schema.Literal("rules.published"), version: Count }),
   Schema.Struct({ type: Schema.Literal("timezone.changed"), tz: Schema.String }),
+  /**
+   * XP a rules change carried over, so a saved player keeps their level and their place in it: a level curve that asks
+   * more XP per level adds what that place now takes. A migration writes it, under the rules version that made it.
+   */
+  Schema.Struct({ type: Schema.Literal("xp.carried"), amount: Count, rulesVersion: Count }),
   /** A local day or week began: the step that takes it rolls the new window's missions, as every step does. */
   Schema.Struct({ type: Schema.Literal("quests.refresh") }),
   /** A mod that keeps its session live opened it, or was heard from again after it lapsed: open from receipt. */

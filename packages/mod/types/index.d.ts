@@ -70,6 +70,9 @@ export type BandLook = {
   sheen?: LookSheen
 }
 
+/** What a sigil does, as the server says: its multiplier on graded prompts' XP, and the mark and color it shows in. */
+export type SigilView = { multiplier: number; glyph: string; color: string }
+
 /** One owned item, its definition beside its entry. */
 export type OwnedItem = {
   entryId: string
@@ -80,10 +83,19 @@ export type OwnedItem = {
   slot: string | null
   look: BandLook | null
   lore: string | null
+  /** A sigil's power; absent on every other item, and on what a copy of the mod from before sigils kept. */
+  sigil?: SigilView
 }
 
-/** What the player owns and what is equipped where (slot -> entry id). */
-export type Wardrobe = { items: ReadonlyArray<OwnedItem>; equipped: Readonly<Record<string, string>> }
+/**
+ * What the player owns and what is equipped where (slot -> entry id). `knowsSigils` is true only from a server whose
+ * rules carry sigils, which the pane's Sigil section waits for.
+ */
+export type Wardrobe = {
+  items: ReadonlyArray<OwnedItem>
+  equipped: Readonly<Record<string, string>>
+  knowsSigils?: boolean
+}
 
 /**
  * The loops' clocks: frames played at each rate a worn look loops at (by the rate, as text), so every look steps
@@ -109,10 +121,21 @@ export type StatsView = {
   xp: { verified: number; reported: number }
   /** Inventory entries owned. */
   items: number
+  /**
+   * The sigil worn, with its name; `worn` null when none is. Null itself from a server older than sigils, where the
+   * tab shows no row for one.
+   */
+  sigil?: { worn: (SigilView & { name: string; rarity: Tier }) | null } | null
 }
 
-/** What a mission grants when it completes, as the pack promises it: XP, gold, and a drop of a rarity. */
-export type MissionRewards = { xp: number; gold: number; loot: Tier | null }
+/** What a mission grants when it completes, as the pack promises it: XP, gold, an XP boost, a drop of a rarity. */
+export type MissionRewards = {
+  xp: number
+  gold: number
+  loot: Tier | null
+  /** Percent more XP for so many minutes; absent when it grants none, or from a copy of the mod before boosts. */
+  boost?: { pct: number; minutes: number }
+}
 
 /** One mission as the pane and the band draw it, from the snapshot's quest state. */
 export type MissionView = {

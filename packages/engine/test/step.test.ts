@@ -1,5 +1,6 @@
 import { it as prop } from "@effect/vitest"
 import type {
+  Boost,
   ClientEvent,
   Command,
   Context,
@@ -571,7 +572,7 @@ describe("step: review fixes", () => {
   it("ends a boost by instant, not by comparing timestamps as text", () => {
     const state = fresh()
     // 10:00+02:00 is 08:00Z: over by 09:00Z, though the text sorts after it.
-    const boost = { source: "trail-mix", xpBoostPct: 10, endsAt: "2026-10-09T10:00:00+02:00" }
+    const boost: Boost = { kind: "food", source: "trail-mix", xpBoostPct: 10, endsAt: "2026-10-09T10:00:00+02:00" }
     const boosted = { ...state, progress: { ...state.progress, boosts: [boost] } }
     const merged = client("change.merged", 60)
     const result = step(boosted, merged, context(1, minutesLater(60)))

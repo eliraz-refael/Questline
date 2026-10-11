@@ -71,10 +71,16 @@ export const QuestLoot = Schema.Struct({
 })
 export interface QuestLoot extends Schema.Schema.Type<typeof QuestLoot> {}
 
+/** A flat XP boost for a while: `pct` percent more XP for `minutes`, as food gives, counted after the sigil. */
+export const QuestXpBoost = Schema.Struct({ pct: Goal, minutes: Goal })
+export interface QuestXpBoost extends Schema.Schema.Type<typeof QuestXpBoost> {}
+
 /** What completing a quest grants, each as its own server event. Every kind is optional, so new kinds join as keys. */
 export const QuestRewards = Schema.Struct({
   xp: Schema.optionalKey(Count),
   gold: Schema.optionalKey(Count),
+  /** Starts when the quest completes; the strongest running mission boost counts, so two never stack. */
+  xpBoost: Schema.optionalKey(QuestXpBoost),
   loot: Schema.optionalKey(QuestLoot),
 })
 export interface QuestRewards extends Schema.Schema.Type<typeof QuestRewards> {}

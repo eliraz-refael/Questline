@@ -1,6 +1,7 @@
 import type { PluginOptions } from 'claude-code'
 import type { QuestRewards, ServerEvent } from '@questline/schema'
 import type { Celebration, Motion, Tier } from '../types'
+import { boostText } from './sigils'
 
 // What the band celebrates and when: the server's events as celebrations, the queue they wait in, and how long each
 // plays. The server names every tier; nothing here decides how big a moment is, only how a tier is staged.
@@ -34,11 +35,12 @@ export const celebrationOf = (event: ServerEvent, glyph: string): Celebration | 
   }
 }
 
-/** What a mission promised, in words: `+50 XP · +30 gold · rare drop`. */
+/** What a mission promised, in words: `+50 XP · +30 gold · +10% XP for 1h · rare drop`. */
 export const rewardsText = (rewards: QuestRewards): string =>
   [
     ...(rewards.xp !== undefined && rewards.xp > 0 ? [`+${rewards.xp} XP`] : []),
     ...(rewards.gold !== undefined && rewards.gold > 0 ? [`+${rewards.gold} gold`] : []),
+    ...(rewards.xpBoost === undefined ? [] : [boostText(rewards.xpBoost)]),
     ...(rewards.loot === undefined ? [] : [`${tierOf(rewards.loot.rarity)} drop`]),
   ].join(' · ')
 

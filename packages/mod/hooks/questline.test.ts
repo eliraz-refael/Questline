@@ -2294,3 +2294,165 @@ describe('missions over sessions run together', () => {
     await ui.unmount()
   })
 })
+
+describe('sigils', () => {
+  const sigilItem = (id: string, name: string, rarity: string, multiplier: number, glyph: string, color: string, lore: string | null = null) => ({
+    id,
+    name,
+    rarity,
+    category: 'sigil',
+    slot: 'sigil',
+    sprite: null,
+    lore,
+    effect: null,
+    look: null,
+    sigil: { multiplier, glyph, color },
+  })
+  const arcane = sigilItem('arcane-sigil', 'Arcane Sigil', 'epic', 2, '✹', '#c77dff', 'Hums when the done criteria are spelled out.')
+  const chalk = sigilItem('chalk-sigil', 'Chalk Sigil', 'common', 1.2, '✧', '#bcbcbc')
+  const sigilRules = {
+    prompt: { sigilMultiplier: { common: [1.2, 1.3], uncommon: [1.4, 1.6], rare: [1.7, 1.9], epic: [2, 2.2], legendary: [2.3, 2.5] } },
+  }
+  /** The usual inventory with two sigils, the Arcane worn when `worn`. */
+  const withSigils = (worn: boolean): Owned => {
+    const owned = ownedOf()
+    return {
+      inventory: [
+        ...owned.inventory,
+        { id: '01K6ZQ8W3J0000000000009011', itemId: 'arcane-sigil' },
+        { id: '01K6ZQ8W3J0000000000009012', itemId: 'chalk-sigil' },
+        { id: '01K6ZQ8W3J0000000000009013', itemId: 'chalk-sigil' },
+      ],
+      items: [...owned.items, arcane, chalk],
+      equipped: worn ? { sigil: '01K6ZQ8W3J0000000000009011' } : {},
+    }
+  }
+  const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+
+  test('the inventory lists them strongest first, with their multiplier, and marks the one worn', async ($, on) => {
+    await streaming($, on, withSigils(true), false, { rules: sigilRules })
+    const all = (await paneTexts($, 100)).texts.join('\n')
+    expect(all).toContain('×2 on the XP your graded prompts earn · one worn at a time')
+    expect(all).toMatch(/● ✹ Arcane Sigil ×2 prompt XP · epic/)
+    expect(all).toMatch(/○ ✧ Chalk Sigil ×1\.2 prompt XP · common · 2 owned/)
+    expect(all.indexOf('Arcane Sigil')).toBeLessThan(all.indexOf('Chalk Sigil'))
+    expect(all.indexOf('Sigil')).toBeLessThan(all.indexOf('Band styles'))
+    expect(all).toContain('Hums when the done criteria are spelled out.')
+    // Not listed again among the other items.
+    expect(all).not.toMatch(/Chalk Sigil common · sigil/)
+  })
+
+  test('Equip wears one through item.equip, and Unequip takes it off', async ($, on) => {
+    const { sent } = await streaming($, on, withSigils(false), false, { rules: sigilRules })
+    const before = (await paneTexts($, 100)).texts.join('\n')
+    expect(before).toContain('none worn · one at a time multiplies the XP your graded prompts earn')
+    const ui = await mountPane($)
+    await ui.press({ key: 'equip:sigil:arcane-sigil' })
+    await ui.unmount()
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'item.equip', data: { entryId: '01K6ZQ8W3J0000000000009011', slot: 'sigil' } })
+    const after = await mountPane($)
+    expect(await textsOf(after)).toMatch(/● ✹ Arcane Sigil/)
+    await after.press({ key: 'unequip:sigil' })
+    await after.unmount()
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'item.unequip', data: { slot: 'sigil' } })
+  })
+
+  test('a server older than sigils gets no Sigil section, and a new player is told how they come', async ($, on) => {
+    await streaming($, on, withSigils(true))
+    const old = (await paneTexts($, 100)).texts.join('\n')
+    expect(old).not.toContain('one worn at a time')
+    expect(old).not.toMatch(/^Sigil/m)
+  })
+
+  test('a new player on a new server reads how sigils come', async ($, on) => {
+    await streaming($, on, ownedOf(), false, { rules: sigilRules })
+    const all = (await paneTexts($, 100)).texts.join('\n')
+    expect(all).toContain('none yet: they drop like any loot, and multiply the XP your graded prompts earn')
+  })
+
+  test("the gain line and the toast say the sigil's part in words; a sigil drop names its multiplier", async ($, on) => {
+    const { clock, send, toasts } = await streaming($, on, undefined, false, { rules: sigilRules })
+    await send(...causedBy('01K6ZQ8W3J0000000000000C01', grant(20, 'prompt.graded', { grade: 5, sigil: 2 })))
+    expect(await gainLine($)).toBe('+20 XP · prompt graded 5 · ×2 sigil')
+    expect(toasts.at(-1)).toBe('+20 XP (×2 sigil)')
+    await send(...causedBy('01K6ZQ8W3J0000000000000C02', grant(10, 'prompt.graded', { grade: 5 })))
+    expect(await gainLine($)).toBe('+10 XP · prompt graded 5')
+    expect(toasts.at(-1)).toBe('+10 XP')
+    const sigilDrop = serverEvent('loot.dropped', {
+      entry: { id: '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', itemId: 'arcane-sigil', acquiredAt: '2026-10-09T08:00:00Z', source: { kind: 'drop', ref: '1' }, dye: null },
+      item: arcane,
+      gold: 0,
+      pity: { sinceRare: 0, sinceEpic: 0 },
+      tier: 'epic',
+    })
+    await send(...causedBy('01K6ZQ8W3J0000000000000C03', sigilDrop))
+    expect(toasts.at(-1)).toBe('Arcane Sigil ×2 (epic)')
+    // Once its celebration has played, the line names it with its multiplier.
+    await clock.advance(5_000)
+    expect(await gainLine($)).toBe('Arcane Sigil ×2 · epic')
+  })
+
+  test('a sigil drop celebrates as any drop of its rarity: an epic takes the band up with a burst', async ($, on) => {
+    const { clock, send } = await streaming($, on, undefined, false, { rules: sigilRules })
+    const sigilDrop = serverEvent('loot.dropped', {
+      entry: { id: '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', itemId: 'arcane-sigil', acquiredAt: '2026-10-09T08:00:00Z', source: { kind: 'drop', ref: '1' }, dye: null },
+      item: arcane,
+      gold: 0,
+      pity: { sinceRare: 0, sinceEpic: 0 },
+      tier: 'epic',
+    })
+    await send(sigilDrop)
+    expect((await band($, 30)).grown).toBe(8)
+    await clock.advance(700)
+    expect((await band($)).all).toContain('Arcane Sigil')
+    await clock.advance(2_600)
+    expect((await band($)).grown).toBe(0)
+  })
+
+  test('the Stats tab names the sigil worn, or says none is, and shows no row on an older server', async ($, on) => {
+    await streaming($, on, withSigils(true), false, { counted: playing, rules: sigilRules })
+    await openStats($)
+    const wide = (await paneTexts($, 72)).texts.join('\n')
+    expect(wide).toMatch(/^ {2}Sigil +✹ Arcane Sigil ×2$/m)
+    for (const text of (await paneTexts($, 40)).texts) expect(cellsOf(text)).toBeLessThanOrEqual(38)
+  })
+
+  test('the Stats tab says none is worn, and an older server has no row', async ($, on) => {
+    await streaming($, on, withSigils(false), false, { counted: playing, rules: sigilRules })
+    await openStats($)
+    expect((await paneTexts($, 72)).texts.join('\n')).toMatch(/^ {2}Sigil +none worn$/m)
+  })
+
+  test('an older server has no Sigil row in the Stats tab', async ($, on) => {
+    await streaming($, on, withSigils(true), false, { counted: playing })
+    await openStats($)
+    expect((await paneTexts($, 72)).texts.join('\n')).not.toMatch(/^ {2}Sigil/m)
+  })
+
+  test('a mission that grants an XP boost says so in the tab, the toast and the celebration', async ($, on) => {
+    const boosted = missionsNow().map((one) =>
+      one.questId === 'clear-thinker' ? { ...one, rewards: { ...one.rewards, xpBoost: { pct: 10, minutes: 60 } } } : one,
+    )
+    const { send, toasts } = await streaming($, on, ownedOf(), false, { quests: boosted, rules: missionRules })
+    await openMissions($)
+    const ui = await mountPane($)
+    expect(await textsOf(ui)).toContain('+10% XP for 1h')
+    await ui.unmount()
+    await send(
+      ...causedBy(
+        '01K6ZQ8W3J0000000000000C01',
+        completed('clear-thinker', 'Clear Thinker', 'uncommon', { xp: 50, gold: 30, xpBoost: { pct: 10, minutes: 60 } }),
+        grant(50, 'quest'),
+        goldChanged(30, 'quest'),
+      ),
+    )
+    expect(toasts.at(-1)).toBe('Mission complete: Clear Thinker · +50 XP · +30 gold · +10% XP for 1h')
+  })
+
+  test('dev mode grants a sigil by its id', async ($, on) => {
+    const { sent } = await streaming($, on, ownedOf(), true, { rules: sigilRules })
+    const answer = await $.command.run({ command: 'questline', args: 'dev item arcane-sigil', origin: composer, presentation })
+    expect(answer.text).toBe('Done.')
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'dev.grantItem', data: { itemId: 'arcane-sigil' } })
+  })
+})

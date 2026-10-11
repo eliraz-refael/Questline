@@ -383,7 +383,7 @@ describe("the starter pack", () => {
       ],
     ])
     expect(Schema.decodeUnknownSync(QuestPackSchema)(starterQuestPack)).toEqual(starterQuestPack)
-    expect(starterQuestPack.version).toBe(2)
+    expect(starterQuestPack.version).toBe(3)
   })
 
   it("refuses a parallel goal of fewer than two sessions", () => {
