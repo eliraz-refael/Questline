@@ -9,16 +9,20 @@ const command = <Type extends string, Data extends Schema.Struct.Fields>(type: T
 
 export const PetHatch = command("pet.hatch", { species: Schema.String, name: Name })
 export const PetRename = command("pet.rename", { name: Name })
+/** A pat: it lifts the pet's mood a little, a few times an hour; past that it is never refused, and adds nothing. */
 export const PetPet = command("pet.pet", {})
+/** Food the pet eats: it lifts its mood and starts the food's XP boost. */
 export const PetFeed = command("pet.feed", { entryId: Ulid })
 export const ItemEquip = command("item.equip", { entryId: Ulid, slot: Slot })
 export const ItemUnequip = command("item.unequip", { slot: Slot })
 export const ItemDye = command("item.dye", { entryId: Ulid, dye: Schema.String })
 /** A duplicate becomes shards of its rarity. */
 export const ItemSalvage = command("item.salvage", { entryId: Ulid })
-/** A duplicate, plus gold, becomes a random item of the same rarity. */
+/** A duplicate, plus gold, becomes a random other item of the same rarity, never a sigil. */
 export const ItemReroll = command("item.reroll", { entryId: Ulid })
+/** One of today's offers, for its price in gold. */
 export const ShopBuy = command("shop.buy", { offerId: Schema.String })
+/** Shards of a rarity become a chosen item of that rarity, never a sigil. */
 export const ShardsCraft = command("shards.craft", { rarity: Rarity, itemId: Schema.String })
 export const QuestAccept = command("quest.accept", { questId: Schema.String })
 export const QuestAbandon = command("quest.abandon", { questId: Schema.String })
@@ -44,6 +48,14 @@ export const DevRollQuests = command("dev.rollQuests", {})
  * prompt in the player's own session soon after makes a moment with it, so one terminal can try a parallel goal.
  */
 export const DevFakeSession = command("dev.fakeSession", {})
+/** Today's shop back in stock, as if the day had just begun. */
+export const DevRestockShop = command("dev.restockShop", {})
+/** The pet's mood set, to try a happy or a sleepy pet. */
+export const DevSetMood = command("dev.setMood", {
+  mood: Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 100 }))),
+})
+/** Shards of every rarity set to `count`, to try crafting. */
+export const DevSetShards = command("dev.setShards", { count: Count })
 
 export const DevCommand = Schema.Union([
   DevGrantItem,
@@ -53,6 +65,9 @@ export const DevCommand = Schema.Union([
   DevCompleteQuest,
   DevRollQuests,
   DevFakeSession,
+  DevRestockShop,
+  DevSetMood,
+  DevSetShards,
 ])
 export type DevCommand = typeof DevCommand.Type
 
@@ -79,6 +94,9 @@ export const Command = Schema.Union([
   DevCompleteQuest,
   DevRollQuests,
   DevFakeSession,
+  DevRestockShop,
+  DevSetMood,
+  DevSetShards,
 ])
 export type Command = typeof Command.Type
 export type CommandType = Command["type"]

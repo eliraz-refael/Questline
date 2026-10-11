@@ -10,6 +10,7 @@ import {
   LevelCurve,
   PromptRules,
   ServerEvent,
+  ShopRules,
   SigilRanges,
   Snapshot,
 } from "../src/index.ts"
@@ -185,6 +186,63 @@ describe("PromptRules", () => {
     expect(valid({ ...rules, sigilMultiplier: { ...ranges, common: [0.9, 1.3] } })).toBe(false)
     const { sigilMultiplier: _ranges, ...none } = rules
     expect(valid(none)).toBe(false)
+  })
+})
+
+describe("ShopRules", () => {
+  const shop = {
+    offers: 4,
+    rarities: ["common", "uncommon"],
+    categories: ["bandStyle", "wearable"],
+    stock: 1,
+    prices: { common: 120, uncommon: 250, rare: 600, epic: 1500, legendary: 4000 },
+    food: { stock: 3, prices: { common: 25, uncommon: 60, rare: 150, epic: 400, legendary: 1000 } },
+  }
+  const decode = Schema.decodeUnknownExit(ShopRules)
+
+  it("takes a shelf, its stock and prices, and the food's", () => {
+    expect(decode(shop)._tag).toBe("Success")
+    expect(decode({ ...shop, prices: { ...shop.prices, rare: -1 } })._tag).toBe("Failure")
+  })
+
+  it("never sells a sigil", () => {
+    expect(decode({ ...shop, categories: ["bandStyle", "sigil"] })._tag).toBe("Failure")
+  })
+})
+
+describe("ServerEvent: the shop and pet care", () => {
+  const source = { kind: "shop", ref: "2026-10-08/trail-mix" }
+  const entry = { id: ulid, itemId: "trail-mix", acquiredAt: at, source, dye: null }
+  const item = {
+    id: "trail-mix",
+    name: "Trail Mix",
+    rarity: "common",
+    category: "food",
+    slot: null,
+    sprite: null,
+    lore: null,
+    effect: { xpBoostPct: 10, minutes: 60 },
+    look: null,
+  }
+  const event = (type: string, data: unknown) => ({ seq: 1, at, cause: ulid, type, data })
+  const decode = Schema.decodeUnknownExit(ServerEvent)
+
+  it("decodes a purchase, a meal, a pat, a re-roll, a salvage and a craft", () => {
+    const boost = { pct: 10, minutes: 60 }
+    const bar = { entryId: ulid, itemId: "solid-bar", name: "Solid Bar" }
+    for (const one of [
+      event("shop.bought", { offerId: "2026-10-08/trail-mix", entry, item, price: 25 }),
+      event("pet.fed", { entryId: ulid, itemId: "trail-mix", name: "Trail Mix", mood: 70, xpBoost: boost }),
+      event("pet.fed", { entryId: ulid, itemId: "old-food", name: "old-food", mood: 70 }),
+      event("pet.petted", { mood: 75, gained: 5 }),
+      event("item.rerolled", { from: bar, entry, item, price: 20, tier: "common" }),
+      event("item.salvaged", { ...bar, rarity: "common", shards: 1, totalAfter: 3 }),
+      event("shards.crafted", { rarity: "common", spent: 10, totalAfter: 0, entry, item }),
+    ]) {
+      expect(decode(one)._tag).toBe("Success")
+    }
+    expect(decode(event("pet.petted", { mood: 140, gained: 5 }))._tag).toBe("Failure")
+    expect(decode(event("shop.bought", { offerId: "x", entry, item, price: -5 }))._tag).toBe("Failure")
   })
 })
 

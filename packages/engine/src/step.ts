@@ -11,6 +11,7 @@ import type {
   InventoryEntry,
   ItemDef,
   Mission,
+  OwnedPet,
   PlayerState,
   PlayerStats,
   Progress,
@@ -30,6 +31,7 @@ import { addDays, isLater, localDay } from "./days.ts"
 import { formFor, formsFor, glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import type { RarityWeights } from "./loot.ts"
 import { pityAfter, raiseRare, rarityRank, rollLoot } from "./loot.ts"
+import { lifted, patted } from "./pet.ts"
 import { closeSpan, openSpan, prunePresence, spanAt } from "./presence.ts"
 import { equippedSigil, isSigil } from "./sigils.ts"
 import { petSlots } from "./project.ts"
@@ -48,14 +50,16 @@ import {
   windowOf,
 } from "./quests.ts"
 import { ulids } from "./random.ts"
+import { boughtToday, offerParts, waresOf } from "./shop.ts"
 import { addScores, bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
 // This version covers the proof of concept: reported XP with daily caps, XP for graded prompts (times the equipped
 // sigil), levels, the streak, a loot roll per turn, per graded prompt (better odds for a better grade) and per
 // level-up, the player stats, the daily and weekly missions (parallel ones from the sessions the server says are open)
-// and their XP boosts, hatching the pet, and equipping items. Verified-tier facts wait for the verifier, and other
-// commands are refused for now.
+// and their XP boosts, hatching the pet and caring for it (food and pats), equipping items, the shop, and trading
+// duplicates in (a re-roll for gold, or shards that craft a chosen item). Verified-tier facts wait for the verifier,
+// and other commands are refused for now.
 
 /** What one step builds up. It lives only inside `step`, so the function stays pure. */
 interface Run {
@@ -305,6 +309,18 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
       return accept(state, command.data.questId, context)
     case "quest.abandon":
       return abandon(state, command.data.questId, context)
+    case "pet.pet":
+      return pat(state, context)
+    case "pet.feed":
+      return feed(state, command.data.entryId, context)
+    case "shop.buy":
+      return buy(state, command.data.offerId, context)
+    case "item.reroll":
+      return reroll(state, command.data.entryId, context)
+    case "item.salvage":
+      return salvage(state, command.data.entryId, context)
+    case "shards.craft":
+      return craft(state, command.data, context)
     case "dev.grantItem":
     case "dev.grantStyles":
     case "dev.grantXp":
@@ -312,6 +328,9 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
     case "dev.completeQuest":
     case "dev.rollQuests":
     case "dev.fakeSession":
+    case "dev.restockShop":
+    case "dev.setMood":
+    case "dev.setShards":
       return context.dev === true
         ? runDev(state, command, context)
         : refuse(state, { code: "not_allowed", message: "Dev commands run only on a local server in dev mode" })
@@ -700,10 +719,24 @@ interface RollOptions {
   /** The items it draws from; the whole catalogue when absent. */
   readonly pool?: ReadonlyArray<ItemDef>
   readonly source?: InventoryEntry["source"]
+  /**
+   * A trade, a duplicate re-rolled: it brings no gold and leaves the pity timers be, as paying to re-roll must never
+   * buy a better next drop, and the caller announces what it made rather than a drop.
+   */
+  readonly trade?: boolean
 }
 
-/** Rolls loot, by the trigger's own odds if it has them, or in a replay applies the roll the log recorded. */
-const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, options: RollOptions = {}): void => {
+/** What a roll put in the inventory, with its definition when the catalogue has one. */
+interface Rolled {
+  readonly entry: InventoryEntry
+  readonly item: ItemDef | undefined
+}
+
+/**
+ * Rolls loot, by the trigger's own odds if it has them, or in a replay applies the roll the log recorded. Returns
+ * what it put in the inventory, if anything.
+ */
+const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, options: RollOptions = {}): Rolled | null => {
   const { context } = run
   const { rules, catalog } = context
   const loot = run.state.holdings.loot
@@ -711,7 +744,7 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, options:
   if (context.mode.kind === "replay") {
     const recorded = context.mode.recorded.rolls[run.rolls.length]
     // The rules may now roll where the live run didn't; only the recorded rolls replay.
-    if (recorded === undefined) return
+    if (recorded === undefined) return null
     record = recorded
   } else {
     const pool = options.pool ?? catalog
@@ -723,17 +756,25 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, options:
       chance,
       pityBefore: loot.pity,
       rulesVersion: rules.version,
-      drop: drop === null ? null : { rarity: drop.rarity, itemId: drop.item.id, gold: drop.gold, entryId: run.newId() },
+      drop:
+        drop === null
+          ? null
+          : {
+              rarity: drop.rarity,
+              itemId: drop.item.id,
+              gold: options.trade === true ? 0 : drop.gold,
+              entryId: run.newId(),
+            },
     }
   }
   run.rolls.push(record)
   const nextRoll = Math.max(loot.nextRoll, record.number + 1)
   if (record.drop === null) {
     setHoldings(run, { loot: { ...loot, nextRoll } })
-    return
+    return null
   }
   const { drop } = record
-  const pity = pityAfter(loot.pity, drop.rarity)
+  const pity = options.trade === true ? loot.pity : pityAfter(loot.pity, drop.rarity)
   const entry: InventoryEntry = {
     id: drop.entryId,
     itemId: drop.itemId,
@@ -747,13 +788,14 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, options:
   setHoldings(run, { inventory: [...run.state.holdings.inventory, entry], gold, loot: { nextRoll, pity } })
   const item = catalog.find((def) => def.id === drop.itemId)
   // An item a later catalogue removed is still owned; it just has no definition to show.
-  if (item !== undefined) {
+  if (item !== undefined && options.trade !== true) {
     run.events.push({ type: "loot.dropped", data: { entry, item, gold: drop.gold, pity, tier: drop.rarity } })
   }
   if (drop.gold > 0) {
     const reason = run.isDev ? "dev" : "drop"
     run.events.push({ type: "gold.changed", data: { delta: drop.gold, totalAfter: gold, reason } })
   }
+  return { entry, item }
 }
 
 /**
@@ -783,7 +825,15 @@ const hatch = (state: PlayerState, data: { species: string; name: string }, cont
   }
   const forms = formsFor(rules, state.holdings.peakLevel)
   const form = formFor(rules, state.holdings.peakLevel)
-  const pet = { species: data.species, name: data.name, hatchedAt: now, forms, form, mood: { value: 100, at: now } }
+  const pet: OwnedPet = {
+    species: data.species,
+    name: data.name,
+    hatchedAt: now,
+    forms,
+    form,
+    mood: { value: 100, at: now },
+    petted: [],
+  }
   const run = begin({ ...state, holdings: { ...state.holdings, pet } }, context)
   run.events.push({ type: "pet.hatched", data: { species: pet.species, name: pet.name, form, mood: 100, equipped: {} } })
   return finish(run)
@@ -822,6 +872,242 @@ const unequip = (state: PlayerState, slot: Slot, context: Context): Step => {
   const equipped = Object.fromEntries(Object.entries(holdings.equipped).filter(([key]) => key !== slot))
   const run = begin({ ...state, holdings: { ...holdings, equipped } }, context)
   run.events.push({ type: "item.unequipped", data: { slot } })
+  return finish(run)
+}
+
+const notHatched: CommandRefusal = { code: "not_allowed", message: "The egg has not hatched yet" }
+
+/** A pat lifts the pet's mood while the hour has pats left, and past them adds nothing; never refused once hatched. */
+const pat = (state: PlayerState, context: Context): Step => {
+  const { rules, now } = context
+  const pet = state.holdings.pet
+  if (pet === null) return refuse(state, notHatched)
+  const run = begin(state, context)
+  const { pet: next, gained } = patted(pet, rules, now)
+  setHoldings(run, { pet: next })
+  run.events.push({ type: "pet.petted", data: { mood: next.mood.value, gained } })
+  return finish(run)
+}
+
+/** The entry gone from the inventory, and from any slot it was in. */
+const spend = (run: Run, entryId: string): void => {
+  const { inventory, equipped } = run.state.holdings
+  setHoldings(run, {
+    inventory: inventory.filter((entry) => entry.id !== entryId),
+    equipped: Object.fromEntries(Object.entries(equipped).filter(([, id]) => id !== entryId)),
+  })
+}
+
+/**
+ * Food the pet eats: gone from the inventory, it lifts the pet's mood and starts the food's XP boost, a flat one of
+ * kind `food` (the strongest running food boost counts, so two never stack). A replay applies what the live run
+ * accepted, with the definition the catalogue now has.
+ */
+const feed = (state: PlayerState, entryId: string, context: Context): Step => {
+  const { rules, now, catalog } = context
+  const pet = state.holdings.pet
+  if (pet === null) return refuse(state, notHatched)
+  const entry = state.holdings.inventory.find((owned) => owned.id === entryId)
+  if (entry === undefined) return refuse(state, { code: "not_owned", message: "That food is not in the inventory" })
+  const item = catalog.find((def) => def.id === entry.itemId)
+  if (context.mode.kind === "live" && item?.category !== "food") {
+    return refuse(state, { code: "invalid", message: `${pet.name} eats only food` })
+  }
+  const run = begin(state, context)
+  spend(run, entry.id)
+  const next = lifted(pet, rules, now, rules.pet.care.fed)
+  setHoldings(run, { pet: next })
+  const effect = item?.effect ?? null
+  const boost =
+    effect !== null && effect.xpBoostPct > 0 && effect.minutes > 0
+      ? { pct: effect.xpBoostPct, minutes: effect.minutes }
+      : undefined
+  if (boost !== undefined) {
+    const endsAt = new Date(Date.parse(now) + boost.minutes * 60_000).toISOString()
+    const running: Boost = { kind: "food", source: entry.itemId, xpBoostPct: boost.pct, endsAt }
+    setProgress(run, { boosts: [...run.state.progress.boosts, running] })
+  }
+  run.events.push({
+    type: "pet.fed",
+    data: {
+      entryId: entry.id,
+      itemId: entry.itemId,
+      name: item?.name ?? entry.itemId,
+      mood: next.mood.value,
+      ...(boost === undefined ? {} : { xpBoost: boost }),
+    },
+  })
+  return finish(run)
+}
+
+/** The price the rules give an item in the shop: food at the food's prices, anything else at the shelf's. */
+const listPrice = (rules: Context["rules"], item: ItemDef): number =>
+  (item.category === "food" ? rules.shop.food.prices : rules.shop.prices)[item.rarity]
+
+/**
+ * One of today's offers, for its price: the item joins the inventory and the day counts the copy against the offer's
+ * stock. An offer of a day gone by has ended. A replay applies what the live run accepted, at the price the rules now
+ * give the item, and never takes the gold below none.
+ */
+const buy = (state: PlayerState, offerId: string, context: Context): Step => {
+  const { rules, now, catalog } = context
+  const { holdings } = state
+  const today = localDay(now, state.timezone)
+  const parts = offerParts(offerId)
+  const ware = parts?.day === today ? waresOf(today, context).find((one) => one.item.id === parts.itemId) : undefined
+  const bought = boughtToday(state, today, offerId)
+  if (context.mode.kind === "live") {
+    if (parts === undefined) return refuse(state, { code: "invalid", message: "No offer has that id" })
+    if (parts.day !== today) {
+      return refuse(state, { code: "sold_out", message: "That offer has ended: the shop restocks each day" })
+    }
+    if (ware === undefined) return refuse(state, { code: "invalid", message: "The shop has no such offer today" })
+    if (bought >= ware.stock) {
+      return refuse(state, { code: "sold_out", message: `${ware.item.name} is sold out for today` })
+    }
+    if (holdings.gold < ware.price) {
+      const message = `${ware.item.name} costs ${ware.price} gold, and you have ${holdings.gold}`
+      return refuse(state, { code: "insufficient_gold", message })
+    }
+  }
+  const itemId = parts?.itemId ?? offerId
+  const item = ware?.item ?? catalog.find((def) => def.id === itemId)
+  const price = Math.min(holdings.gold, ware?.price ?? (item === undefined ? 0 : listPrice(rules, item)))
+  const run = begin(state, context)
+  const entry: InventoryEntry = {
+    id: run.newId(),
+    itemId,
+    acquiredAt: now,
+    source: { kind: "shop", ref: offerId },
+    dye: null,
+  }
+  const sold = holdings.shop.day === today ? holdings.shop.bought : {}
+  const gold = holdings.gold - price
+  setHoldings(run, {
+    inventory: [...holdings.inventory, entry],
+    gold,
+    shop: { day: today, bought: { ...sold, [offerId]: bought + 1 } },
+  })
+  if (item !== undefined) run.events.push({ type: "shop.bought", data: { offerId, entry, item, price } })
+  if (price > 0) run.events.push({ type: "gold.changed", data: { delta: -price, totalAfter: gold, reason: "shop" } })
+  return finish(run)
+}
+
+/** Whether the inventory holds another copy of the entry's item, so it is a duplicate to trade in. */
+const isDuplicate = (state: PlayerState, entry: InventoryEntry): boolean =>
+  state.holdings.inventory.some((other) => other.id !== entry.id && other.itemId === entry.itemId)
+
+const isWorn = (state: PlayerState, entryId: string): boolean =>
+  Object.values(state.holdings.equipped).some((id) => id === entryId)
+
+/** Why a duplicate can't be traded in, live: an item gone from the catalogue, the only copy, or the copy worn. */
+const tradeRefusal = (state: PlayerState, entry: InventoryEntry, item: ItemDef | undefined): CommandRefusal | null => {
+  if (item === undefined) return { code: "invalid", message: "That item is no longer in the catalogue" }
+  if (!isDuplicate(state, entry)) {
+    return { code: "not_allowed", message: `Only a duplicate can be traded in, and you have one ${item.name}` }
+  }
+  if (isWorn(state, entry.id)) return { code: "not_allowed", message: "That copy is worn: trade in a spare one" }
+  return null
+}
+
+/**
+ * A duplicate and gold for a random other item of its rarity, never a sigil, so gold never buys XP. The re-roll is a
+ * roll of its own, recorded for replay, but a trade: it brings no gold and leaves the pity timers be.
+ */
+const reroll = (state: PlayerState, entryId: string, context: Context): Step => {
+  const { rules, catalog } = context
+  const { holdings } = state
+  const entry = holdings.inventory.find((owned) => owned.id === entryId)
+  if (entry === undefined) return refuse(state, { code: "not_owned", message: "That item is not in the inventory" })
+  const item = catalog.find((def) => def.id === entry.itemId)
+  const pool = catalog.filter((def) => def.rarity === item?.rarity && !isSigil(def) && def.id !== entry.itemId)
+  if (context.mode.kind === "live") {
+    const refusal = tradeRefusal(state, entry, item)
+    if (refusal !== null) return refuse(state, refusal)
+    if (item === undefined || pool.length === 0) {
+      return refuse(state, { code: "not_allowed", message: "Nothing else of its rarity to re-roll it into" })
+    }
+    const cost = rules.loot.rerollGold[item.rarity]
+    if (holdings.gold < cost) {
+      const message = `A ${item.rarity} re-roll costs ${cost} gold, and you have ${holdings.gold}`
+      return refuse(state, { code: "insufficient_gold", message })
+    }
+  }
+  const price = item === undefined ? 0 : Math.min(holdings.gold, rules.loot.rerollGold[item.rarity])
+  const run = begin(state, context)
+  spend(run, entry.id)
+  const gold = run.state.holdings.gold - price
+  setHoldings(run, { gold })
+  const rolled = roll(run, "reroll", 1, {
+    keep: item?.rarity ?? "common",
+    pool,
+    trade: true,
+    source: { kind: "craft", ref: `reroll/${entry.id}` },
+  })
+  if (rolled?.item !== undefined) {
+    const from = { entryId: entry.id, itemId: entry.itemId, name: item?.name ?? entry.itemId }
+    const data = { from, entry: rolled.entry, item: rolled.item, price, tier: rolled.item.rarity }
+    run.events.push({ type: "item.rerolled", data })
+  }
+  if (price > 0) run.events.push({ type: "gold.changed", data: { delta: -price, totalAfter: gold, reason: "reroll" } })
+  return finish(run)
+}
+
+/** A duplicate broken into shards of its rarity, as many as the rules give one. */
+const salvage = (state: PlayerState, entryId: string, context: Context): Step => {
+  const { rules, catalog } = context
+  const entry = state.holdings.inventory.find((owned) => owned.id === entryId)
+  if (entry === undefined) return refuse(state, { code: "not_owned", message: "That item is not in the inventory" })
+  const item = catalog.find((def) => def.id === entry.itemId)
+  if (context.mode.kind === "live") {
+    const refusal = tradeRefusal(state, entry, item)
+    if (refusal !== null) return refuse(state, refusal)
+  }
+  const run = begin(state, context)
+  spend(run, entry.id)
+  if (item !== undefined) {
+    const shards = rules.loot.salvageShards[item.rarity]
+    const totalAfter = run.state.holdings.shards[item.rarity] + shards
+    setHoldings(run, { shards: { ...run.state.holdings.shards, [item.rarity]: totalAfter } })
+    const data = { entryId: entry.id, itemId: item.id, name: item.name, rarity: item.rarity, shards, totalAfter }
+    run.events.push({ type: "item.salvaged", data })
+  }
+  return finish(run)
+}
+
+/** Shards of a rarity made into a chosen item of it, anything but a sigil. */
+const craft = (state: PlayerState, data: { rarity: Rarity; itemId: string }, context: Context): Step => {
+  const { rules, catalog, now } = context
+  const { rarity, itemId } = data
+  const item = catalog.find((def) => def.id === itemId)
+  const need = rules.loot.shardsToCraft
+  const have = state.holdings.shards[rarity]
+  if (context.mode.kind === "live") {
+    if (item === undefined) return refuse(state, { code: "invalid", message: "No item in the catalogue has that id" })
+    if (isSigil(item)) return refuse(state, { code: "not_allowed", message: "Shards never make a sigil" })
+    if (item.rarity !== rarity) {
+      return refuse(state, { code: "invalid", message: `${item.name} is ${item.rarity}, not ${rarity}` })
+    }
+    if (have < need) {
+      const message = `Crafting takes ${need} ${rarity} shards, and you have ${have}`
+      return refuse(state, { code: "insufficient_shards", message })
+    }
+  }
+  const run = begin(state, context)
+  const spent = Math.min(have, need)
+  const totalAfter = have - spent
+  const entry: InventoryEntry = {
+    id: run.newId(),
+    itemId,
+    acquiredAt: now,
+    source: { kind: "craft", ref: `shards/${rarity}` },
+    dye: null,
+  }
+  setHoldings(run, {
+    shards: { ...state.holdings.shards, [rarity]: totalAfter },
+    inventory: [...state.holdings.inventory, entry],
+  })
+  if (item !== undefined) run.events.push({ type: "shards.crafted", data: { rarity, spent, totalAfter, entry, item } })
   return finish(run)
 }
 
@@ -892,6 +1178,21 @@ const runDev = (state: PlayerState, command: DevCommand, context: Context): Step
       const rolled = rollQuests(state, context, `:dev:${context.logSeq}`)
       run.state = rolled.state
       run.events.push(...rolled.events)
+      break
+    }
+    case "dev.restockShop":
+      setHoldings(run, { shop: { day: localDay(context.now, state.timezone), bought: {} } })
+      break
+    case "dev.setMood": {
+      const pet = holdings.pet
+      if (pet === null) return refuse(state, notHatched)
+      setHoldings(run, { pet: { ...pet, mood: { value: command.data.mood, at: context.now } } })
+      run.events.push({ type: "pet.changed", data: { mood: command.data.mood } })
+      break
+    }
+    case "dev.setShards": {
+      const { count } = command.data
+      setHoldings(run, { shards: { common: count, uncommon: count, rare: count, epic: count, legendary: count } })
       break
     }
     case "dev.fakeSession": {

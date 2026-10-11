@@ -148,6 +148,8 @@ export const OwnedPet = Schema.Struct({
   form: Pet.fields.form,
   /** Mood as of `at`; decayed by the rules' daily rate when read. */
   mood: Schema.Struct({ value: Pet.fields.mood, at: IsoDateTime }),
+  /** The pats in the last hour that lifted its mood: only so many an hour count. */
+  petted: Schema.Array(IsoDateTime),
 }).check(Schema.makeFilter((pet) => pet.forms.includes(pet.form) || { path: ["form"], issue: "form must be unlocked" }))
 export interface OwnedPet extends Schema.Schema.Type<typeof OwnedPet> {}
 

@@ -1,13 +1,13 @@
 import { it } from "@effect/vitest"
 import { initialState, levelForXp, levelOf, starterRules, step } from "@questline/engine"
-import type { Context } from "@questline/schema"
+import type { CommandRefusal, Context, Recorded } from "@questline/schema"
 import { Input, PlayerState } from "@questline/schema"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
 import { carriedXp, catalog, migrate, migrations } from "../src/index.ts"
-import { commit, profile, prompt, start } from "./fixtures.ts"
+import { commit, hatch, minutesLater, nextId, profile, prompt, start } from "./fixtures.ts"
 
 // Each test starts a fresh PGlite and runs every migration: the first cold start can take seconds on a CI runner.
 const coldStart = 30_000
@@ -224,6 +224,70 @@ describe("migrations", () => {
     coldStart,
   )
 
+  it.effect("give a pet saved before care no pats counted, ending where a replay of its log does", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0010"))
+      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      // The log: the egg hatched, then a pat, which the server before care refused.
+      const hatched: Input = { kind: "command", command: hatch() }
+      const patted: Input = { kind: "command", command: { id: nextId(), type: "pet.pet", data: {} } }
+      const refusal = { code: "not_allowed", message: "Not available in this version yet" } satisfies CommandRefusal
+      const context = { rollSeed: "seed", rules: starterRules, catalog, questPacks: [] }
+      const replaying = (recorded: Recorded): Context["mode"] => ({ kind: "replay", recorded })
+      const first = step(initialState({ ...profile, now: start }), hatched, {
+        ...context,
+        now: start,
+        logSeq: 1,
+        mode: replaying({ rolls: [], refusal: null }),
+      })
+      const replayed = step(first.state, patted, {
+        ...context,
+        now: minutesLater(1),
+        logSeq: 2,
+        mode: replaying({ rolls: [], refusal }),
+      }).state
+      const pet = replayed.holdings.pet
+      if (pet === null) throw new Error("the egg never hatched")
+      // What the server before care saved: the same pet, with no pats kept.
+      const { petted: _petted, ...older } = pet
+      const saved = { ...replayed, holdings: { ...replayed.holdings, pet: older } }
+      const players: Array<[string, unknown]> = [["pet", saved], ["egg", initialState({ ...profile, now: start })]]
+      for (const [id, state] of players) {
+        yield* sql`
+          INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
+          VALUES (${id}, NULL, NULL, 'Player', 'seed', ${start})
+        `
+        yield* sql`
+          INSERT INTO player_state (player_id, state, log_seq, server_seq, stream_epoch, engine_version, rules_version)
+          VALUES (${id}, ${JSON.stringify(state)}::jsonb, 2, 0, 1, 10, 7)
+        `
+      }
+      yield* migrate
+      const stored = yield* sql`
+        SELECT player_id, state, engine_version, rules_version FROM player_state ORDER BY player_id
+      `
+      const rows = yield* Schema.decodeUnknownEffect(
+        Schema.Array(
+          Schema.Struct({
+            player_id: Schema.String,
+            state: PlayerState,
+            engine_version: Schema.Number,
+            rules_version: Schema.Number,
+          }),
+        ),
+      )(stored)
+      expect(rows.map((row) => [row.player_id, row.engine_version, row.rules_version])).toEqual([
+        ["egg", 11, 8],
+        ["pet", 11, 8],
+      ])
+      expect(rows[1]?.state).toEqual(replayed)
+      expect(rows[1]?.state.holdings.pet?.petted).toEqual([])
+      expect(rows[0]?.state).toEqual(initialState({ ...profile, now: start }))
+    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
+  )
+
   it("keep every level on the steeper curve, and the share of the way to the next, by adding XP only", () => {
     const before = { base: 100, exponent: 1.6 }
     for (let total = 0; total <= 250_000; total += 37) {
@@ -274,10 +338,11 @@ describe("migrations", () => {
           }),
         ),
       )(stored)
-      // Every row reads as what its state now is, carried or not, so nothing keyed on the versions carries it again.
+      // Every row reads as what its state now is, carried or not, so nothing keyed on the versions carries it again;
+      // the shop's migration after it marks them engine 11, rules 8.
       expect(rows.map((row) => [row.player_id, row.engine_version, row.rules_version])).toEqual([
-        ["mid", 10, 7],
-        ["new", 10, 7],
+        ["mid", 11, 8],
+        ["new", 11, 8],
       ])
       const [carried, untouched] = rows
       expect(carried?.state.progress.xp.reported).toBe(5000 + carriedXp(5000))

@@ -585,7 +585,8 @@ describe("step: review fixes", () => {
 
   it("keeps forms an evolution stone unlocked when the pet evolves by level", () => {
     const state = fresh()
-    const pet = { species: "fox", name: "Ember", hatchedAt: start, forms: [0, 3], form: 3, mood: { value: 100, at: start } }
+    const mood = { value: 100, at: start }
+    const pet = { species: "fox", name: "Ember", hatchedAt: start, forms: [0, 3], form: 3, mood, petted: [] }
     const nearTen = {
       ...state,
       progress: { ...state.progress, xp: { verified: 0, reported: xpForLevel(starterRules.levelCurve, 10) - 100 } },
@@ -677,7 +678,12 @@ describe("step: equipping", () => {
     expect(state.holdings.equipped).toEqual({})
     const worn = snapshotOf(play([equip(entryId, "xpBar")], starterRules, owned).state)
     expect(worn.character.equipped).toEqual({ xpBar: entryId })
-    expect(worn.items.map((item) => item.id)).toEqual(["tempered-steel", "arcane-current"])
+    // The shop's offers and food carry their definitions too; the owned ones are among them.
+    const held = new Set(worn.inventory.map((entry) => entry.itemId))
+    expect(worn.items.filter((item) => held.has(item.id)).map((item) => item.id)).toEqual([
+      "tempered-steel",
+      "arcane-current",
+    ])
     expect(worn.items.find((item) => item.id === "arcane-current")?.look?.fps).toBe(6)
   })
 
@@ -689,7 +695,8 @@ describe("step: equipping", () => {
       owned,
     ).steps.map((s) => s.refusal?.code)
     expect(refusals).toEqual(["not_owned", "invalid", "not_allowed", "invalid"])
-    const pet = { species: "fox", name: "Ember", hatchedAt: start, forms: [0], form: 0, mood: { value: 100, at: start } }
+    const mood = { value: 100, at: start }
+    const pet = { species: "fox", name: "Ember", hatchedAt: start, forms: [0], form: 0, mood, petted: [] }
     const hatched = { ...owned, holdings: { ...owned.holdings, pet } }
     const { state } = play([equip(otherId, "head")], starterRules, hatched)
     expect(snapshotOf(state).pet?.equipped).toEqual({ head: otherId })

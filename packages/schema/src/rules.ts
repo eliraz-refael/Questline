@@ -1,5 +1,15 @@
 import { Schema } from "effect"
-import { Count, Glyph, IsoDateTime, Multiplier, Probability, QualityDimension, Rarity, XpTier } from "./primitives.ts"
+import {
+  Count,
+  Glyph,
+  IsoDateTime,
+  ItemCategory,
+  Multiplier,
+  Probability,
+  QualityDimension,
+  Rarity,
+  XpTier,
+} from "./primitives.ts"
 
 /** The scoring facts an `XpRule` prices: every one but a graded prompt, which the `prompt` section prices. */
 export const XpFact = Schema.Literals([
@@ -123,6 +133,41 @@ export const MissionRules = Schema.Struct({
 })
 export interface MissionRules extends Schema.Schema.Type<typeof MissionRules> {}
 
+/**
+ * The shop: a shelf of items drawn anew each local day, and food on offer every day, each so many a day, for gold.
+ * The shop never sells a sigil, so gold never buys XP beyond food's short, flat boost.
+ */
+export const ShopRules = Schema.Struct({
+  /** Items on the shelf each local day, drawn from the catalogue's items of these rarities and categories. */
+  offers: Count,
+  rarities: Schema.Array(Rarity),
+  /** What the shelf draws from; food has its own place, and a sigil is never sold. */
+  categories: Schema.Array(ItemCategory),
+  /** Copies of each shelf item a day. */
+  stock: Count,
+  /** Gold for a shelf item, by its rarity. */
+  prices: Schema.Record(Rarity, Count),
+  /** Every food of the shop's rarities is on offer each day, `stock` of each, at its own prices. */
+  food: Schema.Struct({ stock: Count, prices: Schema.Record(Rarity, Count) }),
+}).check(
+  Schema.makeFilter(
+    (shop) =>
+      !shop.categories.includes("sigil") || { path: ["categories"], issue: "the shop never sells a sigil" },
+  ),
+)
+export interface ShopRules extends Schema.Schema.Type<typeof ShopRules> {}
+
+/**
+ * How caring for the pet lifts its mood, 0-100: food it eats, and a pat, of which only so many an hour count, so
+ * petting it more earns nothing. Mood falls only by the daily drift, and nothing is lost when it is low.
+ */
+export const PetCare = Schema.Struct({
+  fed: Count,
+  petted: Count,
+  pettedPerHour: Count,
+})
+export interface PetCare extends Schema.Schema.Type<typeof PetCare> {}
+
 /** The game's tuning. The mod never hard-codes a number from it. */
 export const RulesConfig = Schema.Struct({
   /** Tuning version. */
@@ -165,10 +210,13 @@ export const RulesConfig = Schema.Struct({
   }),
   pet: Schema.Struct({
     moodDecayPerDay: Schema.Finite,
+    /** A pet whose mood is above this is happy, and adds `happyXpBonusPct` to the flat boosts. */
     happyAbove: Schema.Finite,
     happyXpBonusPct: Count,
     evolveAt: Schema.Array(Count),
+    care: PetCare,
   }),
+  shop: ShopRules,
   streak: Schema.Struct({ xpPerDay: Count, maxXp: Count, restDaysPerWeek: Count }),
   prompt: PromptRules,
   /** Item definitions to fetch if newer. */

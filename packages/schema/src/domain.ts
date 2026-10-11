@@ -284,6 +284,10 @@ export const ClaimState = Schema.Struct({
 })
 export interface ClaimState extends Schema.Schema.Type<typeof ClaimState> {}
 
+/**
+ * One of today's offers in the shop: an item on the shelf or food, its price in gold, the copies left today (null: no
+ * limit), and when the shop restocks, at the next local midnight. The snapshot's `items` carries its definition.
+ */
 export const ShopOffer = Schema.Struct({
   offerId: Schema.String,
   itemId: Schema.String,
@@ -353,7 +357,10 @@ export const Snapshot = Schema.Struct({
   /** Null until hatched at level 1. */
   pet: Schema.NullOr(Pet),
   inventory: Schema.Array(InventoryEntry),
-  /** The definitions of the items the inventory holds, band looks included, so the mod draws them as they are. */
+  /**
+   * The definitions of the items the inventory holds, the shop offers and the shards can craft, band looks included,
+   * so the mod draws them as they are.
+   */
   items: Schema.Array(ItemDef),
   quests: Schema.Array(QuestState),
   claims: Schema.Array(ClaimState),
