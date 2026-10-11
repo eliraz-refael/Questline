@@ -30,10 +30,14 @@ export type DevAsk =
   | { kind: 'complete'; questId: string }
   | { kind: 'roll' }
   | { kind: 'session' }
+  | { kind: 'restock' }
+  | { kind: 'mood'; mood: number }
+  | { kind: 'shards'; count: number }
 
 export const devUsage =
   'Dev mode: /questline dev styles | item <id> | xp <amount> | gold <amount> | ' +
-  'celebrate <common|uncommon|rare|epic|legendary|levelup|xp> | complete <mission id> | roll | session'
+  'celebrate <common|uncommon|rare|epic|legendary|levelup|xp> | complete <mission id> | roll | session | ' +
+  'restock | mood <0-100> | shards <amount>'
 
 /** Every preview, in the order the pane offers them. */
 export const previews: ReadonlyArray<Preview> = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'levelup', 'xp']
@@ -74,6 +78,16 @@ export const devAskOf = (args: string): DevAsk | string | null => {
       return value === undefined ? { kind: 'roll' } : devUsage
     case 'session':
       return value === undefined ? { kind: 'session' } : devUsage
+    case 'restock':
+      return value === undefined ? { kind: 'restock' } : devUsage
+    case 'mood': {
+      const mood = wholeOf(value, 0)
+      return mood === null || mood > 100 ? devUsage : { kind: 'mood', mood }
+    }
+    case 'shards': {
+      const count = wholeOf(value, 0)
+      return count === null ? devUsage : { kind: 'shards', count }
+    }
     default:
       return devUsage
   }
@@ -96,6 +110,12 @@ export const devCommandOf = (ask: DevAsk, id: string): Command | null => {
       return { id, type: 'dev.rollQuests', data: {} }
     case 'session':
       return { id, type: 'dev.fakeSession', data: {} }
+    case 'restock':
+      return { id, type: 'dev.restockShop', data: {} }
+    case 'mood':
+      return { id, type: 'dev.setMood', data: { mood: ask.mood } }
+    case 'shards':
+      return { id, type: 'dev.setShards', data: { count: ask.count } }
     case 'celebrate':
       return null
   }

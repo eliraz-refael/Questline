@@ -52,6 +52,9 @@ type Quest = {
 /** What the stats tab reads: the player stats, and the streak the character carries. */
 type Counted = { stats: unknown; streak: unknown }
 
+/** What the shop and the pet's card read: the offers, the pet, the boosts running, the shards and the gold. */
+type Kept = { shop?: Array<unknown>; pet?: unknown; boosts?: Array<unknown>; shards?: Record<string, number>; gold?: number }
+
 const snapshot = (
   level: number,
   pet: unknown = null,
@@ -61,19 +64,23 @@ const snapshot = (
   isDev = false,
   counted?: Counted,
   quests?: ReadonlyArray<Quest>,
+  kept: Kept = {},
 ) => ({
   ...(isDev ? { dev: true } : {}),
   serverId: 'local-test',
   streamEpoch: 1,
   cursor,
-  pet,
+  pet: kept.pet ?? pet,
+  ...(kept.shop === undefined ? {} : { shop: kept.shop }),
+  ...(kept.boosts === undefined ? {} : { boosts: kept.boosts }),
   character: {
     name: 'Player',
     level,
     title: 'Apprentice',
     glyph,
     xp: { total: 130, verified: 0, reported: 130, intoLevel: 30, forNextLevel: 203 },
-    gold: 25,
+    gold: kept.gold ?? 25,
+    ...(kept.shards === undefined ? {} : { shards: kept.shards }),
     streak: counted?.streak ?? { days: 2, restDaysLeftThisWeek: 1, lastDay: '2026-10-09' },
     equipped: { ...owned?.equipped },
   },
@@ -164,6 +171,8 @@ type ServerOptions = {
   predatesPresence?: boolean
   /** A server that takes this long to answer a close, in ms. */
   closeTakes?: number
+  /** The shop, the pet, the boosts, the shards and the gold the snapshot carries. */
+  kept?: Kept
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
@@ -197,6 +206,9 @@ const commandAnswer = (body: unknown, owned: Owned | undefined, isDev: boolean, 
     delete owned.equipped[slot]
     return { status: 'ok', events: [] }
   }
+  // A purchase, a meal, a pat or a trade: what it did arrives on the stream.
+  const choices = ['shop.buy', 'pet.feed', 'pet.pet', 'item.reroll', 'item.salvage', 'shards.craft']
+  if (isRecord(body) && typeof body['type'] === 'string' && choices.includes(body['type'])) return { status: 'ok', events: [] }
   // What the dev commands make arrives on the stream; the answer needn't repeat it.
   if (isDev && isRecord(body) && typeof body['type'] === 'string' && body['type'].startsWith('dev.')) return { status: 'ok', events: [] }
   return { status: 'refused', code: 'not_allowed', message: 'The egg hatches at level 1' }
@@ -230,6 +242,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
           options.isDev === true,
           options.counted,
           options.quests,
+          options.kept,
         ),
         rules: options.rules ?? {},
         minClientVersion: '0.0.0',
@@ -1192,7 +1205,7 @@ const paneProps = (): RenderPropsOf['Pane'] => ({
 describe('the /questline pane', () => {
   test('registers /questline, which opens the pane on its inventory', async ($, on) => {
     const { registered, opened } = await streaming($, on, ownedOf(wearing))
-    expect(registered).toEqual(['questline'])
+    expect(registered).toEqual(['questline', 'pet'])
     const answer = await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
     expect(answer.text).toBe('Questline pane opened.')
     expect(opened).toEqual(['questline'])
@@ -1202,7 +1215,8 @@ describe('the /questline pane', () => {
       for (const shown of ['◆ Inventory', 'XP bar', 'Top edge', 'Solid Bar', 'Starlit Edge', 'Plain Cap']) {
         expect(texts).toContain(shown)
       }
-      // Stats and Missions are built: tabs to switch to, none still to come.
+      // The Shop, Stats and Missions are built: tabs to switch to, none still to come.
+      expect(await ui.find({ type: 'Button', key: 'tab:shop' })).toBeDefined()
       expect(await ui.find({ type: 'Button', key: 'tab:stats' })).toBeDefined()
       expect(await ui.find({ type: 'Button', key: 'tab:missions' })).toBeDefined()
       expect(texts).not.toContain('soon')
@@ -1383,12 +1397,12 @@ describe('the pane fits its width', () => {
     const header = narrow.texts.find((text) => text.startsWith('✦ QUESTLINE ✦')) ?? ''
     expect(header).toBe('✦ QUESTLINE ✦  Lv 4 Apprentice · ◈ 25')
     expect(cellsOf(header)).toBeLessThanOrEqual(38)
-    // All three tabs still fit at 40 with their gaps.
+    // All four tabs still fit at 40 with their names, the gaps closed up.
     expect(narrow.texts).toContain('◆ Inventory')
-    expect(narrow.tabs?.props['columnGap']).toBe(3)
+    expect(narrow.tabs?.props['columnGap']).toBe(1)
     expect(narrow.tabs?.props['flexWrap']).toBeUndefined()
     const narrower = await paneTexts($, 30)
-    expect(narrower.texts).toContain('◆ Items')
+    expect(narrower.texts).toContain('Items')
     expect(narrower.tabs?.props['columnGap']).toBe(1)
 
     const wide = await paneTexts($, 120)
@@ -1400,10 +1414,14 @@ describe('the pane fits its width', () => {
     const widthOf = (bar: ReturnType<typeof tabBarOf>) =>
       bar.chips.reduce((sum, chip) => sum + cellsOf(chip.text) + (chip.soon ? 5 : 0), 0) + bar.gap * (bar.chips.length - 1)
     for (const columns of [20, 28, 32, 38, 44, 60]) expect(widthOf(tabBarOf('inventory', columns))).toBeLessThanOrEqual(Math.max(columns, 11))
-    expect(tabBarOf('inventory', 60)).toMatchObject({ gap: 3, chips: [{ kind: 'shown' }, { kind: 'ready' }, { kind: 'ready', soon: false }] })
-    expect(tabBarOf('stats', 60).chips.map((chip) => chip.kind)).toEqual(['ready', 'shown', 'ready'])
-    expect(tabBarOf('missions', 28).chips.map((chip) => chip.text)).toEqual(['◇ Items', '◇ Stats', '◆ Missions'])
-    expect(tabBarOf('inventory', 20).chips.map((chip) => chip.text)).toEqual(['Items', 'Stats', 'Missions'])
+    expect(tabBarOf('inventory', 60)).toMatchObject({
+      gap: 3,
+      chips: [{ kind: 'shown' }, { kind: 'ready' }, { kind: 'ready' }, { kind: 'ready', soon: false }],
+    })
+    expect(tabBarOf('stats', 60).chips.map((chip) => chip.kind)).toEqual(['ready', 'ready', 'shown', 'ready'])
+    expect(tabBarOf('missions', 34).chips.map((chip) => chip.text)).toEqual(['◇ Items', '◇ Shop', '◇ Stats', '◆ Missions'])
+    expect(tabBarOf('missions', 28).chips.map((chip) => chip.text)).toEqual(['Items', 'Shop', 'Stats', 'Missions'])
+    expect(tabBarOf('inventory', 20).chips.map((chip) => chip.text)).toEqual(['Inv', 'Shop', 'Stats', 'Quest'])
     const view = { name: 'Player', level: 12, title: 'Adept', gold: 1500 }
     expect(headerOf(view, 80)).toBe('Player · Lv 12 Adept · ◈ 1500')
     expect(headerOf(view, 30)).toBe('Lv 12 · ◈ 1500')
@@ -2016,7 +2034,7 @@ describe('dev mode: missions', () => {
     const { sent } = await streaming($, on, ownedOf(), true, { quests: missionsNow(), rules: missionRules })
     expect((await run($, 'dev complete clear-thinker')).text).toBe('Done.')
     expect((await run($, 'dev roll')).text).toBe('Done.')
-    for (const args of ['dev complete', 'dev roll now', 'dev complete a b']) expect((await run($, args)).text).toMatch(/complete <mission id> \| roll \| session$/)
+    for (const args of ['dev complete', 'dev roll now', 'dev complete a b']) expect((await run($, args)).text).toMatch(/complete <mission id> \| roll \| session \| /)
     expect(commandsOf(sent)).toMatchObject([
       { type: 'dev.completeQuest', data: { questId: 'clear-thinker' } },
       { type: 'dev.rollQuests', data: {} },
@@ -2480,5 +2498,380 @@ describe('sigils', () => {
     const answer = await $.command.run({ command: 'questline', args: 'dev item arcane-sigil', origin: composer, presentation })
     expect(answer.text).toBe('Done.')
     expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'dev.grantItem', data: { itemId: 'arcane-sigil' } })
+  })
+})
+
+describe('the shop', () => {
+  const beadString = {
+    ...styleItem('bead-string', 'Bead String', 'uncommon', 'xpBar', {
+      glyphs: { full: '●', empty: '○' },
+      colors: { full: '#5fd7ff', empty: '#585858' },
+      frames: null,
+      fps: null,
+    }),
+    lore: 'Strung one bead per green build.',
+  }
+  const copperPurse = styleItem('copper-purse', 'Copper Purse', 'common', 'goldDisplay', {
+    glyphs: { icon: '●' },
+    colors: { icon: '#d7875f' },
+    frames: null,
+    fps: null,
+  })
+  const food = (id: string, name: string, rarity: string, minutes: number) => ({
+    id,
+    name,
+    rarity,
+    category: 'food',
+    slot: null,
+    sprite: null,
+    lore: id === 'trail-mix' ? 'Nuts, seeds and the odd chocolate chip.' : null,
+    effect: { xpBoostPct: 10, minutes },
+    look: null,
+  })
+  const trailMix = food('trail-mix', 'Trail Mix', 'common', 60)
+  const berryTart = food('berry-tart', 'Berry Tart', 'uncommon', 120)
+  const offer = (itemId: string, price: number, stock: number) => ({
+    offerId: `2026-10-09/${itemId}`,
+    itemId,
+    price,
+    stock,
+    endsAt: '2026-10-10T00:00:00.000Z',
+  })
+  const shopRules = {
+    shop: { offers: 3, rarities: ['common', 'uncommon'], categories: ['bandStyle'], stock: 1, prices: {}, food: {} },
+    pet: { moodDecayPerDay: 10, happyAbove: 70, happyXpBonusPct: 5, evolveAt: [10], care: { fed: 30, petted: 5, pettedPerHour: 3 } },
+    loot: { rerollGold: { common: 20, uncommon: 50 }, salvageShards: { common: 1, uncommon: 1 }, shardsToCraft: 10 },
+  }
+  const ember = (mood: number) => ({ species: 'fox', name: 'Ember', form: 0, mood, equipped: {} })
+  /** Two Solid Bars (the first worn), a Trail Mix, and the shelf and the food on offer. */
+  const stocked: Owned = {
+    inventory: [
+      { id: '01K6ZQ8W3J0000000000009001', itemId: 'solid-bar' },
+      { id: '01K6ZQ8W3J0000000000009002', itemId: 'solid-bar' },
+      { id: '01K6ZQ8W3J0000000000009003', itemId: 'trail-mix' },
+    ],
+    items: [solidBar, beadString, copperPurse, trailMix, berryTart],
+    equipped: { xpBar: '01K6ZQ8W3J0000000000009001' },
+  }
+  const shelf = [offer('copper-purse', 120, 0), offer('solid-bar', 120, 1), offer('bead-string', 250, 1)]
+  const kept = (more: Kept = {}): Kept => ({
+    shop: [...shelf, offer('trail-mix', 25, 3), offer('berry-tart', 60, 2)],
+    pet: ember(82),
+    shards: { common: 3, uncommon: 10, rare: 0, epic: 0, legendary: 0 },
+    gold: 200,
+    ...more,
+  })
+  const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+  const openShop = async ($: Parameters<TestBody>[0]) => {
+    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:shop' })
+    await ui.unmount()
+  }
+  const pressIn = async ($: Parameters<TestBody>[0], key: string) => {
+    const ui = await mountPane($)
+    await ui.press({ key })
+    await ui.unmount()
+  }
+
+  test("lists today's shelf with live previews, the food for the pet, and what each costs", async ($, on) => {
+    await streaming($, on, stocked, false, { rules: shopRules, kept: kept() })
+    await openShop($)
+    const all = (await paneTexts($, 72)).texts.join('\n')
+    expect(all).toMatch(/^Shop {2}looks and food for gold, a new shelf each day · ◈ 200 gold$/m)
+    expect(all).toMatch(/^Today's shelf ─+ restocks in 16h 0m$/m)
+    expect(all).toMatch(/^◆ Copper Purse {2}common · Gold$/m)
+    expect(all).toContain('sold out today')
+    expect(all).toMatch(/^◆ Solid Bar {2}common · XP bar · 2 owned$/m)
+    // Not enough gold yet: the price, and how much more it takes, in place of the button.
+    expect(all).toMatch(/^◆ Bead String {2}uncommon · XP bar$/m)
+    expect(all).toContain('◈ 250 · 50 more to go')
+    // Each band style's preview is the band's own drawing, in the player's real XP.
+    expect(all).toMatch(/^●+○+ 30\/203 xp$/m)
+    expect(all).toContain('Strung one bead per green build.')
+    expect(all).toMatch(/^Food ─+ for Ember$/m)
+    expect(all).toContain('+10% XP for 1h · mood +30 · 3 left today')
+    expect(all).toContain('+10% XP for 2h · mood +30 · 2 left today')
+    expect(all).toMatch(/^◆ Trail Mix {2}common · 1 owned$/m)
+    const ui = await mountPane($)
+    expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/solid-bar' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/trail-mix' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/copper-purse' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/bead-string' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('Buy sends shop.buy for the offer pressed', async ($, on) => {
+    const { sent } = await streaming($, on, stocked, false, { rules: shopRules, kept: kept() })
+    await openShop($)
+    await pressIn($, 'buy:2026-10-09/trail-mix')
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'shop.buy', data: { offerId: '2026-10-09/trail-mix' } })
+  })
+
+  test('trades a spare copy in, never the one worn, and crafts with enough shards', async ($, on) => {
+    const { sent } = await streaming($, on, stocked, false, { rules: shopRules, kept: kept() })
+    await openShop($)
+    const all = (await paneTexts($, 72)).texts.join('\n')
+    expect(all).toMatch(/^Duplicates ─+ a spare copy, traded in$/m)
+    expect(all).toMatch(/^Shards ─+ 10 make an item of their rarity, never a sigil$/m)
+    expect(all).toMatch(/^ {2}common +▰{6}▱{14} +3\/10$/m)
+    expect(all).toMatch(/^ {2}uncommon +▰{20} 10\/10$/m)
+    await pressIn($, 'reroll:solid-bar')
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'item.reroll', data: { entryId: '01K6ZQ8W3J0000000000009002' } })
+    await pressIn($, 'salvage:solid-bar')
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'item.salvage', data: { entryId: '01K6ZQ8W3J0000000000009002' } })
+    // Ten uncommon shards make any uncommon the snapshot names, food included.
+    await pressIn($, 'craft:uncommon:bead-string')
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'shards.craft', data: { rarity: 'uncommon', itemId: 'bead-string' } })
+    const ui = await mountPane($)
+    expect(await ui.find({ type: 'Button', key: 'craft:uncommon:berry-tart' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'craft:common:solid-bar' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('fits a 40-column pane, every row inside it', async ($, on) => {
+    await streaming($, on, stocked, false, { rules: shopRules, kept: kept() })
+    await openShop($)
+    // Lore wraps as prose does; every other row is cut to the pane.
+    const lore = ['Nuts, seeds and the odd chocolate chip.', 'Strung one bead per green build.']
+    const wide = (await paneTexts($, 40)).texts.filter((text) => cellsOf(text) > 38 && !lore.includes(text))
+    expect(wide).toEqual([])
+  })
+
+  test('a server older than the shop says to restart it, and offers nothing', async ($, on) => {
+    await streaming($, on, stocked, false, { kept: kept() })
+    await openShop($)
+    const all = (await paneTexts($, 72)).texts.join('\n')
+    expect(all).toContain('The server predates the shop: restart it.')
+    expect(all).not.toContain("Today's shelf")
+  })
+
+  test('the restock comes by the clock: past midnight the shelf reads as restocking, with no Buy', async ($, on) => {
+    const ending = shelf.map((one) => ({ ...one, endsAt: '2026-10-09T08:01:00.000Z' }))
+    const { clock } = await streaming($, on, stocked, false, { rules: shopRules, kept: kept({ gold: 5000, shop: ending }) })
+    await openShop($)
+    expect((await paneTexts($, 72)).texts.join('\n')).toContain('restocks in 1m')
+    await clock.advance(90_000)
+    const all = (await paneTexts($, 72)).texts.join('\n')
+    expect(all).toContain('restocking now')
+    const ui = await mountPane($)
+    expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/solid-bar' })).toBeUndefined()
+    await ui.unmount()
+  })
+})
+
+describe('caring for the pet', () => {
+  const trailMix = {
+    id: 'trail-mix',
+    name: 'Trail Mix',
+    rarity: 'common',
+    category: 'food',
+    slot: null,
+    sprite: null,
+    lore: 'Nuts, seeds and the odd chocolate chip.',
+    effect: { xpBoostPct: 10, minutes: 60 },
+    look: null,
+  }
+  const careRules = {
+    pet: { moodDecayPerDay: 10, happyAbove: 70, happyXpBonusPct: 5, evolveAt: [10], care: { fed: 30, petted: 5, pettedPerHour: 3 } },
+  }
+  const ember = (mood: number) => ({ species: 'fox', name: 'Ember', form: 0, mood, equipped: {} })
+  const withFood: Owned = {
+    inventory: [
+      { id: '01K6ZQ8W3J0000000000009101', itemId: 'trail-mix' },
+      { id: '01K6ZQ8W3J0000000000009102', itemId: 'trail-mix' },
+    ],
+    items: [trailMix],
+    equipped: {},
+  }
+  const meal = { kind: 'food', source: 'trail-mix', xpBoostPct: 10, endsAt: '2026-10-09T08:42:00.000Z' }
+  const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+  const inventory = async ($: Parameters<TestBody>[0]) => {
+    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    return (await paneTexts($, 72)).texts.join('\n')
+  }
+
+  test('the card shows how it feels, takes a pat, and feeds it the food owned', async ($, on) => {
+    const kept = { pet: ember(82), boosts: [meal] }
+    const { sent } = await streaming($, on, withFood, false, { rules: careRules, kept })
+    const all = await inventory($)
+    expect(all).toMatch(/^Ember ─+ happy · \+5% XP$/m)
+    expect(all).toMatch(/^ {2}ᓚᘏᗢ {2}Ember {2}♥♥♥$/m)
+    expect(all).toMatch(/^ {2}Mood ▰+▱+ 82$/m)
+    expect(all).toContain('a pat lifts the mood +5, 3 pats an hour')
+    expect(all).toMatch(/^ {2}Fed {2}\+10% XP · 42m left$/m)
+    expect(all).toMatch(/^Food {2}a meal lifts the mood \+30$/m)
+    expect(all).toMatch(/^◆ Trail Mix {2}common · \+10% XP for 1h · 2 owned$/m)
+    // Food sits on the pet's card, not among the other items.
+    expect(all).not.toMatch(/Trail Mix common · food/)
+    expect(all.indexOf('Ember')).toBeLessThan(all.indexOf('Band styles'))
+    const ui = await mountPane($)
+    await ui.press({ key: 'pet:pat' })
+    await ui.press({ key: 'feed:trail-mix' })
+    await ui.unmount()
+    expect(commandsOf(sent).slice(-2)).toMatchObject([
+      { type: 'pet.pet', data: {} },
+      { type: 'pet.feed', data: { entryId: '01K6ZQ8W3J0000000000009101' } },
+    ])
+  })
+
+  test('a low mood reads as sleepy, never sad, and keeps a heart; nothing on the card nags', async ($, on) => {
+    await streaming($, on, { ...withFood, inventory: [] }, false, { rules: careRules, kept: { pet: ember(20) } })
+    const all = await inventory($)
+    expect(all).toMatch(/^Ember ─+ sleepy$/m)
+    expect(all).toMatch(/^ {2}ᓚᘏᗢ {2}Ember {2}♥$/m)
+    expect(all).toContain('No food yet: the Shop tab sells it, and it drops as loot.')
+    expect(all).not.toMatch(/sad|hungry|lonely|neglect|miss/i)
+  })
+
+  test('before the hatch, the card shows the egg, and its Hatch button once it can', async ($, on) => {
+    const { sent } = await streaming($, on, withFood, false, { rules: careRules })
+    const all = await inventory($)
+    expect(all).toContain('🥚 Your egg is ready to hatch.')
+    const ui = await mountPane($)
+    await ui.press({ key: 'pet:hatch' })
+    await ui.unmount()
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'pet.hatch' })
+  })
+
+  test('a server older than pet care shows the mood, says to restart it, and keeps food with the other items', async ($, on) => {
+    await streaming($, on, withFood, false, { kept: { pet: ember(82) } })
+    const all = await inventory($)
+    expect(all).toContain('The server predates pet care: restart it to feed Ember.')
+    expect(all).toMatch(/Trail Mix common · food · ×2/)
+    const ui = await mountPane($)
+    expect(await ui.find({ type: 'Button', key: 'pet:pat' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test("the band's hearts follow the rules' happy line, and a click on the pet gives it a pat", async ($, on) => {
+    const rules = { pet: { ...careRules.pet, happyAbove: 80 } }
+    const { sent } = await streaming($, on, withFood, false, { rules, kept: { pet: ember(75) } })
+    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
+    const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
+    expect(texts).toContain('♥♥')
+    await ui.press({ key: 'band:pet' })
+    await ui.unmount()
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'pet.pet' })
+  })
+
+  test('/pet pats from the prompt, and says why not before the hatch or on an older server', async ($, on) => {
+    const { sent, registered } = await streaming($, on, withFood, false, { rules: careRules, kept: { pet: ember(50) } })
+    expect(registered).toContain('pet')
+    const answer = await $.command.run({ command: 'pet', args: '', origin: composer, presentation })
+    expect(answer.text).toBe('You pet Ember.')
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'pet.pet', data: {} })
+  })
+
+  test('/pet on a server older than pet care says to restart it, and sends nothing', async ($, on) => {
+    const { sent } = await streaming($, on, withFood, false, { kept: { pet: ember(50) } })
+    const answer = await $.command.run({ command: 'pet', args: '', origin: composer, presentation })
+    expect(answer.text).toMatch(/^The server predates pet care: restart it/)
+    expect(commandsOf(sent)).toEqual([])
+  })
+})
+
+describe('the words for the shop and the pet', () => {
+  const entry = { id: '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', itemId: 'bead-string', acquiredAt: '2026-10-09T08:00:00Z', source: { kind: 'shop', ref: 'x' }, dye: null }
+  const item = (id: string, name: string, rarity: string) => ({
+    id,
+    name,
+    rarity,
+    category: 'bandStyle',
+    slot: 'xpBar',
+    sprite: null,
+    lore: null,
+    effect: null,
+    look: { glyphs: {}, colors: {}, frames: null, fps: null },
+  })
+  const ember = { species: 'fox', name: 'Ember', form: 0, mood: 60, equipped: {} }
+
+  test('a purchase, a meal, a pat, a re-roll, a salvage and a craft each say what they did, in the band and a toast', async ($, on) => {
+    const { send, toasts, clock } = await streaming($, on, undefined, false, { kept: { pet: ember } })
+    const bead = item('bead-string', 'Bead String', 'uncommon')
+    await send(
+      ...causedBy(
+        '01K6ZQ8W3J0000000000000D01',
+        serverEvent('shop.bought', { offerId: '2026-10-09/bead-string', entry, item: bead, price: 250 }),
+        goldChanged(-250, 'shop'),
+      ),
+    )
+    expect(await gainLine($)).toBe('Bead String · bought for 250 gold')
+    expect(toasts.at(-1)).toBe('Bought Bead String (uncommon) · −250 gold')
+    const fed = { entryId: entry.id, itemId: 'trail-mix', name: 'Trail Mix', mood: 90, xpBoost: { pct: 10, minutes: 60 } }
+    await send(...causedBy('01K6ZQ8W3J0000000000000D02', serverEvent('pet.fed', fed)))
+    expect(await gainLine($)).toBe('Ember ate Trail Mix · +10% XP for 1h')
+    expect(toasts.at(-1)).toBe('Ember ate Trail Mix · +10% XP for 1h')
+    await send(...causedBy('01K6ZQ8W3J0000000000000D03', serverEvent('pet.petted', { mood: 95, gained: 5 })))
+    expect(await gainLine($)).toBe('Ember enjoyed the pat · mood +5')
+    await send(...causedBy('01K6ZQ8W3J0000000000000D04', serverEvent('pet.petted', { mood: 95, gained: 0 })))
+    expect(toasts.at(-1)).toBe('Ember enjoyed the pat')
+    const rerolled = {
+      from: { entryId: entry.id, itemId: 'solid-bar', name: 'Solid Bar' },
+      entry,
+      item: item('double-rule', 'Double Rule', 'common'),
+      price: 20,
+      tier: 'common',
+    }
+    await send(...causedBy('01K6ZQ8W3J0000000000000D05', serverEvent('item.rerolled', rerolled), goldChanged(-20, 'reroll')))
+    expect(toasts.at(-1)).toBe('Re-rolled Solid Bar into Double Rule (common) · −20 gold')
+    // A re-roll is a roll: what it made is revealed as a drop, its coin spinning.
+    expect((await band($)).all).toMatch(/[◐◓◑◒] Double Rule/)
+    await clock.advance(5_000)
+    expect(await gainLine($)).toBe('Solid Bar re-rolled into Double Rule · common')
+    const salvaged = { entryId: entry.id, itemId: 'solid-bar', name: 'Solid Bar', rarity: 'common', shards: 1, totalAfter: 4 }
+    await send(...causedBy('01K6ZQ8W3J0000000000000D06', serverEvent('item.salvaged', salvaged)))
+    expect(await gainLine($)).toBe('Solid Bar salvaged · +1 common shard')
+    expect(toasts.at(-1)).toBe('Salvaged Solid Bar · +1 common shard')
+    const crafted = { rarity: 'uncommon', spent: 10, totalAfter: 0, entry, item: bead }
+    await send(...causedBy('01K6ZQ8W3J0000000000000D07', serverEvent('shards.crafted', crafted)))
+    expect(await gainLine($)).toBe('Crafted Bead String · uncommon')
+    expect(toasts.at(-1)).toBe('Crafted Bead String (uncommon) · −10 uncommon shards')
+  })
+})
+
+describe('dev mode: the shop and the pet', () => {
+  const careRules = {
+    shop: { offers: 3 },
+    pet: { moodDecayPerDay: 10, happyAbove: 70, happyXpBonusPct: 5, evolveAt: [10], care: { fed: 30, petted: 5, pettedPerHour: 3 } },
+  }
+  const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+  const ember = { species: 'fox', name: 'Ember', form: 0, mood: 60, equipped: {} }
+
+  test('restocks, sets the mood and the shards, from /questline dev and from the panes', async ($, on) => {
+    const { sent } = await streaming($, on, ownedOf(), true, { rules: careRules, kept: { pet: ember } })
+    const run = (args: string) => $.command.run({ command: 'questline', args, origin: composer, presentation })
+    expect((await run('dev restock')).text).toBe('Done.')
+    expect((await run('dev mood 20')).text).toBe('Done.')
+    expect((await run('dev shards 10')).text).toBe('Done.')
+    expect(commandsOf(sent).slice(-3)).toMatchObject([
+      { type: 'dev.restockShop', data: {} },
+      { type: 'dev.setMood', data: { mood: 20 } },
+      { type: 'dev.setShards', data: { count: 10 } },
+    ])
+    for (const args of ['dev mood 101', 'dev mood', 'dev shards x', 'dev restock now']) {
+      expect((await run(args)).text).toMatch(/^Dev mode: /)
+    }
+    const ui = await mountPane($)
+    await ui.press({ key: 'dev:mood-100' })
+    await ui.press({ key: 'tab:shop' })
+    await ui.unmount()
+    const shop = await mountPane($)
+    await shop.press({ key: 'dev:restock' })
+    await shop.press({ key: 'dev:shards' })
+    await shop.unmount()
+    expect(commandsOf(sent).slice(-3)).toMatchObject([
+      { type: 'dev.setMood', data: { mood: 100 } },
+      { type: 'dev.restockShop' },
+      { type: 'dev.setShards', data: { count: 10 } },
+    ])
+  })
+
+  test('says to restart a dev server older than the shop or pet care, and sends nothing', async ($, on) => {
+    const { sent } = await streaming($, on, ownedOf(), true, { kept: { pet: ember } })
+    const run = (args: string) => $.command.run({ command: 'questline', args, origin: composer, presentation })
+    expect((await run('dev restock')).text).toMatch(/^The dev server predates the shop: restart it/)
+    expect((await run('dev mood 20')).text).toMatch(/^The dev server predates pet care: restart it/)
+    expect(commandsOf(sent)).toEqual([])
   })
 })

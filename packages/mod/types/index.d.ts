@@ -18,7 +18,7 @@ export type BandView = {
 }
 
 /** A line at the end of the band for what the stream brought. */
-export type GainLine = { text: string; tone: 'xp' | 'level' | 'loot' | 'gold' | 'quest' | 'quiet' }
+export type GainLine = { text: string; tone: 'xp' | 'level' | 'loot' | 'gold' | 'quest' | 'pet' | 'quiet' }
 
 /** The last line the stream brought, shown until the next one or until `until` (clock ms), when it fades. */
 export type Gain = GainLine & { until: number }
@@ -85,7 +85,12 @@ export type OwnedItem = {
   lore: string | null
   /** A sigil's power; absent on every other item, and on what a copy of the mod from before sigils kept. */
   sigil?: SigilView
+  /** Food's XP boost when the pet eats it; absent on every other item, and on what an older copy kept. */
+  food?: FoodView
 }
+
+/** What food does when the pet eats it: so much more XP for so many minutes, or nothing but the meal. */
+export type FoodView = { pct: number; minutes: number } | null
 
 /**
  * What the player owns and what is equipped where (slot -> entry id). `knowsSigils` is true only from a server whose
@@ -95,6 +100,8 @@ export type Wardrobe = {
   items: ReadonlyArray<OwnedItem>
   equipped: Readonly<Record<string, string>>
   knowsSigils?: boolean
+  /** True only from a server whose rules carry pet care: food then leaves Other items for the pet's card. */
+  knowsCare?: boolean
 }
 
 /**
@@ -170,8 +177,97 @@ export type MissionsView = {
   tiers: { daily: Tier | null; weekly: Tier | null }
 }
 
+/** One of today's offers, with its item as the snapshot defines it and how many the player owns already. */
+export type OfferView = {
+  offerId: string
+  itemId: string
+  name: string
+  rarity: Tier
+  category: string
+  slot: string | null
+  look: BandLook | null
+  lore: string | null
+  price: number
+  /** Copies left today; null: no limit. */
+  stock: number | null
+  /** When the shop restocks, in clock ms; null when the server didn't say. */
+  endsAt: number | null
+  owned: number
+  /** Food's boost, for food only. */
+  food?: FoodView
+}
+
+/** An item owned more than once: a spare copy to trade in, and what a re-roll costs and a salvage gives. */
+export type SpareView = {
+  itemId: string
+  name: string
+  rarity: Tier
+  category: string
+  slot: string | null
+  copies: number
+  /** A copy not worn, the one a trade gives up. */
+  entryId: string
+  rerollGold: number | null
+  salvageShards: number | null
+}
+
+/** An item the shards of its rarity can make now, and how many the player owns. */
+export type CraftView = {
+  itemId: string
+  name: string
+  rarity: Tier
+  category: string
+  slot: string | null
+  owned: number
+}
+
+/**
+ * The Shop tab: today's offers, the spare copies to trade in, the shards and what they make. `isKnown` is false from
+ * a server older than the shop, whose rules carry none.
+ */
+export type ShopView = {
+  isKnown: boolean
+  gold: number
+  offers: ReadonlyArray<OfferView>
+  spares: ReadonlyArray<SpareView>
+  shards: ReadonlyArray<{ rarity: Tier; count: number }>
+  /** Shards a craft takes; null when the rules don't say. */
+  shardsToCraft: number | null
+  craftable: ReadonlyArray<CraftView>
+}
+
+/** Food the player owns, by kind, for the pet's card. */
+export type MealView = {
+  entryId: string
+  itemId: string
+  name: string
+  rarity: Tier
+  copies: number
+  food: FoodView
+  lore: string | null
+}
+
+/**
+ * The pet's card: its mood and what lifts it, as the rules say, the food owned and the food boost running. `isKnown` is
+ * false from a server older than pet care, which takes neither food nor a pat.
+ */
+export type CareView = {
+  isKnown: boolean
+  /** A mood above this is happy; null when the rules don't say. */
+  happyAbove: number | null
+  /** What a happy pet adds to the flat XP boosts, in percent. */
+  happyBonus: number | null
+  /** What a meal and a pat lift the mood by, and how many pats an hour count. */
+  fed: number | null
+  petted: number | null
+  pettedPerHour: number | null
+  meals: ReadonlyArray<MealView>
+  /** The strongest food boost running, until clock ms `endsAt`. */
+  boost: { pct: number; endsAt: number } | null
+}
+
 /** The `/questline` pane's tabs. */
-export type PaneTab = 'inventory' | 'stats' | 'missions'
+export type PaneTab = 'inventory' | 'shop' | 'stats' | 'missions'
 
 declare module 'claude-code' {
   interface PluginState {
@@ -192,6 +288,8 @@ declare module 'claude-code' {
       abandoning: string | null
       /** The id the session goes by with the server, so a reload of the mod keeps it rather than opening another. */
       session: string | null
+      shop: ShopView | null
+      care: CareView | null
     }
   }
 }
