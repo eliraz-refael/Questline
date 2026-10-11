@@ -1,7 +1,7 @@
 import type { BandLook, BandSlot, BandView, Loop, StatsView, Tier } from '../types'
 import { goldRow, labelRun, levelRow } from './band'
 import type { Row, Run } from './cells'
-import { cellsOf, glyphsOf } from './cells'
+import { blank, cellsOf, cellsOfRow, clip, dim } from './cells'
 import { barRow, rarityColors } from './frames'
 
 // The pane's Stats tab, laid out as rows of styled runs that register.tsx draws: cards under a titled rule, a label on
@@ -52,33 +52,11 @@ const gradeTier = (grade: number): Tier =>
 const fillColor = (pct: number): string => (pct >= 75 ? 'error' : pct >= 50 ? 'warning' : 'success')
 
 /** A whole number with its thousands grouped. */
-const counted = (value: number): string => String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+export const counted = (value: number): string => String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
 
 const graded = (value: number): string => value.toFixed(1)
 const percent = (value: number): string => `${Math.round(value)}%`
 const days = (value: number): string => `${counted(value)} ${value === 1 ? 'day' : 'days'}`
-
-const cellsOfRow = (row: Row): number => row.reduce((sum, run) => sum + cellsOf(run.text), 0)
-const blank = (cells: number): Run => ({ text: ' '.repeat(Math.max(0, cells)) })
-const dim = (text: string): Run => ({ text, dim: true })
-
-/** A row cut to `room` cells, an ellipsis where it was cut. */
-const clip = (row: Row, room: number): Row => {
-  if (cellsOfRow(row) <= room) return row
-  const kept: Array<Run> = []
-  let left = Math.max(0, room - 1)
-  for (const run of row) {
-    let text = ''
-    for (const glyph of glyphsOf(run.text)) {
-      if (cellsOf(glyph) > left) break
-      text += glyph
-      left -= cellsOf(glyph)
-    }
-    if (text !== '') kept.push({ ...run, text })
-    if (text !== run.text) break
-  }
-  return room <= 0 ? [] : [...kept, { text: '…', dim: true }]
-}
 
 /** A label on the left and a value on the right edge of a row `width` wide; a label with no room is cut. */
 const line = (label: Row, value: Row, width: number): Row => {
@@ -92,11 +70,11 @@ const line = (label: Row, value: Row, width: number): Row => {
 const hint = (text: string, width: number): Row => [blank(indent), ...clip([dim(text)], width - indent)]
 
 /** The first of `tries` that fits `room` cells, else the last cut to it. */
-const fitting = (tries: ReadonlyArray<Row>, room: number): Row =>
+export const fitting = (tries: ReadonlyArray<Row>, room: number): Row =>
   tries.find((row) => cellsOfRow(row) <= room) ?? clip(tries[tries.length - 1] ?? [], room)
 
 /** A bar of `cells` in the band's glyphs, `share` of it filled; any share above none shows at least one cell. */
-const meter = (share: number, cells: number, color: string): Row => {
+export const meter = (share: number, cells: number, color: string): Row => {
   const clamped = Math.max(0, Math.min(1, share))
   const filled = clamped === 0 ? 0 : Math.max(1, Math.min(cells, Math.round(clamped * cells)))
   return [

@@ -8,11 +8,11 @@ import { bandSlots, equippedIn, loops } from './looks'
 /** The pane's id, which `$.ui.open` and the `ui.render` matcher share. */
 export const paneId = 'questline'
 
-/** The tabs in order; one not ready yet shows dim, as what is coming. */
-export const tabs: ReadonlyArray<{ id: PaneTab; label: string; isReady: boolean }> = [
-  { id: 'inventory', label: 'Inventory', isReady: true },
-  { id: 'stats', label: 'Stats', isReady: true },
-  { id: 'missions', label: 'Missions', isReady: false },
+/** The tabs in order, each with a shorter name for a narrow pane; one not ready yet shows dim, as what is coming. */
+export const tabs: ReadonlyArray<{ id: PaneTab; label: string; short: string; isReady: boolean }> = [
+  { id: 'inventory', label: 'Inventory', short: 'Items', isReady: true },
+  { id: 'stats', label: 'Stats', short: 'Stats', isReady: true },
+  { id: 'missions', label: 'Missions', short: 'Missions', isReady: true },
 ]
 
 /** The pane's title, which opens its header. */
@@ -41,15 +41,16 @@ export const headerOf = (view: Pick<BandView, 'name' | 'level' | 'title' | 'gold
 export type TabChip = { id: PaneTab; text: string; kind: 'shown' | 'ready' | 'later'; soon: boolean }
 
 /**
- * The tab bar as it fits `columns` on one row: first the gaps close up, then the `soon` labels go, then the tabs
- * still to come.
+ * The tab bar as it fits `columns` on one row: first the gaps close up, then the `soon` labels go, then the names
+ * shorten and lose their marks (the tab shown still stands out in the accent), then the tabs still to come go.
  */
 export const tabBarOf = (shown: PaneTab, columns: number): { gap: number; chips: Array<TabChip> } => {
-  const chipsOf = (soon: boolean, withLater: boolean): Array<TabChip> =>
+  const chipsOf = (soon: boolean, withLater: boolean, size: 'full' | 'short' | 'bare' = 'full'): Array<TabChip> =>
     tabs.flatMap((tab): Array<TabChip> => {
       const kind = tab.id === shown ? 'shown' : tab.isReady ? 'ready' : 'later'
       if (kind === 'later' && !withLater) return []
-      const text = `${kind === 'shown' ? '◆' : '◇'} ${tab.label}`
+      const name = size === 'full' ? tab.label : tab.short
+      const text = size === 'bare' ? name : `${kind === 'shown' ? '◆' : '◇'} ${name}`
       return [{ id: tab.id, text, kind, soon: soon && kind === 'later' }]
     })
   const widthOf = (bar: { gap: number; chips: ReadonlyArray<TabChip> }) =>
@@ -60,8 +61,11 @@ export const tabBarOf = (shown: PaneTab, columns: number): { gap: number; chips:
     { gap: 2, chips: chipsOf(true, true) },
     { gap: 2, chips: chipsOf(false, true) },
     { gap: 1, chips: chipsOf(false, true) },
+    { gap: 1, chips: chipsOf(false, true, 'short') },
+    { gap: 1, chips: chipsOf(false, true, 'bare') },
+    { gap: 1, chips: chipsOf(false, false, 'bare') },
   ]
-  return tries.find((bar) => widthOf(bar) <= columns) ?? { gap: 1, chips: chipsOf(false, false) }
+  return tries.find((bar) => widthOf(bar) <= columns) ?? { gap: 1, chips: chipsOf(false, false, 'bare') }
 }
 
 /** A tab the pane can show: the one asked for when it is ready, else the first that is. */

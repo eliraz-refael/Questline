@@ -123,7 +123,7 @@ export const sprite = (pet: NonNullable<BandView['pet']>): string => {
 export const hearts = (mood: number): string => (mood > 70 ? '♥♥♥' : mood > 40 ? '♥♥' : '♥')
 
 /** What each XP reason the engine names means to a player; the type keeps a word for every scoring fact. */
-const xpWords: Record<ScoringFact | 'dev', string> = {
+const xpWords: Record<ScoringFact | 'quest' | 'dev', string> = {
   'prompt.graded': 'prompt graded',
   'streak.day': 'daily streak',
   'commit.made': 'commit',
@@ -135,9 +135,10 @@ const xpWords: Record<ScoringFact | 'dev', string> = {
   'first.contribution': 'first contribution',
   'tests.green': 'tests back to green',
   'repo.explored': 'new repo explored',
+  quest: 'mission reward',
   dev: 'dev grant',
 }
-const goldWords: Record<string, string> = { drop: 'loot', dev: 'dev grant' }
+const goldWords: Record<string, string> = { drop: 'loot', quest: 'mission reward', dev: 'dev grant' }
 const xpReasons = new Map<string, string>(Object.entries(xpWords))
 const goldReasons = new Map<string, string>(Object.entries(goldWords))
 
@@ -173,6 +174,18 @@ export const gainOf = (event: ServerEvent): GainLine | null => {
       return { text: `${event.data.name} hatched!`, tone: 'loot' }
     case 'streak.changed':
       return event.data.days > 1 ? { text: `${event.data.days}-day streak`, tone: 'xp' } : null
+    case 'quest.completed':
+      return { text: `${event.data.title || 'Mission'} · mission complete`, tone: 'quest' }
+    case 'quest.offered': {
+      // A new day's dailies, or a new week's weeklies to pick from; an empty set only clears the old ones.
+      const count = event.data.quests.length
+      if (count === 0) return null
+      const text =
+        event.data.cadence === 'daily'
+          ? `${count} new ${count === 1 ? 'daily' : 'dailies'} · /questline`
+          : `${count} ${count === 1 ? 'weekly' : 'weeklies'} on offer · /questline`
+      return { text, tone: 'quiet' }
+    }
     default:
       return null
   }
@@ -195,9 +208,12 @@ export const batchesOf = <E extends { cause: string | null }>(events: ReadonlyAr
   return batches
 }
 
-const toneRank: Record<GainLine['tone'], number> = { level: 4, loot: 3, xp: 2, gold: 1, quiet: 0 }
+const toneRank: Record<GainLine['tone'], number> = { level: 5, quest: 4, loot: 3, xp: 2, gold: 1, quiet: 0 }
 
-/** A batch's line names its biggest moment: a level-up, else a drop, else XP, else gold; the latest among equals. */
+/**
+ * A batch's line names its biggest moment: a level-up, else a mission done, else a drop, else XP, else gold; the
+ * latest among equals.
+ */
 export const batchGainOf = (events: ReadonlyArray<ServerEvent>): GainLine | null =>
   events.reduce<GainLine | null>((best, event) => {
     const gain = gainOf(event)
@@ -208,8 +224,8 @@ export const batchGainOf = (events: ReadonlyArray<ServerEvent>): GainLine | null
 const toastItems = 3
 
 /**
- * One toast for everything one cause earned, as `+9 XP · Level 2! · Knit Scarf (uncommon) · +10 gold`; null when it
- * earned nothing.
+ * One toast for everything one cause earned, as `Mission complete: Ship It · +259 XP · Level 2! · Knit Scarf (rare)
+ * · +130 gold`; null when it earned nothing.
  */
 export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
   let xp = 0
@@ -217,7 +233,9 @@ export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
   const levels: Array<string> = []
   const items: Array<string> = []
   const hatched: Array<string> = []
+  const missions: Array<string> = []
   for (const event of events) {
+    if (event.type === 'quest.completed') missions.push(`Mission complete: ${event.data.title || 'Mission'}`)
     if (event.type === 'xp.granted') xp += event.data.amount
     if (event.type === 'gold.changed') gold += event.data.delta
     if (event.type === 'level.up') {
@@ -229,6 +247,7 @@ export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
   }
   const more = items.length - toastItems
   const parts = [
+    ...missions,
     // Grants run to the thousandth; their sum is rounded back, so float error never shows.
     ...(xp > 0 ? [`+${xp} XP`] : []),
     ...levels,
