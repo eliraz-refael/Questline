@@ -15,6 +15,7 @@ export const initialState = (options: { characterName: string; timezone: string;
     bestStreak: 0,
     quests: [],
     questWindows: { daily: null, weekly: null },
+    presence: [],
     boosts: [],
     tests: { armed: [] },
     claims: [],

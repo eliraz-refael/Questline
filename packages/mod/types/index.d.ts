@@ -125,6 +125,8 @@ export type MissionView = {
   status: 'offered' | 'active' | 'completed' | 'expired'
   progress: number
   goal: number
+  /** What its goal counts, as the server names it (`parallel`: moments sessions ran together); null from older ones. */
+  goalKind: string | null
   rewards: MissionRewards
   /** When its window ends, in clock ms; null when the server didn't say. */
   expiresAt: number | null
@@ -161,6 +163,8 @@ declare module 'claude-code' {
       missions: MissionsView | null
       /** The running weekly whose Abandon was pressed once: the pane asks before its progress goes. */
       abandoning: string | null
+      /** The id the session goes by with the server, so a reload of the mod keeps it rather than opening another. */
+      session: string | null
     }
   }
 }

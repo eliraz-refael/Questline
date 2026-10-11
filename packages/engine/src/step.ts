@@ -29,11 +29,13 @@ import { addDays, isLater, localDay } from "./days.ts"
 import { formFor, formsFor, glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import type { RarityWeights } from "./loot.ts"
 import { pityAfter, raiseRare, rarityRank, rollLoot } from "./loot.ts"
+import { closeSpan, openSpan, prunePresence, spanAt } from "./presence.ts"
 import { petSlots } from "./project.ts"
 import type { QuestSignal } from "./quests.ts"
 import {
   defOf,
   isNewWindow,
+  joinParallel,
   measureMission,
   meets,
   missionCadences,
@@ -49,7 +51,8 @@ import { streakAsOf } from "./streak.ts"
 
 // This version covers the proof of concept: reported XP with daily caps, XP for graded prompts, levels, the streak,
 // a loot roll per turn, per graded prompt (better odds for a better grade) and per level-up, the player stats, the
-// daily and weekly missions, hatching the pet, and equipping items. Verified-tier facts wait for the verifier, and
+// daily and weekly missions (parallel ones from the sessions the server says are open), hatching the pet, and equipping
+// items. Verified-tier facts wait for the verifier, and
 // other commands are refused for now.
 
 /** What one step builds up. It lives only inside `step`, so the function stays pure. */
@@ -168,7 +171,7 @@ const applyClient = (state: PlayerState, event: ClientEvent, context: Context): 
       roll(run, "turn", context.rules.loot.chancePerTurn)
       break
     case "prompt.graded":
-      gradePrompt(run, event.data.scores, day)
+      joinQuests(run, event.sessionId, event.occurredAt, gradePrompt(run, event.data.scores, day), day)
       break
     case "session.cleared":
       setStats(run, { clears: run.state.progress.stats.clears + 1 })
@@ -248,9 +251,9 @@ const statsChanged = (run: Run, pick: (stats: PlayerStats) => Partial<PlayerStat
 /**
  * A graded prompt: XP from its weighted quality grade, tapered by how many the day has seen already, a loot roll
  * whose chance rises with the grade (a great grade also raises the rare-and-better weights), and the prompt stats.
- * The grade is priced whatever rubric version made it.
+ * The grade is priced whatever rubric version made it; it is returned, for the parallel missions.
  */
-const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>, day: string): void => {
+const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>, day: string): number => {
   const { rules } = run.context
   const grade = gradeOf(rules.prompt, scores)
   const nth = (run.state.progress.tallies.find((t) => t.day === day)?.counts["prompt.graded"] ?? 0) + 1
@@ -271,6 +274,7 @@ const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>,
   const weights = grade >= loot.promptGreatAt ? raiseRare(loot.weights, loot.promptGreatRareFactor) : loot.weights
   roll(run, "prompt", (loot.promptChanceAtTen * grade) / 10, { weights })
   statsChanged(run, (stats) => ({ prompts: stats.prompts, grades: stats.grades }))
+  return grade
 }
 
 const applyCommand = (state: PlayerState, command: Command, context: Context): Step => {
@@ -294,6 +298,7 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
     case "dev.setGold":
     case "dev.completeQuest":
     case "dev.rollQuests":
+    case "dev.fakeSession":
       return context.dev === true
         ? runDev(state, command, context)
         : refuse(state, { code: "not_allowed", message: "Dev commands run only on a local server in dev mode" })
@@ -304,8 +309,25 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
 
 const applySystem = (state: PlayerState, event: SystemEvent, context: Context): Step => {
   const run = begin(state, context)
-  // The edge checks the zone is one Intl knows before it reaches the log.
-  if (event.type === "timezone.changed") run.state = { ...run.state, timezone: event.tz }
+  const { now } = context
+  const presence = state.progress.presence
+  switch (event.type) {
+    case "timezone.changed":
+      // The edge checks the zone is one Intl knows before it reaches the log.
+      run.state = { ...run.state, timezone: event.tz }
+      break
+    case "session.opened":
+      setProgress(run, { presence: prunePresence(openSpan(presence, event.sessionId, now), now) })
+      break
+    case "session.closed":
+      setProgress(run, { presence: prunePresence(closeSpan(presence, event.sessionId, event.at, now), now) })
+      break
+    case "fact.verified":
+    case "claim.resolved":
+    case "rules.published":
+    case "quests.refresh":
+      break
+  }
   return finish(run)
 }
 
@@ -472,6 +494,22 @@ const measureQuests = (run: Run, sessionId: string, pct: number, day: string): v
 }
 
 /**
+ * A graded prompt on `day`, for the running parallel missions of its window whose grade it reaches: it counts only if
+ * its session was open as it was made, and makes a moment with the waiting prompts of other sessions open with it.
+ */
+const joinQuests = (run: Run, sessionId: string, at: string, grade: number, day: string): void => {
+  const span = spanAt(run.state.progress.presence, sessionId, at)
+  if (span === undefined) return
+  const prompt = { sessionId, at, openedAt: span.openedAt }
+  for (const { mission, def } of running(run, day)) {
+    if (def.goal.kind !== "parallel" || grade < def.goal.grade) continue
+    const joined = joinParallel(mission, def.goal, prompt, run.state.progress.presence)
+    if (joined.moment) progressTo(run, { ...joined.mission, progress: mission.progress + 1 }, def)
+    else setMission(run, joined.mission)
+  }
+}
+
+/**
  * A mission done: the banner at its cadence's tier, then its rewards, each as its own event: reported XP (which may
  * level up, with that drop), gold, and a drop that always lands. A mission already granted in this window grants
  * nothing again.
@@ -569,7 +607,7 @@ const abandon = (state: PlayerState, questId: string, context: Context): Step =>
     return refuse(state, { code: "invalid", message: "That mission is not running" })
   }
   const run = begin(state, context)
-  const offered: Mission = { ...mission, status: "offered", progress: 0, sessions: [] }
+  const offered: Mission = { ...mission, status: "offered", progress: 0, sessions: [], prompts: [] }
   setMission(run, offered)
   const def = defOf(context.questPacks, mission)
   if (def !== undefined) {
@@ -727,6 +765,9 @@ const unequip = (state: PlayerState, slot: Slot, context: Context): Step => {
   return finish(run)
 }
 
+/** How long a dev command's stand-in session stays open. */
+const fakeSessionMs = 30 * 60_000
+
 /**
  * A dev command, which the caller has let through: an item or every band style not owned yet, XP that levels up as
  * play would (its drops marked `dev` too), or the gold set. It counts no scoring fact and moves no streak.
@@ -791,6 +832,15 @@ const runDev = (state: PlayerState, command: DevCommand, context: Context): Step
       const rolled = rollQuests(state, context, `:dev:${context.logSeq}`)
       run.state = rolled.state
       run.events.push(...rolled.events)
+      break
+    }
+    case "dev.fakeSession": {
+      // Open for a while from now, with a prompt graded 10 made as it opened.
+      const sessionId = run.newId()
+      const closedAt = new Date(Date.parse(context.now) + fakeSessionMs).toISOString()
+      const span = { sessionId, openedAt: context.now, closedAt }
+      setProgress(run, { presence: prunePresence([...state.progress.presence, span], context.now) })
+      joinQuests(run, sessionId, context.now, 10, localDay(context.now, state.timezone))
       break
     }
   }

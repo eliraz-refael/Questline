@@ -10,7 +10,14 @@ import { ServerEvent } from "./server-events.ts"
 // every request.
 
 /** `POST /v1/sessions` */
-export const SessionRequest = Schema.Struct({ sessionId: Ulid })
+export const SessionRequest = Schema.Struct({
+  sessionId: Ulid,
+  /**
+   * The mod keeps the session live: its stream polls name it, and it closes it when the session ends. Only such a
+   * session is open to the game; an older mod's counts toward no parallel mission.
+   */
+  presence: Schema.optionalKey(Schema.Literal(true)),
+})
 export interface SessionRequest extends Schema.Schema.Type<typeof SessionRequest> {}
 
 export const SessionResponse = Schema.Struct({
@@ -22,6 +29,10 @@ export const SessionResponse = Schema.Struct({
 })
 export interface SessionResponse extends Schema.Schema.Type<typeof SessionResponse> {}
 
+/** `DELETE /v1/sessions/{id}` response: whether this request closed it, rather than finding it closed or unknown. */
+export const SessionClosed = Schema.Struct({ closed: Schema.Boolean })
+export interface SessionClosed extends Schema.Schema.Type<typeof SessionClosed> {}
+
 /** `POST /v1/events` response. `events` are for animating at once; only the stream moves the cursor. */
 export const EventsResponse = Schema.Struct({
   results: Schema.Array(EventResult),
@@ -29,7 +40,10 @@ export const EventsResponse = Schema.Struct({
 })
 export interface EventsResponse extends Schema.Schema.Type<typeof EventsResponse> {}
 
-/** `GET /v1/stream?after=<cursor>`, answered at once or after 25 seconds with nothing. */
+/**
+ * `GET /v1/stream?after=<cursor>&session=<id>`, answered at once or after 25 seconds with nothing. Each poll that
+ * names its session keeps it live: the poll is the heartbeat.
+ */
 export const StreamResponse = Schema.Struct({
   events: Schema.Array(ServerEvent),
   cursor: Count,

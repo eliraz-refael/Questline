@@ -33,10 +33,22 @@ import {
   workRef,
 } from './observe'
 import type { Repo } from './observe'
-import { answerOf, initOf, isCommand, isEvents, isSession, isStream, ServerDown, socketPathOf, urlOf } from './server'
+import {
+  answerOf,
+  initOf,
+  isClosed,
+  isCommand,
+  isEvents,
+  isSession,
+  isStream,
+  ServerDown,
+  socketPathOf,
+  streamPathOf,
+  urlOf,
+} from './server'
 import { ownedLooks, ratesOf, wornLooks } from './looks'
 import type { MissionEntry } from './missions'
-import { missionChip, missionsLayout, missionsViewOf, roomBeside } from './missions'
+import { knowsTogether, missionChip, missionsLayout, missionsViewOf, roomBeside } from './missions'
 import type { Choice } from './pane'
 import { brand, headerGap, headerOf, lookSections, otherItems, paneId, tabBarOf, tabOf } from './pane'
 import { statsLayout, titleRow } from './stats'
@@ -69,6 +81,7 @@ const loops = atom({ plugin: 'questline', key: 'loops' }, null)
 const tab = atom({ plugin: 'questline', key: 'tab' }, 'inventory')
 const missions = atom({ plugin: 'questline', key: 'missions' }, null)
 const abandoning = atom({ plugin: 'questline', key: 'abandoning' }, null)
+const session = atom({ plugin: 'questline', key: 'session' }, null)
 
 /** This copy of the mod: a reload makes a new one, and a frame the old one left behind is never drawn. */
 const load = Math.random()
@@ -94,6 +107,8 @@ const maxQueued = 5000
 const batchSize = 100
 const flushEveryMs = 30_000
 const retryMs = 5_000
+/** The most of the exit's short bound closing the session may take: the exit goes on without it past that. */
+const closeMs = 500
 
 // Module memory: a reload runs session.start again, which sets it all anew.
 /** The `toasts` and `server` options. */
@@ -141,10 +156,11 @@ async function call<A>(
   path: string,
   is: (value: unknown) => value is A,
   body?: unknown,
+  method?: 'DELETE',
 ): Promise<A> {
   let response
   try {
-    response = await $.http.fetch(urlOf(path), initOf(socket, body))
+    response = await $.http.fetch(urlOf(path), initOf(socket, body, method))
   } catch (cause) {
     throw new ServerDown(`The Questline server does not answer on ${socket}`, {
       cause,
@@ -153,11 +169,15 @@ async function call<A>(
   return answerOf(path, response, is)
 }
 
-const openSession = ($: EngineInterface) => call($, '/v1/sessions', isSession, { sessionId })
+/** Opens the session, or says it is still here; `presence` asks the server to count it live while this mod polls. */
+const openSession = ($: EngineInterface) => call($, '/v1/sessions', isSession, { sessionId, presence: true })
+/** Closes a session, so the server stops counting it live; a server from before presence answers 404. */
+const closeSession = ($: EngineInterface, id: string) =>
+  call($, `/v1/sessions/${encodeURIComponent(id)}`, isClosed, undefined, 'DELETE')
 const sendEvents = ($: EngineInterface, events: ReadonlyArray<unknown>) => call($, '/v1/events', isEvents, { events })
 const runCommand = ($: EngineInterface, command: Command) => call($, '/v1/commands', isCommand, command)
-/** Answers as soon as the stream moves past `after`, or after 25 seconds with nothing. */
-const stream = ($: EngineInterface, after: number) => call($, `/v1/stream?after=${after}`, isStream)
+/** Answers once the stream moves past `after`, or after 25 seconds with nothing; each poll keeps the session live. */
+const stream = ($: EngineInterface, after: number) => call($, streamPathOf(after, sessionId), isStream)
 
 const idOf = (event: unknown): string | null =>
   typeof event === 'object' && event !== null && 'id' in event && typeof event.id === 'string' ? event.id : null
@@ -400,6 +420,8 @@ const refresh = async ($: EngineInterface, fromScratch: boolean) => {
   await update($, wardrobe, () => owned)
   await update($, stats, () => counted)
   await update($, missions, () => quests)
+  // Again here, as a /clear empties the session's state after its end hook has written the new id.
+  await update($, session, () => sessionId)
   await update($, link, () => 'online')
   await syncLoop($)
 }
@@ -566,8 +588,12 @@ const runDev = async ($: EngineInterface, ask: DevAsk): Promise<{ text: string; 
     const how = `set the mod's server option to dev, and start it with ${startHint('dev')}`
     return { text: `Dev mode needs the dev server: ${how}`, isDone: false }
   }
-  if ((ask.kind === 'complete' || ask.kind === 'roll') && (await read($, missions))?.isKnown !== true)
+  const shown = await read($, missions)
+  if ((ask.kind === 'complete' || ask.kind === 'roll' || ask.kind === 'session') && shown?.isKnown !== true)
     return { text: `The dev server predates missions: restart it with ${startHint('dev')}`, isDone: false }
+  // Only a server that names each mission's goal knows parallel missions and stand-in sessions.
+  if (ask.kind === 'session' && !knowsTogether(shown))
+    return { text: `The dev server predates parallel missions: restart it with ${startHint('dev')}`, isDone: false }
   const { id, occurredAt } = await stamp($)
   const command = devCommandOf(ask, id)
   if (command === null) {
@@ -580,6 +606,10 @@ const runDev = async ($: EngineInterface, ask: DevAsk): Promise<{ text: string; 
     if (answer.status === 'refused') return { text: answer.message, isDone: false }
     // What it made arrives on the stream too, with its celebrations and toast.
     await refresh($, false)
+    if (ask.kind === 'session') {
+      const text = 'A stand-in session is open, with a prompt graded 10: a good prompt here soon joins it.'
+      return { text, isDone: true }
+    }
     return { text: 'Done.', isDone: true }
   } catch (error) {
     // Only a server that can't be reached is offline; one that answered oddly is still there.
@@ -644,6 +674,17 @@ const commandUsed = async ($: EngineInterface, command: string) => {
   await enqueue($, { ...stamped, type: 'command.used', data: { command: commandNameOf(command, listed?.source) } })
 }
 
+/** Waits for `work` at most `ms`, whatever it ends in: what it throws stays here. */
+const within = ($: EngineInterface, ms: number, work: Promise<unknown>): Promise<void> =>
+  new Promise((resolve) => {
+    const timer = $.clock.after(Math.max(0, ms), resolve)
+    const done = () => {
+      timer.cancel()
+      resolve()
+    }
+    work.then(done, done)
+  })
+
 /** Runs `work` once the hook has returned; whatever it throws stays here, so it never fails a prompt or a command. */
 const later = ($: EngineInterface, work: () => Promise<unknown>) => {
   $.clock.after(0, () => {
@@ -651,13 +692,17 @@ const later = ($: EngineInterface, work: () => Promise<unknown>) => {
   })
 }
 
-/** A new session: a fresh id, then the repo, its first exploration and the server, after the hook returns. */
-const begin = async ($: EngineInterface, cwd: string) => {
+/**
+ * A new session: its id (`kept`, the one a reload of the mod finds in the session's state, else a fresh one), then the
+ * repo, its first exploration and the server, after the hook returns.
+ */
+const begin = async ($: EngineInterface, cwd: string, kept: string | null) => {
   $.ui.status(undefined)
   lastPrompt = ''
   lastAnswer = ''
   turnPeak = null
-  sessionId = ulid(await $.clock.now())
+  sessionId = kept ?? ulid(await $.clock.now())
+  await update($, session, () => sessionId)
   socket = socketPathOf(await $.env.get('QUESTLINE_HOME'), await $.env.get('HOME'), server === 'dev')
   secret = await machineSecret($)
   $.clock.after(0, async () => {
@@ -677,7 +722,8 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     await resumeCelebrations($)
     await resumeFade($)
-    await begin($, e.cwd)
+    // A reload keeps the session's id: a new one would leave the old open beside it, as if two sessions ran.
+    await begin($, e.cwd, await read($, session))
     flushTimer?.cancel()
     flushTimer = $.clock.every(flushEveryMs, () => void flush($))
     // A pane the last copy of the mod opened stays up across a reload: the engine keeps the record.
@@ -717,14 +763,22 @@ export const register: Register = (on, options) => {
     return result
   }).catch(($, e, next) => next(e))
 
-  // A /clear ends the conversation without a new session.start, and the band's state goes with it: start again.
+  // A /clear ends the conversation without a new session.start, and the band's state goes with it: close the session
+  // and start again under a new one. So does a resume, which goes on under another session. Any other end is the
+  // process going: the session is closed within a short part of the exit's bound, and the exit goes on regardless.
   on('session.end', async ($, e, next) => {
-    const result = await next(e)
-    if (e.reason === 'clear') {
-      // Counted under the session it ends.
-      await enqueue($, { ...(await stamp($)), type: 'session.cleared', data: {} })
-      await begin($, await $.session.cwd())
+    const ending = sessionId
+    if (e.reason !== 'clear' && e.reason !== 'resume') {
+      await within($, Math.min(closeMs, next.budget.remainingMs / 2), closeSession($, ending))
+      // The server never opens a closed session again: a later start that finds this state takes a new id.
+      await update($, session, () => null).catch(() => undefined)
+      return next(e)
     }
+    const result = await next(e)
+    // Counted under the session it ends.
+    if (e.reason === 'clear') await enqueue($, { ...(await stamp($)), type: 'session.cleared', data: {} })
+    later($, () => closeSession($, ending))
+    await begin($, await $.session.cwd(), null)
     return result
   })
 
@@ -1089,6 +1143,13 @@ export const register: Register = (on, options) => {
               </Text>
               <Box flexWrap="wrap" columnGap={2} marginLeft={2}>
                 <Button key="dev:roll" label="Re-roll missions" onPress={() => void pressDev($, { kind: 'roll' })} />
+                {knowsTogether(quests) ? (
+                  <Button
+                    key="dev:session"
+                    label="Stand-in session"
+                    onPress={() => void pressDev($, { kind: 'session' })}
+                  />
+                ) : null}
               </Box>
             </Box>
           ) : null}

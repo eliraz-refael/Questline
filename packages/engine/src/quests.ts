@@ -4,12 +4,15 @@ import type {
   GradeDimension,
   Mission,
   MissionCadence,
+  ParallelGoal,
+  ParallelPrompt,
   PlayerState,
   QuestDef,
   QuestGoal,
   QuestPack,
   QuestState,
   ScoringFact,
+  SessionSpan,
 } from "@questline/schema"
 import { addDays, isLater, localDay, startOfDay, weekOf } from "./days.ts"
 import { draws } from "./random.ts"
@@ -91,6 +94,7 @@ export const offerFor = (
     status: cadence === "daily" ? "active" : "offered",
     progress: 0,
     sessions: [],
+    prompts: [],
   }))
 }
 
@@ -108,6 +112,7 @@ export const questStateOf = (mission: Mission, def: QuestDef, timeZone: string, 
     status: ended && mission.status !== "completed" ? "expired" : mission.status,
     progress: mission.progress,
     goal: def.goal.count,
+    goalKind: def.goal.kind,
     rewards: def.rewards,
     expiresAt,
   }
@@ -150,7 +155,10 @@ const promptMeets = (goal: FactGoal, signal: Extract<QuestSignal, { kind: "fact"
   })
 }
 
-/** Whether a signal counts toward a goal. Context goals count sessions, through `measureMission`, not signals. */
+/**
+ * Whether a signal counts toward a goal. Context goals count sessions, through `measureMission`, and parallel goals
+ * moments, through `joinParallel`, not signals.
+ */
 export const meets = (goal: QuestGoal, signal: QuestSignal): boolean => {
   switch (goal.kind) {
     case "fact":
@@ -162,6 +170,7 @@ export const meets = (goal: QuestGoal, signal: QuestSignal): boolean => {
     case "command":
       return signal.kind === "command" && signal.command === goal.command
     case "context":
+    case "parallel":
       return false
   }
 }
@@ -183,4 +192,76 @@ export const measureMission = (mission: Mission, sessionId: string, pct: number,
   const forgotten = new Set(crossed.slice(0, -maxCrossedSessions).map((session) => session.sessionId))
   const sessions = [...others.filter((session) => !forgotten.has(session.sessionId)), { sessionId, peak }]
   return { ...mission, sessions, progress: others.filter((session) => session.peak < under).length }
+}
+
+/** The most prompts a parallel mission keeps waiting for a moment; the oldest go first. */
+export const maxParallelPrompts = 40
+
+interface Bounds {
+  readonly first: number
+  readonly last: number
+  /** The latest opening and the earliest closing of the chosen prompts' sessions: they met if it is the earlier. */
+  readonly opened: number
+  readonly closed: number
+}
+
+/**
+ * A well-graded prompt, made while its session was open, folded into a parallel mission. With waiting prompts of
+ * `sessions - 1` other sessions, all made within `withinMinutes` of each other, from sessions whose open spans meet,
+ * it makes a moment, and those prompts are spent. The oldest prompts that fit are spent first; prompts too old to meet
+ * the newest are let go, as are those whose session's span the presence no longer keeps.
+ */
+export const joinParallel = (
+  mission: Mission,
+  goal: ParallelGoal,
+  prompt: ParallelPrompt,
+  spans: ReadonlyArray<SessionSpan>,
+): { readonly mission: Mission; readonly moment: boolean } => {
+  const within = goal.withinMinutes * 60_000
+  const timeOf = (one: ParallelPrompt): number => Date.parse(one.at)
+  const closingOf = (one: ParallelPrompt): number | undefined => {
+    const span = spans.find((each) => each.sessionId === one.sessionId && each.openedAt === one.openedAt)
+    if (span === undefined) return undefined
+    return span.closedAt === null ? Number.POSITIVE_INFINITY : Date.parse(span.closedAt)
+  }
+  const newest = Math.max(timeOf(prompt), ...mission.prompts.map(timeOf))
+  const waiting = [...mission.prompts, prompt]
+    .filter((one) => newest - timeOf(one) <= within && closingOf(one) !== undefined)
+    .sort((a, b) => timeOf(a) - timeOf(b))
+    .slice(-maxParallelPrompts)
+  const keep = (prompts: ReadonlyArray<ParallelPrompt>): Mission => ({ ...mission, prompts })
+  if (!waiting.includes(prompt)) return { mission: keep(waiting), moment: false }
+
+  const widen = (bounds: Bounds | null, one: ParallelPrompt): Bounds | null => {
+    const at = timeOf(one)
+    const next: Bounds = {
+      first: Math.min(bounds?.first ?? at, at),
+      last: Math.max(bounds?.last ?? at, at),
+      opened: Math.max(bounds?.opened ?? Number.NEGATIVE_INFINITY, Date.parse(one.openedAt)),
+      closed: Math.min(bounds?.closed ?? Number.POSITIVE_INFINITY, closingOf(one) ?? Number.NEGATIVE_INFINITY),
+    }
+    return next.last - next.first <= within && next.opened < next.closed ? next : null
+  }
+  // The other sessions in the order their first waiting prompt was made, each with its prompts, oldest first.
+  const others = new Map<string, Array<ParallelPrompt>>()
+  for (const one of waiting) {
+    if (one.sessionId !== prompt.sessionId) others.set(one.sessionId, [...(others.get(one.sessionId) ?? []), one])
+  }
+  const sessions = [...others.values()]
+  type Found = ReadonlyArray<ParallelPrompt> | null
+  const search = (from: number, chosen: ReadonlyArray<ParallelPrompt>, bounds: Bounds): Found => {
+    if (chosen.length >= goal.sessions) return chosen
+    for (let i = from; i < sessions.length; i++) {
+      for (const one of sessions[i] ?? []) {
+        const next = widen(bounds, one)
+        const found = next === null ? null : search(i + 1, [...chosen, one], next)
+        if (found !== null) return found
+      }
+    }
+    return null
+  }
+  const start = widen(null, prompt)
+  const spent = start === null ? null : search(0, [prompt], start)
+  if (spent === null) return { mission: keep(waiting), moment: false }
+  return { mission: keep(waiting.filter((one) => !spent.includes(one))), moment: true }
 }
