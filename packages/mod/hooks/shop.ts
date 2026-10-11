@@ -519,8 +519,9 @@ export const petCardLayout = (care: CareView | null, pet: PetShown, columns: num
           ],
           width - entryIndent - buttonCells('Pet'),
         )
+  // A meal that has run out since the last snapshot reads as over, by the clock.
   const boost =
-    care.boost === null
+    care.boost === null || care.boost.endsAt <= now
       ? null
       : clip(
           [
