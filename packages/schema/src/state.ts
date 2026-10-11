@@ -130,7 +130,7 @@ export const Progress = Schema.Struct({
   questWindows: Schema.Struct({ daily: Schema.NullOr(IsoDate), weekly: Schema.NullOr(IsoDate) }),
   /** The sessions open now, and those closed in the last day, so a prompt can be checked against its session. */
   presence: Schema.Array(SessionSpan),
-  /** Food boosts; a new one replaces the running one, they never stack. */
+  /** Flat XP boosts, from food or missions, while they run; the strongest running one of each kind counts. */
   boosts: Schema.Array(Boost),
   tests: Schema.Struct({ armed: Schema.Array(ArmedTestRun) }),
   claims: Schema.Array(Claim),

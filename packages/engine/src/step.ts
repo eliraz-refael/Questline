@@ -70,10 +70,12 @@ interface Run {
 
 /**
  * Every step first rolls the missions of a local day or week begun since the last roll, then applies its input. A
- * refused command changes nothing, the roll included: the next step rolls instead.
+ * refused command changes nothing, the roll included: the next step rolls instead. XP a curve change carried is
+ * bookkeeping a migration wrote, not play: it rolls nothing, so a replay of it does just what the migration did.
  */
 export const step = (state: PlayerState, input: Input, context: Context): Step => {
-  const rolled = rollQuests(state, context)
+  const isCarry = input.kind === "system" && input.event.type === "xp.carried"
+  const rolled = isCarry ? { state, events: [] } : rollQuests(state, context)
   const result = dispatch(rolled.state, input, context)
   if (result.refusal !== null) return refuse(state, result.refusal)
   return rolled.events.length === 0 ? result : { ...result, events: [...rolled.events, ...result.events] }
@@ -333,11 +335,9 @@ const applySystem = (state: PlayerState, event: SystemEvent, context: Context): 
       setProgress(run, { presence: prunePresence(closeSpan(presence, event.sessionId, event.at, now), now) })
       break
     case "xp.carried": {
-      // Carried so the level stays as it was: no banner, and no drop unless a later rules change moved the level.
-      const before = levelOf(run.state, context.rules).level
+      // Carried so the level stays as it was: no banner and no drop, as the migration that wrote it gave none.
       const xp = run.state.progress.xp
       setProgress(run, { xp: { ...xp, reported: xp.reported + event.amount } })
-      levelUp(run, before)
       break
     }
     case "fact.verified":
@@ -585,13 +585,16 @@ const complete = (run: Run, mission: Mission, def: QuestDef): void => {
 /**
  * A reward's drop: the item it names, or one from its pool (a category, else the whole catalogue) at its rarity,
  * falling to the nearest lower rarity with items. An item the catalogue lacks rolls from the pool instead, and a pool
- * with nothing at or below the rarity rolls from the whole catalogue, so the drop the banner promised lands.
+ * with nothing at or below the rarity rolls from the whole catalogue, so the drop the banner promised lands. A quest
+ * never hands out a sigil by name or by pool, as a pack could then give the best one every week: a sigil it names
+ * rolls from its pool, and a sigil pool is the whole catalogue, where a sigil drops at the usual share.
  */
 const rewardDrop = (run: Run, loot: QuestLoot, ref: string): void => {
   const { catalog } = run.context
-  const named = loot.item === undefined ? undefined : catalog.find((def) => def.id === loot.item)
+  const named = catalog.find((def) => def.id === loot.item && !isSigil(def))
   const keep = named?.rarity ?? loot.rarity
-  const category = loot.pool === undefined ? catalog : catalog.filter((def) => def.category === loot.pool)
+  const pooled = loot.pool === undefined || loot.pool === "sigil" ? undefined : loot.pool
+  const category = pooled === undefined ? catalog : catalog.filter((def) => def.category === pooled)
   const fits = category.some((def) => rarityRank(def.rarity) <= rarityRank(keep))
   const pool = named !== undefined ? [named] : fits ? category : catalog
   roll(run, "reward", 1, { keep, pool, source: { kind: "quest", ref } })

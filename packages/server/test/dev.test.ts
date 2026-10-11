@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it as test } from "vitest"
-import { claimHome, isDevMode, localPaths, localServer, WrongHome } from "../src/index.ts"
+import { starterCatalog, starterRules } from "@questline/engine"
+import { catalog, checkedCatalog, claimHome, isDevMode, localPaths, localServer, WrongHome } from "../src/index.ts"
 import { client, nextId, profile, prompt, session, withoutQuests, withServer } from "./fixtures.ts"
 
 // Dev mode: a sandbox save in a home of its own, the only place the dev commands run.
@@ -132,7 +133,7 @@ describe("dev commands over the command route", () => {
     ),
   )
 
-  it.effect("grant a sigil, which the player wears and a graded prompt is priced with, the rules saying its range", () =>
+  it.effect("grant a sigil, which the player wears and a prompt is priced with, the rules saying its range", () =>
     withServer(
       Effect.gen(function* () {
         const api = yield* client
@@ -158,4 +159,16 @@ describe("dev commands over the command route", () => {
       true,
     ),
   )
+})
+
+describe("the catalogue the server runs", () => {
+  test("fits the rules, and a sigil outside its rarity's range stops the server from starting", () => {
+    expect(catalog).toBe(starterCatalog)
+    const off = starterCatalog.map((item) =>
+      item.id === "wyrm-sigil" && item.sigil !== undefined
+        ? { ...item, sigil: { ...item.sigil, multiplier: 3 } }
+        : item,
+    )
+    expect(() => checkedCatalog(starterRules, off)).toThrow("wyrm-sigil: ×3 is outside legendary's ×2.3-2.5")
+  })
 })

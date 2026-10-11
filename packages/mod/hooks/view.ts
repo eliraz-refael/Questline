@@ -59,7 +59,11 @@ const numberOr = <A,>(value: unknown, fallback: A): number | A =>
  * The Stats tab's numbers. An older server counts fewer stats, or sends none: what it lacks reads as nothing yet,
  * and the best grade, the best streak and the profile, which the tab says it can't show, as null.
  */
-export const statsViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig> = {}): StatsView => {
+export const statsViewOf = (
+  snapshot: Snapshot,
+  rules: Partial<RulesConfig> = {},
+  wardrobe: Wardrobe = wardrobeOf(snapshot, rules),
+): StatsView => {
   const stats: Partial<PlayerStats> = snapshot.stats ?? {}
   const prompts: Partial<PlayerStats['prompts']> = stats.prompts ?? {}
   const peak: Partial<PlayerStats['contextPeak']> = stats.contextPeak ?? {}
@@ -101,13 +105,13 @@ export const statsViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig> = {}
     commands,
     xp: { verified: numberOr(xp.verified, 0), reported: numberOr(xp.reported, 0) },
     items: Array.isArray(snapshot.inventory) ? snapshot.inventory.length : 0,
-    sigil: knowsSigilsOf(rules) ? { worn: sigilWornOf(snapshot, rules) } : null,
+    sigil: knowsSigilsOf(rules) ? { worn: sigilWornOf(wardrobe) } : null,
   }
 }
 
 /** The sigil worn, with its name and rarity, for the Stats tab; null when none is, or the snapshot can't name it. */
-const sigilWornOf = (snapshot: Snapshot, rules: Partial<RulesConfig>): NonNullable<StatsView['sigil']>['worn'] => {
-  const worn = wornSigil(wardrobeOf(snapshot, rules))
+const sigilWornOf = (wardrobe: Wardrobe): NonNullable<StatsView['sigil']>['worn'] => {
+  const worn = wornSigil(wardrobe)
   return worn?.sigil === undefined ? null : { ...worn.sigil, name: worn.name, rarity: worn.rarity }
 }
 
@@ -244,6 +248,10 @@ export const batchGainOf = (events: ReadonlyArray<ServerEvent>): GainLine | null
     return gain !== null && (best === null || toneRank[gain.tone] >= toneRank[best.tone]) ? gain : best
   }, null)
 
+/** What a sigil did to a toast's XP: ` (×2 sigil)`, or ` (×2 sigil on the prompt)` beside XP it didn't touch. */
+const sigilNote = (sigil: number, isAll: boolean): string =>
+  sigil > 1 ? ` (${multiplierText(sigil)} sigil${isAll ? '' : ' on the prompt'})` : ''
+
 /** Drops a toast names one by one; past them it counts the rest. */
 const toastItems = 3
 
@@ -255,6 +263,8 @@ export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
   let xp = 0
   let gold = 0
   let sigil = 0
+  /** XP from grants a sigil multiplied: the prompt's, and not the streak or work beside it. */
+  let multiplied = 0
   const levels: Array<string> = []
   const items: Array<string> = []
   const hatched: Array<string> = []
@@ -265,7 +275,10 @@ export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
     const boost = event.type === 'quest.completed' ? event.data.rewards?.xpBoost : undefined
     if (boost !== undefined) boosts.push(boostText(boost))
     if (event.type === 'xp.granted') xp += event.data.amount
-    if (event.type === 'xp.granted' && typeof event.data.sigil === 'number') sigil = Math.max(sigil, event.data.sigil)
+    if (event.type === 'xp.granted' && typeof event.data.sigil === 'number') {
+      sigil = Math.max(sigil, event.data.sigil)
+      multiplied += event.data.amount
+    }
     if (event.type === 'gold.changed') gold += event.data.delta
     if (event.type === 'level.up') {
       const { to, title } = event.data
@@ -278,7 +291,7 @@ export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
   const parts = [
     ...missions,
     // Grants run to the thousandth; their sum is rounded back, so float error never shows.
-    ...(xp > 0 ? [sigil > 1 ? `+${xp} XP (${multiplierText(sigil)} sigil)` : `+${xp} XP`] : []),
+    ...(xp > 0 ? [`+${xp} XP${sigilNote(sigil, multiplied === xp)}`] : []),
     ...levels,
     ...items.slice(0, more > 0 ? toastItems - 1 : toastItems),
     ...(more > 0 ? [`${more + 1} more items`] : []),

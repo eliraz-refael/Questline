@@ -10,9 +10,10 @@ import type {
   SessionMessage,
   SessionStartInput,
 } from 'claude-code'
+import type { QuestRewards } from '@questline/schema'
 import type { BandLook, BandView, Celebration, MissionsView, MissionView } from '../types'
 import { barCells } from './band'
-import { joinQueue, queueOf } from './celebrate'
+import { joinQueue, queueOf, rewardsText } from './celebrate'
 import { cellsOf, cellsOfRow, glyphSlot } from './cells'
 import { hmac } from './ids'
 import { barRow } from './frames'
@@ -2357,7 +2358,7 @@ describe('sigils', () => {
     expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'item.unequip', data: { slot: 'sigil' } })
   })
 
-  test('a server older than sigils gets no Sigil section, and a new player is told how they come', async ($, on) => {
+  test('a server older than sigils gets no Sigil section', async ($, on) => {
     await streaming($, on, withSigils(true))
     const old = (await paneTexts($, 100)).texts.join('\n')
     expect(old).not.toContain('one worn at a time')
@@ -2378,6 +2379,10 @@ describe('sigils', () => {
     await send(...causedBy('01K6ZQ8W3J0000000000000C02', grant(10, 'prompt.graded', { grade: 5 })))
     expect(await gainLine($)).toBe('+10 XP · prompt graded 5')
     expect(toasts.at(-1)).toBe('+10 XP')
+    // The day's first prompt brings the streak too, which the sigil didn't touch.
+    await send(...causedBy('01K6ZQ8W3J0000000000000C04', grant(10, 'streak.day'), grant(20, 'prompt.graded', { grade: 5, sigil: 2 })))
+    expect(toasts.at(-1)).toBe('+30 XP (×2 sigil on the prompt)')
+    expect(await gainLine($)).toBe('+20 XP · prompt graded 5 · ×2 sigil')
     const sigilDrop = serverEvent('loot.dropped', {
       entry: { id: '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', itemId: 'arcane-sigil', acquiredAt: '2026-10-09T08:00:00Z', source: { kind: 'drop', ref: '1' }, dye: null },
       item: arcane,
@@ -2409,7 +2414,7 @@ describe('sigils', () => {
     expect((await band($)).grown).toBe(0)
   })
 
-  test('the Stats tab names the sigil worn, or says none is, and shows no row on an older server', async ($, on) => {
+  test('the Stats tab names the sigil worn, in a row that fits a 40-column pane', async ($, on) => {
     await streaming($, on, withSigils(true), false, { counted: playing, rules: sigilRules })
     await openStats($)
     const wide = (await paneTexts($, 72)).texts.join('\n')
@@ -2417,7 +2422,7 @@ describe('sigils', () => {
     for (const text of (await paneTexts($, 40)).texts) expect(cellsOf(text)).toBeLessThanOrEqual(38)
   })
 
-  test('the Stats tab says none is worn, and an older server has no row', async ($, on) => {
+  test('the Stats tab says when none is worn', async ($, on) => {
     await streaming($, on, withSigils(false), false, { counted: playing, rules: sigilRules })
     await openStats($)
     expect((await paneTexts($, 72)).texts.join('\n')).toMatch(/^ {2}Sigil +none worn$/m)
@@ -2429,7 +2434,7 @@ describe('sigils', () => {
     expect((await paneTexts($, 72)).texts.join('\n')).not.toMatch(/^ {2}Sigil/m)
   })
 
-  test('a mission that grants an XP boost says so in the tab, the toast and the celebration', async ($, on) => {
+  test('a mission that grants an XP boost says so in the tab and the toast', async ($, on) => {
     const boosted = missionsNow().map((one) =>
       one.questId === 'clear-thinker' ? { ...one, rewards: { ...one.rewards, xpBoost: { pct: 10, minutes: 60 } } } : one,
     )
@@ -2447,6 +2452,9 @@ describe('sigils', () => {
       ),
     )
     expect(toasts.at(-1)).toBe('Mission complete: Clear Thinker · +50 XP · +30 gold · +10% XP for 1h')
+    // A bigger mission's celebration lists it with the rest.
+    const rewards = { xp: 300, gold: 150, xpBoost: { pct: 15, minutes: 120 }, loot: { rarity: 'epic' } } satisfies QuestRewards
+    expect(rewardsText(rewards)).toBe('+300 XP · +150 gold · +15% XP for 2h · epic drop')
   })
 
   test('dev mode grants a sigil by its id', async ($, on) => {

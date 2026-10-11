@@ -378,6 +378,38 @@ describe("sigils: drops only", () => {
     expect(categories(steps[0]?.state ?? fresh())).toEqual(["sigil", "sigil"])
   })
 
+  it("is never handed out by a quest that names one or a sigil pool: the reward rolls, a sigil at the usual share", () => {
+    const pack = (loot: QuestPack["quests"][number]["rewards"]["loot"]): QuestPack => ({
+      id: "test",
+      version: 1,
+      title: "Test quests",
+      quests: [
+        {
+          id: "commit-once",
+          title: "Commit Once",
+          cadence: "daily",
+          goal: { kind: "fact", fact: "commit.made", count: 1 },
+          rewards: loot === undefined ? {} : { loot },
+        },
+      ],
+    })
+    const rules: RulesConfig = {
+      ...shared(0),
+      missions: { ...starterRules.missions, daily: { count: 1, tier: "uncommon" } },
+      questPacks: ["test"],
+    }
+    const rewarded = (loot: NonNullable<QuestPack["quests"][number]["rewards"]["loot"]>) => {
+      const { state } = play([commit()], fresh(), { rules, packs: [pack(loot)] })
+      return state.holdings.inventory.map((entry) => starterCatalog.find((item) => item.id === entry.itemId))
+    }
+    const named = rewarded({ rarity: "rare", item: "wyrm-sigil" })
+    expect(named.map((item) => [item?.rarity, item !== undefined && isSigil(item)])).toEqual([["rare", false]])
+    const pooled = rewarded({ rarity: "epic", pool: "sigil" })
+    expect(pooled.map((item) => [item?.rarity, item !== undefined && isSigil(item)])).toEqual([["epic", false]])
+    // A named item that is no sigil still lands as named.
+    expect(rewarded({ rarity: "common", item: "wizard-hat" }).map((item) => item?.id)).toEqual(["wizard-hat"])
+  })
+
   it("is never made by a shard craft, which refuses one; nor by a re-roll or the shop, which are not built yet", () => {
     const craft = (itemId: string) => command({ id: nextId(), type: "shards.craft", data: { rarity: "epic", itemId } })
     const reroll = command({ id: nextId(), type: "item.reroll", data: { entryId: entryIds[0] ?? "" } })
@@ -515,5 +547,30 @@ describe("XP a curve change carries", () => {
     const replaying: Context["mode"] = { kind: "replay", recorded: { rolls: [], refusal: null } }
     const again = step(atThree, carried(amount), contextAt(1, start, {}, replaying))
     expect(again.state).toEqual(result.state)
+  })
+
+  it("does just what the migration did, in a replay too: no missions rolled, no level-up, only the XP", () => {
+    const pack: QuestPack = {
+      id: "test",
+      version: 1,
+      title: "Test quests",
+      quests: [
+        {
+          id: "commit-once",
+          title: "Commit Once",
+          cadence: "daily",
+          goal: { kind: "fact", fact: "commit.made", count: 1 },
+          rewards: { xp: 50 },
+        },
+      ],
+    }
+    const rules: RulesConfig = { ...starterRules, questPacks: ["test"] }
+    const state = fresh()
+    const replaying: Context["mode"] = { kind: "replay", recorded: { rolls: [], refusal: null } }
+    // Missions due to roll, and enough XP carried to pass level 1, which was never reached.
+    const result = step(state, carried(150), contextAt(1, start, { rules, packs: [pack] }, replaying))
+    expect(result.events).toEqual([])
+    expect(result.rolls).toEqual([])
+    expect(result.state).toEqual({ ...state, progress: { ...state.progress, xp: { verified: 0, reported: 150 } } })
   })
 })

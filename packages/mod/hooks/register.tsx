@@ -416,7 +416,7 @@ const refresh = async ($: EngineInterface, fromScratch: boolean) => {
   const next = viewOf(opened.snapshot)
   // An older server's answer carries no rules: it deals in no sigils, and the pane shows none.
   const owned = wardrobeOf(opened.snapshot, opened.rules ?? {})
-  const counted = statsViewOf(opened.snapshot, opened.rules ?? {})
+  const counted = statsViewOf(opened.snapshot, opened.rules ?? {}, owned)
   // An older server's answer carries no rules: the missions then read with no number of picks.
   const quests = missionsViewOf(opened.snapshot, opened.rules ?? {})
   await update($, view, () => next)
@@ -1255,7 +1255,7 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // The sigil worn, then the others owned, strongest first: one counts at a time, so the pane says which.
+    // The sigils owned, strongest first, the worn one marked: one counts at a time, so the pane says which.
     const sigils = sigilChoices(owned)
     const worn = wornSigil(owned)
     const sigilRow = (choice: SigilChoice) => {
