@@ -85,8 +85,13 @@ export const ModHandlers = HttpApiBuilder.group(
 
       stream: ({ query }) =>
         Effect.gen(function* () {
-          // The poll is the heartbeat: hearing from the session keeps it live, and opens a lapsed one again.
-          if (query.session !== undefined) yield* presence.heard(player.id, query.session)
+          // The poll is the heartbeat: hearing from the session keeps it live, and opens a lapsed one again. A failure
+          // there is presence's alone: the stream still answers, and the next poll is heard again.
+          if (query.session !== undefined) {
+            yield* presence
+              .heard(player.id, query.session)
+              .pipe(Effect.catchCause((cause) => Effect.logWarning("Could not hear from the session", cause)))
+          }
           // Listen before reading, so a commit between the read and the wait still wakes this poll.
           const wakeup = yield* hub.listen(player.id)
           const first = yield* players.streamAfter(player.id, query.after)

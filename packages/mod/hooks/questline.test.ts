@@ -2197,6 +2197,14 @@ describe('presence', () => {
     expect(closes(sent)).toEqual([])
   })
 
+  test('a start after the session was closed opens a new id, as the server never opens a closed one again', async ($, on) => {
+    const { clock, sent } = await started($, on)
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'first', resume: { id: 'first' } })
+    await $.session.start(start)
+    await until(clock, () => opens(sent).length === 2)
+    expect(idOf(opens(sent)[1])).not.toBe(idOf(opens(sent)[0]))
+  })
+
   test('a server from before presence answers the close with 404, and the band stays online', async ($, on) => {
     const { clock, sent } = await streaming($, on, undefined, false, { predatesPresence: true })
     await $.session.end({ reason: 'clear', sessionId: 'first', resume: { id: 'first' } })

@@ -27,6 +27,29 @@ const Row = Schema.Struct({
   close_reason: Schema.NullOr(Schema.Literals(["ended", "lapsed"])),
 })
 
+/** A session the sweep found unheard, as it found it. */
+export interface Unheard {
+  readonly player_id: string
+  readonly session_id: string
+  readonly last_heard_at: string
+}
+
+/**
+ * Closes a session the sweep found unheard as lapsed, at its last-heard time, unless it has been heard from since: a
+ * heartbeat takes no lock, so one can land between the sweep's look and this. True when it closed it.
+ */
+export const lapse = (row: Unheard) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const updated = yield* sql`
+      UPDATE sessions SET closed_at = last_heard_at, close_reason = 'lapsed'
+      WHERE player_id = ${row.player_id} AND session_id = ${row.session_id}
+        AND closed_at IS NULL AND last_heard_at = ${row.last_heard_at}
+      RETURNING session_id
+    `
+    return updated.length > 0
+  })
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
   const writer = yield* PlayerWriter
@@ -134,11 +157,10 @@ const make = Effect.gen(function* () {
     return yield* lock.withPermits(1)(
       Effect.gen(function* () {
         const rows = yield* lapsed(cutoff)
+        let closed = 0
         for (const row of rows) {
-          yield* sql`
-            UPDATE sessions SET closed_at = last_heard_at, close_reason = 'lapsed'
-            WHERE player_id = ${row.player_id} AND session_id = ${row.session_id}
-          `
+          if (!(yield* lapse(row).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) continue
+          closed += 1
           const event: SystemEvent = {
             type: "session.closed",
             sessionId: row.session_id,
@@ -147,7 +169,7 @@ const make = Effect.gen(function* () {
           }
           yield* record(row.player_id, now, event)
         }
-        return rows.length
+        return closed
       }),
     )
   })

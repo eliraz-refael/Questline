@@ -770,6 +770,8 @@ export const register: Register = (on, options) => {
     const ending = sessionId
     if (e.reason !== 'clear' && e.reason !== 'resume') {
       await within($, Math.min(closeMs, next.budget.remainingMs / 2), closeSession($, ending))
+      // The server never opens a closed session again: a later start that finds this state takes a new id.
+      await update($, session, () => null).catch(() => undefined)
       return next(e)
     }
     const result = await next(e)
