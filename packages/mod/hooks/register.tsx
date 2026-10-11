@@ -5,6 +5,7 @@ import type { BandSlot, BandView, Celebration, Gain, Link, Motion, PaneTab, Stag
 import { goldRow, labelRun, edgeRow, levelRow } from './band'
 import { celebrationOf, chimeOf, chimeWav, gapMs, idleMs, joinQueue, motionOf, queueOf, scriptOf } from './celebrate'
 import type { Row } from './cells'
+import { cellsOf, cellsOfRow } from './cells'
 import type { DevAsk, ServerKind } from './dev'
 import { devAskOf, devCommandOf, devUsage, previewEvents, previews, serverOf, startHint, toNextLevel } from './dev'
 import { barRow, rarityColors, slotRow, stageRows } from './frames'
@@ -34,6 +35,8 @@ import {
 import type { Repo } from './observe'
 import { answerOf, initOf, isCommand, isEvents, isSession, isStream, ServerDown, socketPathOf, urlOf } from './server'
 import { ownedLooks, ratesOf, wornLooks } from './looks'
+import type { MissionEntry } from './missions'
+import { missionChip, missionsLayout, missionsViewOf, roomBeside } from './missions'
 import type { Choice } from './pane'
 import { brand, headerGap, headerOf, lookSections, otherItems, paneId, tabBarOf, tabOf } from './pane'
 import { statsLayout, titleRow } from './stats'
@@ -64,6 +67,8 @@ const wardrobe = atom({ plugin: 'questline', key: 'wardrobe' }, null)
 const stats = atom({ plugin: 'questline', key: 'stats' }, null)
 const loops = atom({ plugin: 'questline', key: 'loops' }, null)
 const tab = atom({ plugin: 'questline', key: 'tab' }, 'inventory')
+const missions = atom({ plugin: 'questline', key: 'missions' }, null)
+const abandoning = atom({ plugin: 'questline', key: 'abandoning' }, null)
 
 /** This copy of the mod: a reload makes a new one, and a frame the old one left behind is never drawn. */
 const load = Math.random()
@@ -72,13 +77,17 @@ const load = Math.random()
 const inset = 2
 const ownRows = 4
 
-const toneColor: Record<Gain['tone'], 'text' | 'suggestion' | 'claude' | 'warning'> = {
+const toneColor: Record<Gain['tone'], 'text' | 'suggestion' | 'claude' | 'warning' | 'success'> = {
   xp: 'text',
   level: 'claude',
   loot: 'suggestion',
   gold: 'warning',
+  quest: 'success',
   quiet: 'text',
 }
+
+const hatchLabel = '🥚 Hatch your egg'
+const eggHint = '🥚 hatches at Lv 1'
 
 /** Events wait here, across sessions, until the server answers them. The oldest go first past this many. */
 const maxQueued = 5000
@@ -123,6 +132,8 @@ let seed = 0
 const loopTimers = new Map<number, Timer>()
 const loopTicks = new Map<number, number>()
 let isPaneOpen = false
+/** Redraws the open pane each minute, so the missions' time left keeps up. */
+let paneClock: Timer | null = null
 
 /** One request to the local server. A failure to reach it at all is `ServerDown`. */
 async function call<A>(
@@ -383,9 +394,12 @@ const refresh = async ($: EngineInterface, fromScratch: boolean) => {
   const next = viewOf(opened.snapshot)
   const owned = wardrobeOf(opened.snapshot)
   const counted = statsViewOf(opened.snapshot)
+  // An older server's answer carries no rules: the missions then read with no number of picks.
+  const quests = missionsViewOf(opened.snapshot, opened.rules ?? {})
   await update($, view, () => next)
   await update($, wardrobe, () => owned)
   await update($, stats, () => counted)
+  await update($, missions, () => quests)
   await update($, link, () => 'online')
   await syncLoop($)
 }
@@ -515,6 +529,27 @@ const wear = async ($: EngineInterface, slot: BandSlot, entryId: string | null) 
   }
 }
 
+/** Picks an offered weekly, or gives up a running one; a refusal says why, and the pane redraws from the server. */
+const takeMission = async ($: EngineInterface, type: 'quest.accept' | 'quest.abandon', questId: string) => {
+  await update($, abandoning, () => null)
+  try {
+    const { id } = await stamp($)
+    const answer = await runCommand($, { id, type, data: { questId } })
+    if (answer.status === 'refused') {
+      $.ui.toast(answer.message)
+      return
+    }
+    await refresh($, false)
+  } catch {
+    await update($, link, () => 'offline')
+  }
+}
+
+/** The first press of a running weekly's Abandon asks again, as its progress would go; null takes the ask back. */
+const askAbandon = async ($: EngineInterface, questId: string | null) => {
+  await update($, abandoning, () => questId)
+}
+
 /**
  * Runs what dev mode was asked for: a dev command on the dev server, or a celebration preview here, which plays
  * stand-in events and sends nothing. Only a snapshot from a dev server lets either through.
@@ -556,7 +591,18 @@ const pressDev = async ($: EngineInterface, ask: DevAsk) => {
 const openPane = async ($: EngineInterface) => {
   await $.ui.open({ id: paneId, title: 'Questline' })
   isPaneOpen = true
+  syncPaneClock($)
   await syncLoop($)
+}
+
+/** A minute's redraw runs while the pane is open, and stops with it. */
+const syncPaneClock = ($: EngineInterface) => {
+  if (!isPaneOpen) {
+    paneClock?.cancel()
+    paneClock = null
+    return
+  }
+  paneClock ??= $.clock.every(60_000, () => $.ui.invalidate('ui.render'))
 }
 
 /**
@@ -623,6 +669,10 @@ export const register: Register = (on, options) => {
     flushTimer = $.clock.every(flushEveryMs, () => void flush($))
     // A pane the last copy of the mod opened stays up across a reload: the engine keeps the record.
     isPaneOpen = (await $.ui.panes().catch(() => [])).some((pane) => pane.id === paneId)
+    // A fresh copy starts its own minute; a reload took the last copy's with it.
+    paneClock?.cancel()
+    paneClock = null
+    syncPaneClock($)
     stopLoops()
     // The atom outlives a reload: clear the last copy's frames, or a sync with no clock to start leaves them frozen.
     await update($, loops, () => null)
@@ -630,7 +680,8 @@ export const register: Register = (on, options) => {
     await $.command
       .register({
         name: 'questline',
-        description: 'Open the Questline pane: your inventory, band styles and stats (`dev …` on the dev server)',
+        description:
+          'Open the Questline pane: your inventory, band styles, stats and missions (`dev …` on the dev server)',
       })
       .catch(() => undefined)
     return result
@@ -648,6 +699,7 @@ export const register: Register = (on, options) => {
   on('ui.close', { id: paneId }, async ($, e, next) => {
     const result = await next(e)
     isPaneOpen = false
+    syncPaneClock($)
     await syncLoop($)
     return result
   }).catch(($, e, next) => next(e))
@@ -809,6 +861,18 @@ export const register: Register = (on, options) => {
     const pet = current.pet
     const barLook = looks.xpBar ?? null
     const bar = [...barRow(current, columns, shown, barLook, moving), labelRun(current, barLook)]
+    const level = levelRow(current, looks.levelDisplay ?? null, moving)
+    const gold = goldRow(current, looks.goldDisplay ?? null, moving)
+    // The mission on row 2 takes what the row's other pieces leave, so the row never wraps for it.
+    const petCells =
+      pet !== null
+        ? cellsOf(`${sprite(pet)} ${pet.name} ${hearts(pet.mood)}`)
+        : canHatch(current)
+          ? cellsOf(hatchLabel) + 4
+          : cellsOf(eggHint)
+    const tail = slot !== null ? cellsOfRow(slot) : last === null ? 0 : cellsOf(last.text)
+    const widths = [cellsOfRow(level), cellsOfRow(gold), petCells, ...(tail > 0 ? [tail] : [])]
+    const chip = missionChip(await read($, missions), roomBeside(columns, widths, 2))
     // Under the edge, a row of air, then the XP bar alone and everything else under it, both set in from the sides.
     return (
       <Box flexDirection="column">
@@ -817,17 +881,18 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" paddingX={inset}>
           {draw(Text, bar, 'bar')}
           <Box flexWrap="wrap" columnGap={2}>
-            {draw(Text, levelRow(current, looks.levelDisplay ?? null, moving), 'level')}
-            {draw(Text, goldRow(current, looks.goldDisplay ?? null, moving), 'gold')}
+            {draw(Text, level, 'level')}
+            {draw(Text, gold, 'gold')}
             {pet !== null ? (
               <Text>
                 {sprite(pet)} {pet.name} <Text color="error">{hearts(pet.mood)}</Text>
               </Text>
             ) : canHatch(current) ? (
-              <Button key="hatch" label="🥚 Hatch your egg" variant="primary" onPress={() => void hatch($)} />
+              <Button key="hatch" label={hatchLabel} variant="primary" onPress={() => void hatch($)} />
             ) : (
-              <Text dimColor>🥚 hatches at Lv 1</Text>
+              <Text dimColor>{eggHint}</Text>
             )}
+            {chip === null ? null : draw(Text, chip, 'mission')}
             {slot !== null ? (
               draw(Text, slot, 'slot')
             ) : last === null ? null : (
@@ -909,6 +974,110 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" paddingX={1}>
           {header}
           <Text dimColor>{why}</Text>
+        </Box>
+      )
+    }
+
+    if (shownTab === 'missions') {
+      const quests = await read($, missions)
+      if (quests === null) {
+        return (
+          <Box flexDirection="column" paddingX={1}>
+            {header}
+            <Text dimColor>Fetching your missions…</Text>
+          </Box>
+        )
+      }
+      const layout = missionsLayout(quests, columns, await $.clock.now())
+      const asking = await read($, abandoning)
+      // Each mission: its head beside its buttons, then its description, its bar and count, and what it grants.
+      const missionRow = (entry: MissionEntry) => {
+        const { mission, action } = entry
+        const id = mission.questId
+        const isAsking = action === 'abandon' && asking === id
+        const canComplete = current.isDev && (mission.status === 'active' || mission.status === 'offered')
+        return (
+          <Box key={`mission:${mission.cadence}:${id}`} flexDirection="column" marginLeft={2} marginBottom={1}>
+            <Box flexWrap="wrap" columnGap={2}>
+              {draw(Text, entry.head, `mission:${mission.cadence}:${id}:head`)}
+              {action === 'accept' ? (
+                <Button
+                  key={`accept:${id}`}
+                  label="Accept"
+                  variant="primary"
+                  onPress={() => void takeMission($, 'quest.accept', id)}
+                />
+              ) : null}
+              {action === 'full' ? <Text dimColor>log full</Text> : null}
+              {action === 'abandon' && !isAsking ? (
+                <Button key={`abandon:${id}`} label="Abandon" dimColor onPress={() => void askAbandon($, id)} />
+              ) : null}
+              {canComplete ? (
+                <Button
+                  key={`dev:complete:${id}`}
+                  label="Complete"
+                  dimColor
+                  onPress={() => void pressDev($, { kind: 'complete', questId: id })}
+                />
+              ) : null}
+            </Box>
+            <Box marginLeft={2} flexDirection="column">
+              {mission.description === null ? null : <Text dimColor>{mission.description}</Text>}
+              {draw(Text, entry.meter, `mission:${mission.cadence}:${id}:meter`)}
+              {draw(Text, entry.rewards, `mission:${mission.cadence}:${id}:rewards`)}
+              {isAsking ? (
+                <Box key={`asking:${id}`} flexWrap="wrap" columnGap={2}>
+                  <Text color="warning">Give it up? Its progress goes, and it goes back on offer.</Text>
+                  <Button
+                    key={`confirm-abandon:${id}`}
+                    label="Abandon"
+                    variant="primary"
+                    onPress={() => void takeMission($, 'quest.abandon', id)}
+                  />
+                  <Button key={`keep:${id}`} label="Keep it" onPress={() => void askAbandon($, null)} />
+                </Box>
+              ) : null}
+            </Box>
+          </Box>
+        )
+      }
+      return (
+        <Box flexDirection="column" paddingX={1}>
+          {header}
+          {draw(Text, layout.intro, 'missions:intro')}
+          {layout.note === null ? null : draw(Text, layout.note, 'missions:note')}
+          <Text> </Text>
+          {layout.sections.map((section) => (
+            <Box key={`missions:${section.key}`} flexDirection="column" width={layout.width}>
+              {draw(Text, section.title, `missions:${section.key}:title`)}
+              {section.groups.map((group) => (
+                <Box key={`missions:${section.key}:${group.key}`} flexDirection="column">
+                  {group.label === null ? null : (
+                    <Box marginLeft={2}>{draw(Text, group.label, `missions:${group.key}:label`)}</Box>
+                  )}
+                  {group.empty === null ? null : (
+                    <Box marginLeft={2} marginBottom={1}>
+                      {draw(Text, group.empty, `missions:${group.key}:empty`)}
+                    </Box>
+                  )}
+                  {group.entries.map(missionRow)}
+                </Box>
+              ))}
+            </Box>
+          ))}
+          {current.isDev ? (
+            <Box key="dev" flexDirection="column">
+              <Text>
+                <Text bold color="warning">
+                  Dev
+                </Text>
+                <Text dimColor> the sandbox save: Complete finishes a mission at once, its rewards marked dev</Text>
+              </Text>
+              <Box flexWrap="wrap" columnGap={2} marginLeft={2}>
+                <Button key="dev:roll" label="Re-roll missions" onPress={() => void pressDev($, { kind: 'roll' })} />
+              </Box>
+            </Box>
+          ) : null}
         </Box>
       )
     }

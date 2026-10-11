@@ -18,7 +18,7 @@ export type BandView = {
 }
 
 /** A line at the end of the band for what the stream brought. */
-export type GainLine = { text: string; tone: 'xp' | 'level' | 'loot' | 'gold' | 'quiet' }
+export type GainLine = { text: string; tone: 'xp' | 'level' | 'loot' | 'gold' | 'quest' | 'quiet' }
 
 /** The last line the stream brought, shown until the next one or until `until` (clock ms), when it fades. */
 export type Gain = GainLine & { until: number }
@@ -34,7 +34,7 @@ export type Celebration =
   | { kind: 'xp'; amount: number }
   | { kind: 'loot'; tier: Tier; name: string; gold: number; more: number }
   | { kind: 'level'; tier: Tier; from: number; to: number; glyph: string; title: string | null; evolved: boolean }
-  | { kind: 'quest'; tier: Tier; more: number }
+  | { kind: 'quest'; tier: Tier; title: string; rewards: string; more: number }
 
 /** How the player wants celebrations: animated, as one still frame without the band growing, or not at all. */
 export type Motion = 'full' | 'reduced' | 'off'
@@ -111,6 +111,36 @@ export type StatsView = {
   items: number
 }
 
+/** What a mission grants when it completes, as the pack promises it: XP, gold, and a drop of a rarity. */
+export type MissionRewards = { xp: number; gold: number; loot: Tier | null }
+
+/** One mission as the pane and the band draw it, from the snapshot's quest state. */
+export type MissionView = {
+  questId: string
+  title: string
+  description: string | null
+  /** daily or weekly; a cadence this mod doesn't know yet is listed with neither. */
+  cadence: string
+  /** offered: waiting to be picked; active: running; expired: its window ended unfinished. */
+  status: 'offered' | 'active' | 'completed' | 'expired'
+  progress: number
+  goal: number
+  rewards: MissionRewards
+  /** When its window ends, in clock ms; null when the server didn't say. */
+  expiresAt: number | null
+}
+
+/**
+ * The missions the snapshot carries, and the rules beside them: how many weeklies may run at once and the tier each
+ * cadence celebrates at, which colors it. `isKnown` is false from a server older than missions.
+ */
+export type MissionsView = {
+  isKnown: boolean
+  quests: ReadonlyArray<MissionView>
+  weeklyActive: number | null
+  tiers: { daily: Tier | null; weekly: Tier | null }
+}
+
 /** The `/questline` pane's tabs. */
 export type PaneTab = 'inventory' | 'stats' | 'missions'
 
@@ -128,6 +158,9 @@ declare module 'claude-code' {
       /** Under a new key: a copy of the mod from before kept `{ tick, rate }` under `loop`. */
       loops: Loop | null
       tab: PaneTab
+      missions: MissionsView | null
+      /** The running weekly whose Abandon was pressed once: the pane asks before its progress goes. */
+      abandoning: string | null
     }
   }
 }

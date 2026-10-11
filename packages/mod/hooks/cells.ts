@@ -67,3 +67,23 @@ export const runsOf = (cells: ReadonlyArray<Cell>): Row => {
   return runs.length === 0 ? [{ text: ' ' }] : runs
 }
 
+/** The cells a row of runs takes. */
+export const cellsOfRow = (row: Row): number => row.reduce((sum, run) => sum + cellsOf(run.text), 0)
+
+/** A row cut to `room` cells, an ellipsis where it was cut. */
+export const clip = (row: Row, room: number): Row => {
+  if (cellsOfRow(row) <= room) return row
+  const kept: Array<Run> = []
+  let left = Math.max(0, room - 1)
+  for (const run of row) {
+    let text = ''
+    for (const glyph of glyphsOf(run.text)) {
+      if (cellsOf(glyph) > left) break
+      text += glyph
+      left -= cellsOf(glyph)
+    }
+    if (text !== '') kept.push({ ...run, text })
+    if (text !== run.text) break
+  }
+  return room <= 0 ? [] : [...kept, { text: '…', dim: true }]
+}

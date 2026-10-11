@@ -1,5 +1,5 @@
 import type { PluginOptions } from 'claude-code'
-import type { ServerEvent } from '@questline/schema'
+import type { QuestRewards, ServerEvent } from '@questline/schema'
 import type { Celebration, Motion, Tier } from '../types'
 
 // What the band celebrates and when: the server's events as celebrations, the queue they wait in, and how long each
@@ -23,12 +23,24 @@ export const celebrationOf = (event: ServerEvent, glyph: string): Celebration | 
       const evolved = evolution !== undefined
       return { kind: 'level', tier: tierOf(tier), from, to, glyph: named, title: title ?? null, evolved }
     }
-    case 'quest.completed':
-      return { kind: 'quest', tier: tierOf(event.data.tier), more: 0 }
+    case 'quest.completed': {
+      const { title, tier, rewards } = event.data
+      // An older server's event names no title.
+      const named = typeof title === 'string' && title !== '' ? title : 'Mission'
+      return { kind: 'quest', tier: tierOf(tier), title: named, rewards: rewardsText(rewards ?? {}), more: 0 }
+    }
     default:
       return null
   }
 }
+
+/** What a mission promised, in words: `+50 XP · +30 gold · rare drop`. */
+export const rewardsText = (rewards: QuestRewards): string =>
+  [
+    ...(rewards.xp !== undefined && rewards.xp > 0 ? [`+${rewards.xp} XP`] : []),
+    ...(rewards.gold !== undefined && rewards.gold > 0 ? [`+${rewards.gold} gold`] : []),
+    ...(rewards.loot === undefined ? [] : [`${tierOf(rewards.loot.rarity)} drop`]),
+  ].join(' · ')
 
 /** The `animations` option: `full` unless the player picked `reduced` or `off`. */
 export const motionOf = (options: PluginOptions): Motion => {
@@ -52,10 +64,16 @@ const moreOf = (celebration: Celebration): number =>
 const withMore = (celebration: Celebration, more: number): Celebration =>
   celebration.kind === 'loot' || celebration.kind === 'quest' ? { ...celebration, more } : celebration
 
+/** Which of two small ones a collapse keeps: the bigger, a mission over a drop of its size, else the newer. */
+const keptOf = (older: Celebration, newer: Celebration): Celebration =>
+  rankOf(older) > rankOf(newer) || (rankOf(older) === rankOf(newer) && older.kind === 'quest' && newer.kind !== 'quest')
+    ? older
+    : newer
+
 /**
  * The queue with one more celebration in it, smallest first so the biggest plays last; equals keep their order. A
  * backlog collapses: XP gains add up into one shimmer, the small drops into the best of them (the newest among
- * equals) counting the rest, and past `maxBig` big ones the smallest give way.
+ * equals, a mission over a drop) counting the rest, and past `maxBig` big ones the smallest give way.
  */
 export const joinQueue = (queue: ReadonlyArray<Celebration>, next: Celebration): Array<Celebration> => {
   const xp = queue.find((one) => one.kind === 'xp')
@@ -64,7 +82,7 @@ export const joinQueue = (queue: ReadonlyArray<Celebration>, next: Celebration):
   if (next.kind === 'xp' && xp?.kind === 'xp') {
     merged = queue.map((one) => (one === xp ? { kind: 'xp', amount: xp.amount + next.amount } : one))
   } else if (isSmall(next) && small !== undefined) {
-    const kept = rankOf(small) > rankOf(next) ? small : next
+    const kept = keptOf(small, next)
     const more = moreOf(small) + moreOf(next) + 1
     merged = queue.map((one) => (one === small ? withMore(kept, more) : one))
   } else {

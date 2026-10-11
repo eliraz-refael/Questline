@@ -202,7 +202,7 @@ export const capitalised = (text: string): string => text.charAt(0).toUpperCase(
 const articleOf = (word: string): string => (/^[aeiou]/i.test(word) ? 'an' : 'a')
 
 const nameOf = (celebration: Celebration): string =>
-  celebration.kind === 'loot' ? celebration.name : celebration.kind === 'quest' ? 'Quest complete' : ''
+  celebration.kind === 'loot' ? celebration.name : celebration.kind === 'quest' ? celebration.title || 'Mission' : ''
 
 const extras = (celebration: Celebration): Array<Run> => {
   const runs: Array<Run> = []
@@ -248,7 +248,8 @@ export const slotRow = (stage: Stage, hasRows: boolean): Row | null => {
     ]
   }
   const color = rarityColors[celebration.tier]
-  const label = { text: ` · ${celebration.kind === 'quest' ? 'quest' : `${celebration.tier} drop`}`, dim: true }
+  const what = celebration.kind === 'quest' ? 'mission complete' : `${celebration.tier} drop`
+  const label = { text: ` · ${what}`, dim: true }
   if (celebration.tier === 'common') {
     const { glyphs, sparks, colors } = looks.common
     const landed = !full || tick === ticksOf(stage) - 1
@@ -289,9 +290,9 @@ export const stageRows = (stage: Stage, columns: number, room: number): Array<Ro
   const height = Math.min(rowsWanted[celebration.tier], room)
   if (height < minRows || columns < 30) return []
   if (celebration.tier !== 'rare') return burstRows(stage, columns, height)
-  return celebration.kind === 'level'
-    ? levelRows(stage, celebration, columns, height)
-    : chestRows(stage, columns, height)
+  if (celebration.kind === 'level') return levelRows(stage, celebration, columns, height)
+  if (celebration.kind === 'quest') return missionRows(stage, celebration, columns, height)
+  return chestRows(stage, columns, height)
 }
 
 /** The chest, nine cells wide: a gold-trimmed lid, a wooden body with a gem in the rarity's color, and the base. */
@@ -299,7 +300,7 @@ const chest = { lid: '┏━━━━━━━┓', base: '┗━━━━━━
 
 const chestRows = (stage: Stage, columns: number, height: number): Array<Row> => {
   const { celebration, tick } = stage
-  if (celebration.kind === 'xp' || celebration.kind === 'level') return []
+  if (celebration.kind !== 'loot') return []
   const { glyphs, sparks, colors } = looks.rare
   const grid = gridOf(columns, height)
   // With four rows the lid lifts into the top one; with three the light breaks out of a lid that stays.
@@ -340,7 +341,7 @@ const chestRows = (stage: Stage, columns: number, height: number): Array<Row> =>
   }
   // The banner, then the name typed out once the lid is up, then the gold it brought.
   const textX = x + 15
-  const banner = spaced(celebration.kind === 'quest' ? 'Quest' : 'Rare drop')
+  const banner = spaced('Rare drop')
   write(grid, textX, Math.max(0, body - 1), banner, { color: rarityColors.rare, dim: !isOpen })
   const name = nameOf(celebration)
   if (isOpen) {
@@ -354,8 +355,71 @@ const chestRows = (stage: Stage, columns: number, height: number): Array<Row> =>
     // Typed out, it twinkles.
     const twinkle = tick % 2 === 0 ? '✦' : '✧'
     if (!typing) write(grid, textX + 3 + cellsOf(name), body, twinkle, { color: pick(colors, 1, white) })
-    if (!typing && celebration.kind === 'loot' && celebration.gold > 0)
+    if (!typing && celebration.gold > 0)
       write(grid, textX + 2, body + 1, `+${celebration.gold} gold`, { color: gold, dim: true })
+  }
+  return rowsOf(grid)
+}
+
+/** The mission bar, twelve cells: it fills, flashes, and a check stamps beside it. */
+const missionBar = 12
+
+/**
+ * A rare mission: its bar fills the last of the way and flashes, a check stamps beside it, the banner lights up over
+ * the bar, the title types out with sparks rising off the check, and what it granted shows under it.
+ */
+const missionRows = (
+  stage: Stage,
+  celebration: Extract<Celebration, { kind: 'quest' }>,
+  columns: number,
+  height: number,
+): Array<Row> => {
+  const { tick } = stage
+  const { sparks, colors } = looks.rare
+  const accent = rarityColors[celebration.tier]
+  const grid = gridOf(columns, height)
+  // With four rows the sparks get a row of their own over the banner; with three they rise past it.
+  const banner = height >= 4 ? 1 : 0
+  const row = banner + 1
+  const x = 2
+  const isDone = tick >= 4
+  // The bar fills from most of the way over three frames, flashes white, then settles in the tier's color.
+  const reach = tick >= 3 ? missionBar : Math.round(missionBar * (0.6 + 0.13 * (tick + 1)))
+  write(grid, x, row, '▕', { color: accent, dim: true })
+  for (let i = 0; i < missionBar; i++) {
+    const isHead = i === reach - 1 && tick < 3
+    const color = tick === 3 ? white : isHead ? white : accent
+    put(grid, x + 1 + i, row, i < reach ? '▰' : '▱', i < reach ? { color, bold: true } : { dim: true })
+  }
+  write(grid, x + 1 + missionBar, row, '▏', { color: accent, dim: true })
+  const checkX = x + missionBar + 3
+  if (isDone) put(grid, checkX, row, '✔', { color: tick === 4 ? white : '#5fd75f', bold: true })
+  // Sparks rise off the check once it lands, each burning out as it climbs.
+  if (isDone) {
+    for (let j = 0; j < 8; j++) {
+      const born = 4 + (j % 5)
+      const age = tick - born
+      if (age < 0 || age >= sparks.length) continue
+      const sx = checkX + Math.round((hash(j, stage.seed, 3) - 0.5) * 10)
+      const sy = row - 1 - Math.floor(age / 2)
+      if (isFree(grid, sx, sy)) put(grid, sx, sy, cycle(sparks, age, '·'), { color: pick(colors, age + 1, white) })
+    }
+  }
+  const textX = checkX + 3
+  // The banner sits over the bar, the title types out beside the check, and the rewards show under it.
+  const words = spaced('Mission complete')
+  clear(grid, x - 1, banner, cellsOf(words) + 2)
+  write(grid, x, banner, words, { color: accent, bold: isDone, dim: !isDone })
+  if (isDone) {
+    const title = celebration.title || 'Mission'
+    const letters = glyphsOf(title)
+    const shown = tick >= 8 ? letters.length : Math.ceil((letters.length * (tick - 3)) / 5)
+    const typing = shown < letters.length
+    write(grid, textX, row, `${letters.slice(0, shown).join('')}${typing ? '▌' : ''}`, { color: accent, bold: true })
+    const twinkle = tick % 2 === 0 ? '✦' : '✧'
+    if (!typing) write(grid, textX + cellsOf(title) + 1, row, twinkle, { color: pick(colors, 1, white) })
+    const under = celebration.rewards ?? ''
+    if (!typing && under !== '' && row + 1 < height) write(grid, textX, row + 1, under, { color: gold, dim: true })
   }
   return rowsOf(grid)
 }
@@ -408,7 +472,13 @@ const burstText = (celebration: Celebration): { banner: string; name: string; un
     const under = title !== null ? `You are now ${articleOf(title)} ${title}` : evolved ? 'Your pet evolved' : ''
     return { banner: spaced('Level up'), name: `Level ${celebration.to}`, under }
   }
-  if (celebration.kind === 'quest') return { banner: spaced('Quest'), name: 'Quest complete', under: '' }
+  if (celebration.kind === 'quest')
+    // A celebration an older copy of the mod queued carries neither title nor rewards.
+    return {
+      banner: spaced('Mission complete'),
+      name: celebration.title || 'Mission',
+      under: celebration.rewards ?? '',
+    }
   if (celebration.kind === 'xp') return { banner: '', name: '', under: '' }
   const banner =
     celebration.tier === 'legendary'

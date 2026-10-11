@@ -10,7 +10,7 @@ import type {
   SessionMessage,
   SessionStartInput,
 } from 'claude-code'
-import type { BandLook, BandView, Celebration } from '../types'
+import type { BandLook, BandView, Celebration, MissionsView, MissionView } from '../types'
 import { barCells } from './band'
 import { joinQueue, queueOf } from './celebrate'
 import { cellsOf, glyphSlot } from './cells'
@@ -18,6 +18,7 @@ import { hmac } from './ids'
 import { barRow } from './frames'
 import { sheenHead } from './looks'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
+import { missionChip, timeLeft } from './missions'
 import { headerOf, tabBarOf } from './pane'
 import { socketPathOf } from './server'
 import { statsLayout, twoColumnsFrom } from './stats'
@@ -31,10 +32,34 @@ type Sent = { path: string; body: unknown }
 /** What the player owns in the fake server: entries, their definitions, and what is equipped where. */
 type Owned = { inventory: Array<{ id: string; itemId: string }>; items: Array<unknown>; equipped: Record<string, string> }
 
+/** A mission as the snapshot carries it. */
+type Quest = {
+  questId: string
+  packId: string
+  title: string
+  description: string | null
+  cadence: string
+  start: string
+  status: string
+  progress: number
+  goal: number
+  rewards: Record<string, unknown>
+  expiresAt: string | null
+}
+
 /** What the stats tab reads: the player stats, and the streak the character carries. */
 type Counted = { stats: unknown; streak: unknown }
 
-const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔', owned?: Owned, isDev = false, counted?: Counted) => ({
+const snapshot = (
+  level: number,
+  pet: unknown = null,
+  cursor = 0,
+  glyph = '⚔',
+  owned?: Owned,
+  isDev = false,
+  counted?: Counted,
+  quests?: ReadonlyArray<Quest>,
+) => ({
   ...(isDev ? { dev: true } : {}),
   serverId: 'local-test',
   streamEpoch: 1,
@@ -51,6 +76,7 @@ const snapshot = (level: number, pet: unknown = null, cursor = 0, glyph = '⚔',
     equipped: { ...owned?.equipped },
   },
   ...(counted === undefined ? {} : { stats: counted.stats }),
+  ...(quests === undefined ? {} : { quests }),
   inventory: (owned?.inventory ?? []).map((entry) => ({
     ...entry,
     acquiredAt: '2026-10-09T08:00:00Z',
@@ -128,13 +154,33 @@ type ServerOptions = {
   commandStatus?: number
   /** The stats the snapshot carries; none, as from a server older than the stats, when not given. */
   counted?: Counted
+  /** The missions the snapshot carries, which quest.accept and quest.abandon change; none, as from an older server. */
+  quests?: Array<Quest>
+  /** The rules the session answer carries; none, as from an older server. */
+  rules?: Record<string, unknown>
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
-/** What the fake server answers a command: an equip or unequip changes what it owns, anything else is refused. */
-const commandAnswer = (body: unknown, owned: Owned | undefined, isDev: boolean) => {
+/**
+ * What the fake server answers a command: an equip or unequip changes what it owns, a pick or a give-up changes its
+ * missions (a pick of a mission not on offer refused), and anything else is refused.
+ */
+const commandAnswer = (body: unknown, owned: Owned | undefined, isDev: boolean, quests: Array<Quest> | undefined) => {
   const data = isRecord(body) && isRecord(body['data']) ? body['data'] : {}
+  const questId = typeof data['questId'] === 'string' ? data['questId'] : ''
+  const type = isRecord(body) ? body['type'] : undefined
+  const quest = quests?.find((one) => one.questId === questId)
+  if (type === 'quest.accept' && quest?.status === 'offered') {
+    quest.status = 'active'
+    return { status: 'ok', events: [] }
+  }
+  if (type === 'quest.accept') return { status: 'refused', code: 'not_allowed', message: 'That mission is not on offer' }
+  if (type === 'quest.abandon' && quest?.status === 'active') {
+    quest.status = 'offered'
+    quest.progress = 0
+    return { status: 'ok', events: [] }
+  }
   const slot = typeof data['slot'] === 'string' ? data['slot'] : ''
   const entryId = typeof data['entryId'] === 'string' ? data['entryId'] : ''
   if (owned !== undefined && isRecord(body) && body['type'] === 'item.equip') {
@@ -164,8 +210,17 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     sent.push({ path, body })
     if (path === '/v1/sessions')
       return reply(200, {
-        snapshot: snapshot(options.level ?? 0, null, 0, options.glyph, options.owned, options.isDev === true, options.counted),
-        rules: {},
+        snapshot: snapshot(
+          options.level ?? 0,
+          null,
+          0,
+          options.glyph,
+          options.owned,
+          options.isDev === true,
+          options.counted,
+          options.quests,
+        ),
+        rules: options.rules ?? {},
         minClientVersion: '0.0.0',
         acceptedEventTypes: [],
       })
@@ -180,7 +235,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     }
     if (path === '/v1/commands') {
       if (options.commandStatus !== undefined) return reply(options.commandStatus, { error: 'internal' })
-      return reply(200, commandAnswer(body, options.owned, options.isDev === true))
+      return reply(200, commandAnswer(body, options.owned, options.isDev === true, options.quests))
     }
     // The stream answers as soon as the test hands it events, or after 25 seconds with none.
     const stream = options.stream ?? []
@@ -1133,11 +1188,13 @@ describe('the /questline pane', () => {
     for (const surface of surfaces) {
       const ui = await $.ui.mount({ plugin: 'questline', surface, component: 'Pane', requestId: 'questline', props: paneProps() })
       const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')
-      for (const shown of ['◆ Inventory', '◇ Missions', 'soon', 'XP bar', 'Top edge', 'Solid Bar', 'Starlit Edge', 'Plain Cap']) {
+      for (const shown of ['◆ Inventory', 'XP bar', 'Top edge', 'Solid Bar', 'Starlit Edge', 'Plain Cap']) {
         expect(texts).toContain(shown)
       }
-      // Stats is built: a tab to switch to, not one still to come.
+      // Stats and Missions are built: tabs to switch to, none still to come.
       expect(await ui.find({ type: 'Button', key: 'tab:stats' })).toBeDefined()
+      expect(await ui.find({ type: 'Button', key: 'tab:missions' })).toBeDefined()
+      expect(texts).not.toContain('soon')
       // Each look's preview is drawn by the band's own code, the still one exactly as the band would.
       expect(texts).toMatch(/^█+░+ 30\/203 xp$/m)
       expect(await ui.find({ type: 'Button', key: 'equip:topEdge:starlit-edge' })).toBeDefined()
@@ -1204,10 +1261,12 @@ describe('the gain line', () => {
       grant(60, 'bug.fixed'),
       grant(80, 'first.contribution'),
       grant(500, 'dev'),
+      grant(50, 'quest'),
       grant(5, 'future.side_quest'),
       serverEvent('xp.capped', { eventType: 'commit.made', cap: 20 }),
       goldChanged(10),
       goldChanged(-5, 'dev'),
+      goldChanged(30, 'quest'),
       drop('uncommon', 'Knit Scarf', 10),
       levelUp(1, 2, 'rare'),
     ]
@@ -1230,10 +1289,12 @@ describe('the gain line', () => {
       '+60 XP · bug fixed',
       '+80 XP · first contribution',
       '+500 XP · dev grant',
+      '+50 XP · mission reward',
       '+5 XP · future side quest',
       'commit · daily XP cap reached',
       '+10 gold · loot',
       '−5 gold · dev grant',
+      '+30 gold · mission reward',
       'Knit Scarf · uncommon',
       'Level 2!',
     ])
@@ -1304,23 +1365,23 @@ const paneTexts = async ($: Parameters<TestBody>[0], bodyColumns: number) => {
 }
 
 describe('the pane fits its width', () => {
-  test('a narrow pane drops the name, then the "soon" labels, so neither row wraps', async ($, on) => {
+  test('a narrow pane drops the name, then closes the tabs up and shortens them, so neither row wraps', async ($, on) => {
     await streaming($, on, ownedOf())
     await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
     const narrow = await paneTexts($, 40)
     const header = narrow.texts.find((text) => text.startsWith('✦ QUESTLINE ✦')) ?? ''
     expect(header).toBe('✦ QUESTLINE ✦  Lv 4 Apprentice · ◈ 25')
     expect(cellsOf(header)).toBeLessThanOrEqual(38)
-    // With Stats built, only Missions is still to come: its label still fits at 40, with the gaps closed to 2.
-    expect(narrow.texts.join('\n')).toContain('◇ Missions soon')
-    expect(narrow.tabs?.props['columnGap']).toBe(2)
+    // All three tabs still fit at 40 with their gaps.
+    expect(narrow.texts).toContain('◆ Inventory')
+    expect(narrow.tabs?.props['columnGap']).toBe(3)
     expect(narrow.tabs?.props['flexWrap']).toBeUndefined()
-    const narrower = await paneTexts($, 36)
-    expect(narrower.texts.join('\n')).not.toContain('soon')
+    const narrower = await paneTexts($, 30)
+    expect(narrower.texts).toContain('◆ Items')
+    expect(narrower.tabs?.props['columnGap']).toBe(1)
 
     const wide = await paneTexts($, 120)
     expect(wide.texts).toContain('✦ QUESTLINE ✦  Player · Lv 4 Apprentice · ◈ 25')
-    expect(wide.texts.join('\n')).toContain('◇ Missions soon')
     expect(wide.tabs?.props['columnGap']).toBe(3)
   })
 
@@ -1328,9 +1389,10 @@ describe('the pane fits its width', () => {
     const widthOf = (bar: ReturnType<typeof tabBarOf>) =>
       bar.chips.reduce((sum, chip) => sum + cellsOf(chip.text) + (chip.soon ? 5 : 0), 0) + bar.gap * (bar.chips.length - 1)
     for (const columns of [20, 28, 32, 38, 44, 60]) expect(widthOf(tabBarOf('inventory', columns))).toBeLessThanOrEqual(Math.max(columns, 11))
-    expect(tabBarOf('inventory', 60)).toMatchObject({ gap: 3, chips: [{ kind: 'shown' }, { kind: 'ready', soon: false }, { soon: true }] })
-    expect(tabBarOf('stats', 60).chips.map((chip) => chip.kind)).toEqual(['ready', 'shown', 'later'])
-    expect(tabBarOf('inventory', 20).chips.map((chip) => chip.text)).toEqual(['◆ Inventory', '◇ Stats'])
+    expect(tabBarOf('inventory', 60)).toMatchObject({ gap: 3, chips: [{ kind: 'shown' }, { kind: 'ready' }, { kind: 'ready', soon: false }] })
+    expect(tabBarOf('stats', 60).chips.map((chip) => chip.kind)).toEqual(['ready', 'shown', 'ready'])
+    expect(tabBarOf('missions', 28).chips.map((chip) => chip.text)).toEqual(['◇ Items', '◇ Stats', '◆ Missions'])
+    expect(tabBarOf('inventory', 20).chips.map((chip) => chip.text)).toEqual(['Items', 'Stats', 'Missions'])
     const view = { name: 'Player', level: 12, title: 'Adept', gold: 1500 }
     expect(headerOf(view, 80)).toBe('Player · Lv 12 Adept · ◈ 1500')
     expect(headerOf(view, 30)).toBe('Lv 12 · ◈ 1500')
@@ -1675,5 +1737,288 @@ describe('the Stats tab', () => {
       commands: [],
       items: 0,
     })
+  })
+})
+
+// Missions as the snapshot carries them: three dailies, one done, and a week with one weekly running and two on offer.
+const quest = (questId: string, title: string, cadence: string, status: string, progress: number, goal: number, rewards: Record<string, unknown>, description: string | null = null): Quest => ({
+  questId,
+  packId: 'starter',
+  title,
+  description,
+  cadence,
+  start: cadence === 'daily' ? 'auto' : 'pick',
+  status,
+  progress,
+  goal,
+  rewards,
+  expiresAt: cadence === 'daily' ? '2026-10-10T00:00:00.000Z' : '2026-10-12T00:00:00.000Z',
+})
+const missionsNow = (): Array<Quest> => [
+  quest('clear-thinker', 'Clear Thinker', 'daily', 'active', 3, 5, { xp: 50, gold: 30 }, 'Write 5 prompts with clarity 8 or more today.'),
+  quest('save-points', 'Save Points', 'daily', 'completed', 3, 3, { xp: 30, gold: 20 }),
+  quest('steady-voice', 'Steady Voice', 'daily', 'active', 2, 8, { xp: 60, gold: 35 }),
+  quest('ship-it', 'Ship It', 'weekly', 'active', 0, 1, { xp: 250, gold: 120, loot: { rarity: 'rare', pool: 'wearable' } }),
+  quest('light-packer', 'Light Packer', 'weekly', 'offered', 0, 3, { xp: 200, gold: 100, loot: { rarity: 'rare' } }),
+  quest('second-opinion', 'Second Opinion', 'weekly', 'offered', 0, 3, { xp: 150, gold: 80 }),
+]
+const missionRules = { missions: { daily: { count: 3, tier: 'uncommon' }, weekly: { offered: 5, active: 3, tier: 'rare' } } }
+const completed = (questId: string, title: string, tier: string, rewards: Record<string, unknown>) =>
+  serverEvent('quest.completed', { questId, title, tier, rewards })
+
+/** Opens the pane on its Missions tab with the tab bar's button. */
+const openMissions = async ($: Parameters<TestBody>[0]) => {
+  await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+  await ui.press({ key: 'tab:missions' })
+  await ui.unmount()
+}
+const mountPane = ($: Parameters<TestBody>[0]) =>
+  $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+const textsOf = async (ui: Awaited<ReturnType<typeof mountPane>>) => (await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')
+/** Row 2 of the band at `bodyColumns`, as one line of its texts. */
+const bandAt = async ($: Parameters<TestBody>[0], bodyColumns: number) => {
+  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: { ...bandOf(), bodyColumns } })
+  const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
+  await ui.unmount()
+  return texts
+}
+
+describe('the Missions tab', () => {
+  test("lists today's dailies and the week's weeklies, each with its bar, count, rewards and time left", async ($, on) => {
+    await streaming($, on, ownedOf(), false, { quests: missionsNow(), rules: missionRules })
+    await openMissions($)
+    const ui = await mountPane($)
+    const texts = await textsOf(ui)
+    expect(texts).toContain('◆ Missions')
+    expect(texts).not.toContain('Band styles')
+    expect(texts).toContain('Your missions  dailies run on their own · pick up to 3 weeklies')
+    expect(texts).toMatch(/^Today ─+ 1 of 3 done · 16h 0m left$/m)
+    expect(texts).toMatch(/^◎ Clear Thinker$/m)
+    expect(texts).toContain('Write 5 prompts with clarity 8 or more today.')
+    expect(texts).toMatch(/^▰{14}▱{10} {2}3\/5$/m)
+    expect(texts).toContain('Reward  +50 XP · ◈ +30 gold')
+    expect(texts).toMatch(/^✔ Save Points$/m)
+    expect(texts).toMatch(/^▰{24} {2}✔ done$/m)
+    expect(texts).toMatch(/^This week ─+ 2d 16h left$/m)
+    expect(texts).toMatch(/^Running {2}1 of 3$/m)
+    expect(texts).toMatch(/^◎ Ship It$/m)
+    expect(texts).toContain('Reward  +250 XP · ◈ +120 gold · ◆ rare drop')
+    expect(texts).toMatch(/^On offer {2}pick 2 more$/m)
+    expect(texts).toMatch(/^○ Light Packer$/m)
+    // A running weekly can be given up, an offered one picked; a daily runs on its own, with neither.
+    expect(await ui.find({ type: 'Button', key: 'abandon:ship-it' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'accept:light-packer' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'accept:second-opinion' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'abandon:clear-thinker' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'accept:clear-thinker' })).toBeUndefined()
+    // No dev controls off a dev server.
+    expect(await ui.find({ type: 'Button', key: 'dev:complete:clear-thinker' })).toBeUndefined()
+    expect(texts).not.toContain('Dev')
+    await ui.unmount()
+  })
+
+  test('keeps the time left current while it stays open', async ($, on) => {
+    // Nothing owned loops, so the minute passes without the previews' frames.
+    const { clock } = await streaming($, on, undefined, false, { quests: missionsNow(), rules: missionRules })
+    await openMissions($)
+    const ui = await mountPane($)
+    expect(await textsOf(ui)).toContain('16h 0m left')
+    await clock.advance(60_000)
+    expect(await textsOf(ui)).toContain('15h 59m left')
+    await ui.unmount()
+  })
+
+  test('Accept picks an offered weekly; Abandon asks first, and only the second press gives it up', async ($, on) => {
+    const { sent } = await streaming($, on, ownedOf(), false, { quests: missionsNow(), rules: missionRules })
+    const commands = () => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+    await openMissions($)
+    const ui = await mountPane($)
+    await ui.press({ key: 'accept:light-packer' })
+    expect(commands()).toMatchObject([{ type: 'quest.accept', data: { questId: 'light-packer' } }])
+    expect(await textsOf(ui)).toMatch(/^Running {2}2 of 3$/m)
+    await ui.press({ key: 'abandon:ship-it' })
+    expect(commands()).toHaveLength(1)
+    expect(await textsOf(ui)).toContain('Give it up? Its progress goes, and it goes back on offer.')
+    await ui.press({ key: 'keep:ship-it' })
+    expect(await textsOf(ui)).not.toContain('Give it up?')
+    await ui.press({ key: 'abandon:ship-it' })
+    await ui.press({ key: 'confirm-abandon:ship-it' })
+    expect(commands()).toMatchObject([{ type: 'quest.accept' }, { type: 'quest.abandon', data: { questId: 'ship-it' } }])
+    expect(await textsOf(ui)).toMatch(/^Running {2}1 of 3$/m)
+    await ui.unmount()
+  })
+
+  test('a full log offers no Accept, and a pick the server refuses says why', async ($, on) => {
+    const quests = missionsNow()
+    quests.push(
+      quest('red-to-green', 'Red to Green', 'weekly', 'active', 2, 5, { xp: 200 }),
+      quest('five-days', 'Five Days', 'weekly', 'active', 1, 5, { xp: 200 }),
+    )
+    const { toasts } = await streaming($, on, ownedOf(), false, { quests, rules: missionRules })
+    await openMissions($)
+    const ui = await mountPane($)
+    const texts = await textsOf(ui)
+    expect(texts).toMatch(/^On offer {2}3 running, the most at once$/m)
+    expect(texts).toContain('log full')
+    expect(await ui.find({ type: 'Button', key: 'accept:light-packer' })).toBeUndefined()
+    await ui.unmount()
+    expect(toasts).toEqual([])
+  })
+
+  test('a pick the server refuses says why', async ($, on) => {
+    const quests = missionsNow()
+    const { toasts } = await streaming($, on, ownedOf(), false, { quests, rules: missionRules })
+    await openMissions($)
+    const ui = await mountPane($)
+    // The pane drew a pick the server no longer offers.
+    const offered = quests.find((one) => one.questId === 'second-opinion')
+    if (offered !== undefined) offered.status = 'expired'
+    await ui.press({ key: 'accept:second-opinion' })
+    expect(toasts).toEqual(['That mission is not on offer'])
+    await ui.unmount()
+  })
+
+  test('a server older than missions says to restart it, and the band shows none', async ($, on) => {
+    await streaming($, on, ownedOf())
+    await openMissions($)
+    const texts = (await paneTexts($, 72)).texts.join('\n')
+    expect(texts).toContain('◇ The server predates missions: restart it.')
+    expect(texts).not.toContain('Today')
+    expect((await band($)).all).not.toContain('◎')
+  })
+})
+
+describe('missions on the band', () => {
+  test('row 2 shows the running mission closest to done, and gives way as the row fills', async ($, on) => {
+    await streaming($, on, ownedOf(), false, { quests: missionsNow(), rules: missionRules })
+    expect(await bandAt($, 120)).toContain('◎ Clear Thinker ▰▰▰▱▱ 3/5')
+    const narrow = await bandAt($, 70)
+    expect(narrow).toContain('◎ ▰▰▰▱▱ 3/5')
+    expect(narrow.join('\n')).not.toContain('Clear Thinker')
+  })
+
+  test('steps from the title down to the count, and says how many are done once none runs', () => {
+    const mission = (questId: string, status: MissionView['status'], progress: number, goal: number, cadence = 'daily'): MissionView => ({
+      questId,
+      title: 'Clear Thinker',
+      description: null,
+      cadence,
+      status,
+      progress,
+      goal,
+      rewards: { xp: 50, gold: 30, loot: null },
+      expiresAt: null,
+    })
+    const running: MissionsView = {
+      isKnown: true,
+      quests: [mission('a', 'active', 1, 5), mission('b', 'active', 2, 4, 'weekly'), mission('c', 'completed', 3, 3)],
+      weeklyActive: 3,
+      tiers: { daily: 'uncommon', weekly: 'rare' },
+    }
+    const text = (room: number) => missionChip(running, room)?.map((run) => run.text).join('') ?? null
+    // The weekly halfway beats the daily a fifth of the way.
+    expect(text(40)).toBe('◎ Clear Thinker ▰▰▰▱▱ 2/4')
+    expect(text(23)).toBe('◎ Clear Thin… ▰▰▰▱▱ 2/4')
+    expect(text(22)).toBe('◎ ▰▰▰▱▱ 2/4')
+    expect(text(12)).toBe('◎ ▰▰▰▱▱ 2/4')
+    expect(text(6)).toBe('◎ 2/4')
+    expect(text(3)).toBeNull()
+    const done: MissionsView = { ...running, quests: [mission('c', 'completed', 3, 3), mission('d', 'completed', 1, 1)] }
+    expect(missionChip(done, 40)?.map((run) => run.text).join('')).toBe('✔ 2 missions done')
+    expect(missionChip(done, 10)?.map((run) => run.text).join('')).toBe('✔ 2 done')
+    expect(missionChip({ ...running, quests: [] }, 40)).toBeNull()
+    expect(missionChip(null, 40)).toBeNull()
+  })
+
+  test('says the time left in its two largest units', () => {
+    const now = Date.parse('2026-10-09T08:00:00Z')
+    expect(timeLeft(Date.parse('2026-10-12T00:00:00Z'), now)).toBe('2d 16h left')
+    expect(timeLeft(Date.parse('2026-10-09T13:20:30Z'), now)).toBe('5h 20m left')
+    expect(timeLeft(Date.parse('2026-10-09T08:20:00Z'), now)).toBe('20m left')
+    expect(timeLeft(now, now)).toBe('ending now')
+    expect(timeLeft(null, now)).toBeNull()
+  })
+})
+
+describe('a mission completed', () => {
+  test('a daily plays in the band by its name, and the gain line and the toast say so in words', async ($, on) => {
+    const { clock, send, toasts } = await streaming($, on, ownedOf(), false, { quests: missionsNow(), rules: missionRules })
+    await send(
+      ...causedBy(
+        '01K6ZQ8W3J0000000000000C01',
+        completed('clear-thinker', 'Clear Thinker', 'uncommon', { xp: 50, gold: 30 }),
+        grant(50, 'quest'),
+        goldChanged(30, 'quest'),
+      ),
+    )
+    expect(toasts).toEqual(['Mission complete: Clear Thinker · +50 XP · +30 gold'])
+    const seen = await samples($, clock, 3_000, 100)
+    expect(seen.some((all) => /[˚✧✦❋] Clear Thinker [˚✧✦❋] · mission complete/.test(all))).toBe(true)
+    expect(seen.every((all) => !all.includes('M I S S I O N'))).toBe(true)
+    expect(await gainLine($)).toBe('Clear Thinker · mission complete')
+  })
+
+  test('a rare weekly grows the band: its bar fills, a check stamps, and its title and rewards show', async ($, on) => {
+    const { clock, send } = await streaming($, on, ownedOf(), false, { quests: missionsNow(), rules: missionRules })
+    await send(completed('ship-it', 'Ship It', 'rare', { xp: 250, gold: 120, loot: { rarity: 'rare', pool: 'wearable' } }))
+    const opening = await band($)
+    expect(opening.grown).toBe(4)
+    expect(opening.all).toContain('M I S S I O N   C O M P L E T E')
+    expect(opening.all).not.toContain('✔')
+    await clock.advance(1_500)
+    const done = await band($)
+    expect(done.all).toMatch(/▕▰{12}▏ ✔ {2}Ship It [✦✧]/)
+    expect(done.all).toContain('+250 XP · +120 gold · rare drop')
+    expect(done.all).not.toContain('R A R E   D R O P')
+    await clock.advance(600)
+    expect((await band($)).grown).toBe(0)
+  })
+
+  test("collapses with a drop of its size into the mission, never the drop", () => {
+    const mission: Celebration = { kind: 'quest', tier: 'uncommon', title: 'Clear Thinker', rewards: '+50 XP', more: 0 }
+    const scarf: Celebration = { kind: 'loot', tier: 'uncommon', name: 'Knit Scarf', gold: 10, more: 0 }
+    expect(queueOf([mission, scarf])).toEqual([{ ...mission, more: 1 }])
+    expect(queueOf([scarf, mission])).toEqual([{ ...mission, more: 1 }])
+    // A bigger drop still wins.
+    const cap: Celebration = { kind: 'loot', tier: 'rare', name: 'Wizard Hat', gold: 0, more: 0 }
+    expect(queueOf([mission, cap])).toEqual([mission, cap])
+  })
+
+  test('a new day says its dailies are in, quietly', async ($, on) => {
+    const { send, toasts } = await streaming($, on, ownedOf(), false, { quests: missionsNow(), rules: missionRules })
+    const dailies = missionsNow().filter((one) => one.cadence === 'daily')
+    await send(serverEvent('quest.offered', { cadence: 'daily', quests: dailies }))
+    expect(await gainLine($)).toBe('3 new dailies · /questline')
+    await send(serverEvent('quest.offered', { cadence: 'weekly', quests: [] }))
+    expect(await gainLine($)).toBe('3 new dailies · /questline')
+    expect(toasts).toEqual([])
+  })
+})
+
+describe('dev mode: missions', () => {
+  const run = ($: Parameters<TestBody>[0], args: string) => $.command.run({ command: 'questline', args, origin: composer, presentation })
+  const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+
+  test('completes a mission and re-rolls them, from /questline dev and from the Missions tab', async ($, on) => {
+    const { sent } = await streaming($, on, ownedOf(), true, { quests: missionsNow(), rules: missionRules })
+    expect((await run($, 'dev complete clear-thinker')).text).toBe('Done.')
+    expect((await run($, 'dev roll')).text).toBe('Done.')
+    for (const args of ['dev complete', 'dev roll now', 'dev complete a b']) expect((await run($, args)).text).toMatch(/complete <mission id> \| roll$/)
+    expect(commandsOf(sent)).toMatchObject([
+      { type: 'dev.completeQuest', data: { questId: 'clear-thinker' } },
+      { type: 'dev.rollQuests', data: {} },
+    ])
+    await openMissions($)
+    const ui = await mountPane($)
+    // Running and offered missions can be completed; a done one can't.
+    expect(await ui.find({ type: 'Button', key: 'dev:complete:save-points' })).toBeUndefined()
+    await ui.press({ key: 'dev:complete:light-packer' })
+    await ui.press({ key: 'dev:roll' })
+    await ui.unmount()
+    expect(commandsOf(sent).slice(2)).toMatchObject([
+      { type: 'dev.completeQuest', data: { questId: 'light-packer' } },
+      { type: 'dev.rollQuests', data: {} },
+    ])
   })
 })

@@ -27,10 +27,12 @@ export type DevAsk =
   | { kind: 'xp'; amount: number }
   | { kind: 'gold'; gold: number }
   | { kind: 'celebrate'; what: Preview }
+  | { kind: 'complete'; questId: string }
+  | { kind: 'roll' }
 
 export const devUsage =
   'Dev mode: /questline dev styles | item <id> | xp <amount> | gold <amount> | ' +
-  'celebrate <common|uncommon|rare|epic|legendary|levelup|xp>'
+  'celebrate <common|uncommon|rare|epic|legendary|levelup|xp> | complete <mission id> | roll'
 
 /** Every preview, in the order the pane offers them. */
 export const previews: ReadonlyArray<Preview> = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'levelup', 'xp']
@@ -65,6 +67,10 @@ export const devAskOf = (args: string): DevAsk | string | null => {
       const preview = previews.find((one) => one === value)
       return preview === undefined ? devUsage : { kind: 'celebrate', what: preview }
     }
+    case 'complete':
+      return value === undefined ? devUsage : { kind: 'complete', questId: value }
+    case 'roll':
+      return value === undefined ? { kind: 'roll' } : devUsage
     default:
       return devUsage
   }
@@ -81,6 +87,10 @@ export const devCommandOf = (ask: DevAsk, id: string): Command | null => {
       return { id, type: 'dev.grantXp', data: { amount: ask.amount } }
     case 'gold':
       return { id, type: 'dev.setGold', data: { gold: ask.gold } }
+    case 'complete':
+      return { id, type: 'dev.completeQuest', data: { questId: ask.questId } }
+    case 'roll':
+      return { id, type: 'dev.rollQuests', data: {} }
     case 'celebrate':
       return null
   }
