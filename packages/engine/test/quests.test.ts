@@ -468,6 +468,7 @@ describe("missions: the snapshot", () => {
       status: "completed",
       progress: 2,
       goal: 2,
+      goalKind: "fact",
       rewards: { xp: 150, gold: 30 },
       expiresAt: "2026-10-10T00:00:00.000Z",
     })

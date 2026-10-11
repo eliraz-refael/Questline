@@ -1,11 +1,15 @@
 import type { QuestPack } from "@questline/schema"
 
 // The missions a fresh local server offers: small dailies over graded prompts and reported work, and bigger weeklies
-// over a week's work and the player stats. All of it is reported-tier, so none waits for the verifier.
+// over a week's work, the player stats and sessions run together. All of it is reported-tier, so none waits for the
+// verifier. A version once published never changes: an edit here takes a new version.
+//
+// The parallel weeklies are modest on purpose: sessions cost the player tokens, so each one asks for a well-graded
+// prompt in every session, more sessions than asked earn nothing, and the rewards stay in the usual weekly range.
 
 export const starterQuestPack: QuestPack = {
   id: "starter",
-  version: 1,
+  version: 2,
   title: "First Quests",
   quests: [
     {
@@ -111,6 +115,30 @@ export const starterQuestPack: QuestPack = {
       cadence: "weekly",
       goal: { kind: "fact", fact: "streak.day", count: 5 },
       rewards: { xp: 200, gold: 100 },
+    },
+    {
+      id: "two-minds",
+      title: "Two Minds",
+      description: "Get a prompt graded 7 or more in each of 2 sessions within 20 minutes, 3 times this week.",
+      cadence: "weekly",
+      goal: { kind: "parallel", sessions: 2, grade: 7, withinMinutes: 20, count: 3 },
+      rewards: { xp: 150, gold: 80 },
+    },
+    {
+      id: "juggler",
+      title: "Juggler",
+      description: "Get a prompt graded 7 or more in each of 3 sessions within 20 minutes, once this week.",
+      cadence: "weekly",
+      goal: { kind: "parallel", sessions: 3, grade: 7, withinMinutes: 20, count: 1 },
+      rewards: { xp: 200, gold: 100 },
+    },
+    {
+      id: "conductor",
+      title: "Conductor",
+      description: "Get a prompt graded 8 or more in each of 3 sessions within 20 minutes, twice this week.",
+      cadence: "weekly",
+      goal: { kind: "parallel", sessions: 3, grade: 8, withinMinutes: 20, count: 2 },
+      rewards: { xp: 300, gold: 150, loot: { rarity: "rare" } },
     },
   ],
 }

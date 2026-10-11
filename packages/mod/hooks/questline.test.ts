@@ -27,7 +27,7 @@ import { statsViewOf } from './view'
 // A fake local server beneath the mod: it answers the four routes, records what the mod sends, and holds the
 // stream until the test's clock passes 25 seconds, as the real one does.
 
-type Sent = { path: string; body: unknown }
+type Sent = { path: string; body: unknown; method: string; query: string }
 
 /** What the player owns in the fake server: entries, their definitions, and what is equipped where. */
 type Owned = { inventory: Array<{ id: string; itemId: string }>; items: Array<unknown>; equipped: Record<string, string> }
@@ -43,6 +43,7 @@ type Quest = {
   status: string
   progress: number
   goal: number
+  goalKind?: string
   rewards: Record<string, unknown>
   expiresAt: string | null
 }
@@ -158,6 +159,10 @@ type ServerOptions = {
   quests?: Array<Quest>
   /** The rules the session answer carries; none, as from an older server. */
   rules?: Record<string, unknown>
+  /** A server from before presence: it has no route to close a session. */
+  predatesPresence?: boolean
+  /** A server that takes this long to answer a close, in ms. */
+  closeTakes?: number
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
@@ -207,7 +212,12 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     if (options.isDown === true) throw new Error('connect ENOENT /home/player/.questline/server.sock')
     const path = new URL(e.url).pathname
     const body: unknown = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
-    sent.push({ path, body })
+    const method = e.init?.method ?? 'GET'
+    sent.push({ path, body, method, query: new URL(e.url).search })
+    if (method === 'DELETE' && path.startsWith('/v1/sessions/')) {
+      if (options.closeTakes !== undefined) await clock.sleep(options.closeTakes)
+      return options.predatesPresence === true ? reply(404, { code: 'not_found', message: 'Not found' }) : reply(200, { closed: true })
+    }
     if (path === '/v1/sessions')
       return reply(200, {
         snapshot: snapshot(
@@ -557,7 +567,7 @@ describe('counting stats', () => {
     await $.session.end({ reason: 'clear', sessionId: 'first', resume: { id: 'first' } })
     const cleared = ofType(await flushed(), 'session.cleared')
     expect(cleared).toMatchObject([{ data: {} }])
-    expect(opened).toEqual({ sessionId: cleared[0]?.['sessionId'] })
+    expect(opened).toEqual({ sessionId: cleared[0]?.['sessionId'], presence: true })
   })
 
   test("counts the player's compactions by trigger, not a subagent's, a precompute or a skipped one", async ($, on) => {
@@ -1907,6 +1917,7 @@ describe('missions on the band', () => {
       status,
       progress,
       goal,
+      goalKind: null,
       rewards: { xp: 50, gold: 30, loot: null },
       expiresAt: null,
     })
@@ -2004,7 +2015,7 @@ describe('dev mode: missions', () => {
     const { sent } = await streaming($, on, ownedOf(), true, { quests: missionsNow(), rules: missionRules })
     expect((await run($, 'dev complete clear-thinker')).text).toBe('Done.')
     expect((await run($, 'dev roll')).text).toBe('Done.')
-    for (const args of ['dev complete', 'dev roll now', 'dev complete a b']) expect((await run($, args)).text).toMatch(/complete <mission id> \| roll$/)
+    for (const args of ['dev complete', 'dev roll now', 'dev complete a b']) expect((await run($, args)).text).toMatch(/complete <mission id> \| roll \| session$/)
     expect(commandsOf(sent)).toMatchObject([
       { type: 'dev.completeQuest', data: { questId: 'clear-thinker' } },
       { type: 'dev.rollQuests', data: {} },
@@ -2038,6 +2049,7 @@ describe('review fixes: missions', () => {
     status,
     progress,
     goal,
+    goalKind: null,
     rewards: { xp: 50, gold: 0, loot: null },
     expiresAt,
   })
@@ -2120,5 +2132,157 @@ describe('review fixes: a server from before missions', () => {
     expect(answer.text).toContain('The dev server predates missions: restart it')
     expect(sent.filter((one) => one.path === '/v1/commands')).toEqual([])
     expect((await band($)).all).not.toMatch(/◎|missions done/)
+  })
+})
+
+describe('presence', () => {
+  const opens = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/sessions').map((one) => one.body)
+  const closes = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.method === 'DELETE').map((one) => one.path)
+  const idOf = (body: unknown): string => (isRecord(body) && typeof body['sessionId'] === 'string' ? body['sessionId'] : '')
+
+  test('opens its session as one it keeps live, and names it on every stream poll, the heartbeat', async ($, on) => {
+    const { sent } = await started($, on)
+    const [first] = opens(sent)
+    expect(first).toEqual({ sessionId: expect.any(String), presence: true })
+    const polls = sent.filter((one) => one.path === '/v1/stream')
+    expect(polls.length).toBeGreaterThan(0)
+    for (const poll of polls) expect(poll.query).toBe(`?after=0&session=${idOf(first)}`)
+  })
+
+  test('closes its session as the process exits', async ($, on) => {
+    const { sent } = await started($, on)
+    const id = idOf(opens(sent)[0])
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'first', resume: { id: 'first' } })
+    expect(closes(sent)).toEqual([`/v1/sessions/${id}`])
+  })
+
+  test('lets the exit go on when the server is slow to answer the close', async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
+    mock.store(on, { explored: ['acme/widgets'] })
+    mock.env(on, { HOME: '/home/player' })
+    const { sent } = fakeServer(on, clock, { closeTakes: 60_000 })
+    await $.session.start(start)
+    await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
+    let isEnded = false
+    const ending = $.session.end({ reason: 'other', sessionId: 'first', resume: { id: 'first' } }).then(() => {
+      isEnded = true
+    })
+    await until(clock, () => closes(sent).length === 1)
+    await clock.advance(499)
+    expect(isEnded).toBe(false)
+    await clock.advance(1)
+    await until(clock, () => isEnded)
+    await ending
+  })
+
+  test('a /clear closes the session it ends and opens the next, and a resume does the same', async ($, on) => {
+    const { clock, sent } = await started($, on)
+    const first = idOf(opens(sent)[0])
+    await $.session.end({ reason: 'clear', sessionId: 'first', resume: { id: 'first' } })
+    await until(clock, () => opens(sent).length === 2 && closes(sent).length === 1)
+    const second = idOf(opens(sent)[1])
+    expect(second).not.toBe(first)
+    expect(closes(sent)).toEqual([`/v1/sessions/${first}`])
+    await $.session.end({ reason: 'resume', sessionId: 'second', resume: { id: 'second' } })
+    await until(clock, () => opens(sent).length === 3 && closes(sent).length === 2)
+    expect(closes(sent)[1]).toBe(`/v1/sessions/${second}`)
+    expect(idOf(opens(sent)[2])).not.toBe(second)
+  })
+
+  test('a reload keeps the session id, so the one session is never counted twice', async ($, on) => {
+    const { clock, sent } = await started($, on)
+    await $.session.start(start)
+    await until(clock, () => opens(sent).length === 2)
+    expect(idOf(opens(sent)[1])).toBe(idOf(opens(sent)[0]))
+    expect(closes(sent)).toEqual([])
+  })
+
+  test('a server from before presence answers the close with 404, and the band stays online', async ($, on) => {
+    const { clock, sent } = await streaming($, on, undefined, false, { predatesPresence: true })
+    await $.session.end({ reason: 'clear', sessionId: 'first', resume: { id: 'first' } })
+    await until(clock, () => closes(sent).length === 1 && opens(sent).length === 2)
+    await clock.settle()
+    expect((await band($)).all).not.toContain('offline')
+  })
+})
+
+describe('missions over sessions run together', () => {
+  const together = (status: string, progress: number): Quest => ({
+    ...quest('two-minds', 'Two Minds', 'weekly', status, progress, 3, { xp: 150, gold: 80 }),
+    goalKind: 'parallel',
+  })
+
+  test('the tab counts their moments together, and the band shows one only once it has a moment', async ($, on) => {
+    const quests = [together('active', 1)]
+    const { clock } = await streaming($, on, undefined, false, { quests, rules: missionRules })
+    await openMissions($)
+    const ui = await mountPane($)
+    expect(await textsOf(ui)).toContain('1 of 3 together')
+    await ui.unmount()
+    expect((await bandAt($, 120)).join('')).toContain('Two Minds')
+    await clock.settle()
+  })
+
+  const now = Date.parse('2026-10-09T08:00:00Z')
+  const viewOf = (goalKind: string | null, progress: number): MissionsView => ({
+    isKnown: true,
+    quests: [
+      {
+        questId: 'two-minds',
+        title: 'Two Minds',
+        description: null,
+        cadence: 'weekly',
+        status: 'active',
+        progress,
+        goal: 3,
+        goalKind,
+        rewards: { xp: 150, gold: 80, loot: null },
+        expiresAt: null,
+      },
+    ],
+    weeklyActive: 3,
+    tiers: { daily: 'uncommon', weekly: 'rare' },
+  })
+  const metersOf = (view: MissionsView) =>
+    missionsLayout(view, 72, now)
+      .sections.flatMap((section) => section.groups.flatMap((group) => group.entries.map((entry) => entry.meter)))
+      .map((row) => row.map((run) => run.text).join(''))
+
+  test('the band never shows one with no moment yet, which would only suggest opening sessions', () => {
+    expect(missionChip(viewOf('parallel', 0), 80, now)).toBeNull()
+    expect(cellsOfRow(missionChip(viewOf('parallel', 1), 80, now) ?? [])).toBeGreaterThan(0)
+    expect(missionChip(viewOf(null, 0), 80, now)).not.toBeNull()
+  })
+
+  test('a mission from a server that names no goal kind reads as before', () => {
+    expect(metersOf(viewOf(null, 1)).join('')).toContain('1/3')
+    expect(metersOf(viewOf(null, 1)).join('')).not.toContain('together')
+    expect(metersOf(viewOf('parallel', 1)).join('')).toContain('1 of 3 together')
+  })
+
+  test('dev mode opens a stand-in session on a server that knows them, and says to restart one that does not', async ($, on) => {
+    const run = ($$: Parameters<TestBody>[0], args: string) => $$.command.run({ command: 'questline', args, origin: composer, presentation })
+    const quests = [...missionsNow(), together('active', 0)]
+    const { sent } = await streaming($, on, ownedOf(), true, { quests, rules: missionRules })
+    expect((await run($, 'dev session')).text).toMatch(/^A stand-in session is open/)
+    expect(sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)).toMatchObject([
+      { type: 'dev.fakeSession', data: {} },
+    ])
+    await openMissions($)
+    const ui = await mountPane($)
+    await ui.press({ key: 'dev:session' })
+    await ui.unmount()
+    expect(sent.filter((one) => one.path === '/v1/commands')).toHaveLength(2)
+  })
+
+  test('dev mode says to restart a dev server that predates parallel missions', async ($, on) => {
+    const run = ($$: Parameters<TestBody>[0], args: string) => $$.command.run({ command: 'questline', args, origin: composer, presentation })
+    const { sent } = await streaming($, on, ownedOf(), true, { quests: missionsNow(), rules: missionRules })
+    expect((await run($, 'dev session')).text).toMatch(/predates parallel missions: restart it/)
+    expect(sent.filter((one) => one.path === '/v1/commands')).toEqual([])
+    await openMissions($)
+    const ui = await mountPane($)
+    expect(await ui.find({ type: 'Button', key: 'dev:session' })).toBeUndefined()
+    await ui.unmount()
   })
 })

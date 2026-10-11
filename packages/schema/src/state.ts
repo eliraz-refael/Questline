@@ -41,6 +41,13 @@ export const SessionPeak = Schema.Struct({ sessionId: Ulid, peak: Percent })
 export interface SessionPeak extends Schema.Schema.Type<typeof SessionPeak> {}
 
 /**
+ * A prompt that may make a parallel moment: its session, when it was made, and when that session's open span began,
+ * which says the session was open as it was made.
+ */
+export const ParallelPrompt = Schema.Struct({ sessionId: Ulid, at: IsoDateTime, openedAt: IsoDateTime })
+export interface ParallelPrompt extends Schema.Schema.Type<typeof ParallelPrompt> {}
+
+/**
  * A mission of the current window: offered, running or done. Its title, goal and rewards come from the pack, so a
  * pack's new version reads at once; one the packs no longer have stays here, idle, until its window ends.
  */
@@ -55,8 +62,21 @@ export const Mission = Schema.Struct({
   progress: Count,
   /** Context goals: each session measured while it ran and its peak, so it counts once and a crossing undoes it. */
   sessions: Schema.Array(SessionPeak),
+  /** Parallel goals: the well-graded prompts not spent on a moment yet, the latest within the goal's minutes. */
+  prompts: Schema.Array(ParallelPrompt),
 })
 export interface Mission extends Schema.Schema.Type<typeof Mission> {}
+
+/**
+ * A span a session was live, as the server's presence inputs say: from its `session.opened` to its `session.closed`,
+ * null while it is open. A session the server let lapse and heard from again has a span for each time.
+ */
+export const SessionSpan = Schema.Struct({
+  sessionId: Ulid,
+  openedAt: IsoDateTime,
+  closedAt: Schema.NullOr(IsoDateTime),
+})
+export interface SessionSpan extends Schema.Schema.Type<typeof SessionSpan> {}
 
 const NonNegative = Schema.Finite.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))
 
@@ -108,6 +128,8 @@ export const Progress = Schema.Struct({
   quests: Schema.Array(Mission),
   /** The windows the missions were last rolled for; a step in a later one rolls its missions. */
   questWindows: Schema.Struct({ daily: Schema.NullOr(IsoDate), weekly: Schema.NullOr(IsoDate) }),
+  /** The sessions open now, and those closed in the last day, so a prompt can be checked against its session. */
+  presence: Schema.Array(SessionSpan),
   /** Food boosts; a new one replaces the running one, they never stack. */
   boosts: Schema.Array(Boost),
   tests: Schema.Struct({ armed: Schema.Array(ArmedTestRun) }),

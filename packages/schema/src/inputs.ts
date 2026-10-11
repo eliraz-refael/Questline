@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 import { ClientEvent } from "./client-events.ts"
 import { Command } from "./commands.ts"
-import { Count, Ulid } from "./primitives.ts"
+import { Count, IsoDateTime, Ulid } from "./primitives.ts"
 import { GitHubWork } from "./subjects.ts"
 
 // What the rules engine's `step(state, input, context)` consumes. Every input is stored in the event log as raw
@@ -27,6 +27,18 @@ export const SystemEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("timezone.changed"), tz: Schema.String }),
   /** A local day or week began: the step that takes it rolls the new window's missions, as every step does. */
   Schema.Struct({ type: Schema.Literal("quests.refresh") }),
+  /** A mod that keeps its session live opened it, or was heard from again after it lapsed: open from receipt. */
+  Schema.Struct({ type: Schema.Literal("session.opened"), sessionId: Ulid }),
+  /**
+   * A session went: the mod closed it (`ended`, at receipt), or the presence sweep found it unheard for too long
+   * (`lapsed`, at the last time it was heard from).
+   */
+  Schema.Struct({
+    type: Schema.Literal("session.closed"),
+    sessionId: Ulid,
+    reason: Schema.Literals(["ended", "lapsed"]),
+    at: IsoDateTime,
+  }),
 ])
 export type SystemEvent = typeof SystemEvent.Type
 

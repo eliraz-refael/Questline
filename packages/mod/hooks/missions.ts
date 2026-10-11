@@ -44,6 +44,7 @@ export const missionsViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>):
         status,
         progress: quest.progress,
         goal: quest.goal,
+        goalKind: typeof quest.goalKind === 'string' ? quest.goalKind : null,
         rewards: rewardsOf(quest.rewards ?? {}),
         expiresAt: instantOf(quest.expiresAt ?? null),
       },
@@ -72,6 +73,26 @@ const shareOf = (mission: MissionView): number =>
 
 const isRunning = (mission: MissionView): boolean => mission.status === 'active' && mission.progress < mission.goal
 
+/** Whether the server names each mission's goal, which only one that knows parallel missions does. */
+export const knowsTogether = (missions: MissionsView | null): boolean =>
+  (missions?.quests ?? []).some((one) => one.goalKind !== null)
+
+/** A mission whose goal counts moments sessions ran together. */
+export const isTogether = (mission: MissionView): boolean => mission.goalKind === 'parallel'
+
+/** A mission's count, as `3/5`, or `2 of 3 together` for moments sessions ran together. */
+const countOf = (mission: MissionView): string =>
+  isTogether(mission)
+    ? `${counted(mission.progress)} of ${counted(mission.goal)} together`
+    : `${counted(mission.progress)}/${counted(mission.goal)}`
+
+/**
+ * Whether the band may show a running mission. One over sessions run together shows only once it has a moment: the
+ * band reports what happened, and never suggests opening more sessions.
+ */
+const isBandWorthy = (mission: MissionView): boolean =>
+  isRunning(mission) && (!isTogether(mission) || mission.progress > 0)
+
 /**
  * The missions as of clock `now`: one still running or on offer whose window has ended reads as expired, as the
  * server would say, so a band or a pane left open past midnight never shows yesterday's as running.
@@ -85,10 +106,13 @@ export const missionsAt = (missions: MissionsView, now: number): MissionsView =>
   ),
 })
 
-/** The mission the band shows: the running one closest to done, a daily before a weekly among equals. */
+/**
+ * The mission the band shows: the running one closest to done, a daily before a weekly among equals; one over sessions
+ * run together only once it has a moment.
+ */
 export const bandMissionOf = (missions: MissionsView | null): MissionView | null =>
   (missions?.quests ?? [])
-    .filter(isRunning)
+    .filter(isBandWorthy)
     .reduce<MissionView | null>((best, one) => {
       if (best === null) return one
       const ahead = shareOf(one) - shareOf(best)
@@ -195,7 +219,7 @@ const headOf = (missions: MissionsView, mission: MissionView, room: number): Row
 }
 
 const meterOf = (missions: MissionsView, mission: MissionView, width: number): Row => {
-  const counts = `${counted(mission.progress)}/${counted(mission.goal)}`
+  const counts = countOf(mission)
   const states: Record<MissionView['status'], { count: Row; color: string }> = {
     active: { count: [{ text: counts, bold: true }], color: cadenceColor(missions, mission.cadence) },
     completed: { count: [{ text: '✔ done', color: 'success', bold: true }], color: 'success' },

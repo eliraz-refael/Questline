@@ -1,4 +1,4 @@
-import type { CommandResponse, EventsResponse, SessionResponse, StreamResponse } from '@questline/schema'
+import type { CommandResponse, EventsResponse, SessionClosed, SessionResponse, StreamResponse } from '@questline/schema'
 import type { HttpInit, HttpResponse } from 'claude-code'
 
 // The mod's one way to the game is HTTP over the local server's Unix socket, through the host's fetch: this file
@@ -19,13 +19,19 @@ export const isStream = (value: unknown): value is StreamResponse =>
   isRecord(value) && Array.isArray(value['events']) && typeof value['cursor'] === 'number'
 export const isCommand = (value: unknown): value is CommandResponse =>
   isRecord(value) && (value['status'] === 'ok' || value['status'] === 'refused')
+export const isClosed = (value: unknown): value is SessionClosed =>
+  isRecord(value) && typeof value['closed'] === 'boolean'
+
+/** The stream after `after`, naming the session, so each poll keeps it live on a server that tracks presence. */
+export const streamPathOf = (after: number, sessionId: string): string =>
+  `/v1/stream?after=${after}&session=${encodeURIComponent(sessionId)}`
 
 /** The URL a route is fetched at: the host name is a placeholder, since the socket picks the server. */
 export const urlOf = (path: string): string => `http://questline${path}`
 
-/** A request to the server: a POST with a JSON body, or a GET without one. */
-export const initOf = (socketPath: string, body?: unknown): HttpInit => ({
-  method: body === undefined ? 'GET' : 'POST',
+/** A request to the server: a POST with a JSON body, or a GET without one, unless `method` says otherwise. */
+export const initOf = (socketPath: string, body?: unknown, method?: 'DELETE'): HttpInit => ({
+  method: method ?? (body === undefined ? 'GET' : 'POST'),
   socketPath,
   headers: { 'content-type': 'application/json', 'questline-client': clientVersion },
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),

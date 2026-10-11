@@ -26,6 +26,7 @@ import { migrate } from "./migrations.ts"
 import type { LocalProfile } from "./players.ts"
 import { QuestPacks } from "./quest-packs.ts"
 import { CurrentPlayer, Players } from "./players.ts"
+import { Presence } from "./presence.ts"
 import type { Stepper } from "./writer.ts"
 import { PlayerWriter } from "./writer.ts"
 
@@ -176,7 +177,10 @@ export const defaultProfile = (): LocalProfile => {
   return { displayName: name, characterName: name, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
 }
 
-/** Everything behind the routes, over a PGlite database: migrated, with the local player in place; dev mode off. */
+/**
+ * Everything behind the routes, over a PGlite database: migrated, with the local player in place and the presence
+ * sweep running; dev mode off.
+ */
 export const services = (
   pglite: PgliteClient.PgliteClientConfig,
   profile: LocalProfile,
@@ -191,7 +195,9 @@ export const services = (
       return yield* players.local(profile)
     }),
   ).pipe(Layer.provideMerge(Players.layer))
-  return Layer.mergeAll(Player, PlayerWriter.make(stepper)).pipe(
+  const Live = Presence.sweeper.pipe(Layer.provideMerge(Presence.layer))
+  return Layer.mergeAll(Player, Live).pipe(
+    Layer.provideMerge(PlayerWriter.make(stepper)),
     Layer.provideMerge(StreamHub.layer),
     Layer.provideMerge(QuestPacks.layer),
     Layer.provideMerge(Database),

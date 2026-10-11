@@ -230,6 +230,46 @@ const missions = Effect.gen(function* () {
   `
 })
 
+// Presence: the sessions a mod keeps live, each with the last time it was heard from, outside the log. A player saved
+// before it has no session spans, and no mission waits on parallel prompts, written out here so this migration means
+// the same thing whatever the engine later becomes.
+const presence = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    CREATE TABLE sessions (
+      player_id text NOT NULL REFERENCES players (id),
+      session_id text NOT NULL,
+      client_version text,
+      opened_at text NOT NULL,
+      last_heard_at text NOT NULL,
+      closed_at text,
+      close_reason text,
+      PRIMARY KEY (player_id, session_id)
+    )
+  `
+  yield* sql`CREATE INDEX sessions_open ON sessions (last_heard_at) WHERE closed_at IS NULL`
+  yield* sql`
+    UPDATE player_state
+    SET state = jsonb_set(state, '{progress,presence}', '[]'::jsonb)
+    WHERE state -> 'progress' -> 'presence' IS NULL
+  `
+  yield* sql`
+    UPDATE player_state
+    SET state = jsonb_set(
+      state,
+      '{progress,quests}',
+      (
+        SELECT COALESCE(
+          jsonb_agg(CASE WHEN mission ? 'prompts' THEN mission ELSE mission || '{"prompts":[]}'::jsonb END ORDER BY i),
+          '[]'::jsonb
+        )
+        FROM jsonb_array_elements(state -> 'progress' -> 'quests') WITH ORDINALITY AS missions (mission, i)
+      )
+    )
+    WHERE jsonb_typeof(state -> 'progress' -> 'quests') = 'array'
+  `
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
@@ -239,6 +279,7 @@ export const migrations = {
   "0005_band_looks": bandLooks,
   "0006_stats_profile": statsProfile,
   "0007_missions": missions,
+  "0008_presence": presence,
 }
 
 /** Runs the migrations not applied yet, in order. */

@@ -41,9 +41,27 @@ export const CommandGoal = Schema.Struct({ kind: Schema.Literal("command"), comm
 /** `count` sessions measured in the window whose context peak stays under `under` percent. */
 export const ContextGoal = Schema.Struct({ kind: Schema.Literal("context"), under: Percent, count: Goal })
 
-/** What a quest asks for: scoring facts, with filters a fact carries, or the player stats. */
-export const QuestGoal = Schema.Union([FactGoal, ClearsGoal, CompactionsGoal, CommandGoal, ContextGoal])
+/**
+ * `count` moments when `sessions` sessions were live together and each had a prompt graded `grade` or more within
+ * `withinMinutes` of the others. Only a prompt made while its session was open counts, and the prompts behind one
+ * moment are spent, so idle sessions add nothing and more sessions than asked earn nothing extra.
+ */
+export const ParallelGoal = Schema.Struct({
+  kind: Schema.Literal("parallel"),
+  sessions: Count.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(2))),
+  grade: Score,
+  withinMinutes: Goal,
+  count: Goal,
+})
+export interface ParallelGoal extends Schema.Schema.Type<typeof ParallelGoal> {}
+
+/** What a quest asks for: scoring facts, with filters a fact carries, the player stats, or sessions run together. */
+export const QuestGoal = Schema.Union([FactGoal, ClearsGoal, CompactionsGoal, CommandGoal, ContextGoal, ParallelGoal])
 export type QuestGoal = typeof QuestGoal.Type
+
+/** What a goal counts, which the mod may word: `parallel` counts moments together. Open: a new kind may come. */
+export const GoalKind = Schema.Literals(["fact", "clears", "compactions", "command", "context", "parallel"])
+export type GoalKind = typeof GoalKind.Type
 
 /** A drop that always lands: `item` by id, else a roll at `rarity`, from one category when `pool` names it. */
 export const QuestLoot = Schema.Struct({
@@ -111,6 +129,8 @@ export const QuestState = Schema.Struct({
   status: Schema.Literals(["offered", "active", "completed", "expired"]),
   progress: Count,
   goal: Count,
+  /** What the goal counts; absent from servers, and stored events, older than parallel missions. */
+  goalKind: Schema.optionalKey(GoalKind),
   rewards: QuestRewards,
   /** When its window ends: the next local midnight, or the one that starts the next local week. */
   expiresAt: Schema.NullOr(IsoDateTime),
