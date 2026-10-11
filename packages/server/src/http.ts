@@ -4,9 +4,9 @@ import { Duration, Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import type { Admitted } from "./edge.ts"
 import { admit } from "./edge.ts"
-import { minClientVersion, rules } from "./game.ts"
+import { minClientVersion, nowIso, rules } from "./game.ts"
 import { StreamHub } from "./hub.ts"
-import { CurrentPlayer, nowIso, Players } from "./players.ts"
+import { CurrentPlayer, Players } from "./players.ts"
 import type { Applied } from "./writer.ts"
 import { PlayerWriter } from "./writer.ts"
 
@@ -34,10 +34,12 @@ export const ModHandlers = HttpApiBuilder.group(
 
     return handlers.handleAll({
       openSession: () =>
-        players.snapshot(player).pipe(
-          Effect.map((snapshot) => ({ snapshot, rules, minClientVersion, acceptedEventTypes: clientEventTypes })),
-          Effect.orDie,
-        ),
+        Effect.gen(function* () {
+          // A new local day or week rolls its missions first, so the snapshot shows them; the stream carries the offer.
+          yield* writer.refreshQuests(player.id, yield* nowIso)
+          const snapshot = yield* players.snapshot(player)
+          return { snapshot, rules, minClientVersion, acceptedEventTypes: clientEventTypes }
+        }).pipe(Effect.orDie),
 
       sendEvents: ({ payload }) =>
         Effect.gen(function* () {

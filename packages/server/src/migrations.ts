@@ -210,6 +210,26 @@ const statsProfile = Effect.gen(function* () {
   `
 })
 
+// Missions: the quest packs the server has published, each version kept as it was, and the windows the engine last
+// rolled missions for. A player made before them has rolled none, so the next step rolls today's and this week's.
+const missions = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    CREATE TABLE quest_packs (
+      pack text NOT NULL,
+      version integer NOT NULL,
+      pack_json jsonb NOT NULL,
+      published_at text NOT NULL,
+      PRIMARY KEY (pack, version)
+    )
+  `
+  yield* sql`
+    UPDATE player_state
+    SET state = jsonb_set(state, '{progress,questWindows}', '{"daily":null,"weekly":null}'::jsonb)
+    WHERE state -> 'progress' -> 'questWindows' IS NULL
+  `
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
@@ -218,6 +238,7 @@ export const migrations = {
   "0004_level_glyphs": levelGlyphs,
   "0005_band_looks": bandLooks,
   "0006_stats_profile": statsProfile,
+  "0007_missions": missions,
 }
 
 /** Runs the migrations not applied yet, in order. */

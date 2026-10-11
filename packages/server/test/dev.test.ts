@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it as test } from "vitest"
 import { claimHome, isDevMode, localPaths, localServer, WrongHome } from "../src/index.ts"
-import { client, nextId, profile, session, withServer } from "./fixtures.ts"
+import { client, nextId, profile, session, withoutQuests, withServer } from "./fixtures.ts"
 
 // Dev mode: a sandbox save in a home of its own, the only place the dev commands run.
 
@@ -112,7 +112,8 @@ describe("dev commands over the command route", () => {
         const api = yield* client
         const granted = yield* api.runCommand({ payload: grantXp(500) })
         if (granted.status !== "ok") throw new Error(granted.message)
-        expect(granted.events[0]).toMatchObject({ type: "xp.granted", data: { reason: "dev", amount: 500 } })
+        const [grant] = withoutQuests(granted.events)
+        expect(grant).toMatchObject({ type: "xp.granted", data: { reason: "dev", amount: 500 } })
         expect(granted.events.some((event) => event.type === "level.up")).toBe(true)
         const styles = yield* api.runCommand({ payload: { id: nextId(), type: "dev.grantStyles", data: {} } })
         expect(styles.status).toBe("ok")

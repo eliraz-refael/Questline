@@ -2,7 +2,9 @@ import type { ItemDef, Pity, Rarity, RulesConfig } from "@questline/schema"
 import { draws } from "./random.ts"
 
 const rarities: ReadonlyArray<Rarity> = ["common", "uncommon", "rare", "epic", "legendary"]
-const rank = (rarity: Rarity): number => rarities.indexOf(rarity)
+/** A rarity's place, common first. */
+export const rarityRank = (rarity: Rarity): number => rarities.indexOf(rarity)
+const rank = rarityRank
 
 export interface Drop {
   readonly rarity: Rarity

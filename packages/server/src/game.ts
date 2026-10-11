@@ -1,5 +1,5 @@
 import { starterCatalog, starterRules } from "@questline/engine"
-import { Context, Layer } from "effect"
+import { Clock, Context, Effect, Layer } from "effect"
 
 // The rules the proof of concept runs under. Publishing rules versions (rules_versions, rules_head) comes later; for
 // now every input runs under the starter config and catalogue.
@@ -18,3 +18,6 @@ export const inputSchemaVersion = 1
 export class DevMode extends Context.Service<DevMode, { readonly isOn: boolean }>()("questline/DevMode") {
   static readonly layer = (isOn: boolean) => Layer.succeed(DevMode, { isOn })
 }
+
+/** The clock's time as the ISO string the engine and the log read. */
+export const nowIso: Effect.Effect<string> = Effect.map(Clock.currentTimeMillis, (ms) => new Date(ms).toISOString())

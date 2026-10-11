@@ -56,6 +56,18 @@ export type CharacterSlot = typeof CharacterSlot.Type
 export const Slot = Schema.Union([PetSlot, CharacterSlot])
 export type Slot = typeof Slot.Type
 
+/** What an item is, which decides where it goes: a pet's gear, a band style, food to eat, and so on. */
+export const ItemCategory = Schema.Literals([
+  "food",
+  "wearable",
+  "scene",
+  "title",
+  "artefact",
+  "levelUpEffect",
+  "bandStyle",
+])
+export type ItemCategory = typeof ItemCategory.Type
+
 export const XpTier = Schema.Literals(["verified", "reported"])
 export type XpTier = typeof XpTier.Type
 

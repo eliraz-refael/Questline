@@ -18,6 +18,7 @@ const fresh = {
     activeDays: [],
     bestStreak: 0,
     quests: [],
+    questWindows: { daily: null, weekly: null },
     boosts: [],
     tests: { armed: [] },
     claims: [],

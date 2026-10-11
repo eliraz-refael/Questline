@@ -1,12 +1,14 @@
-import { engineVersion, step } from "@questline/engine"
+import { engineVersion, localDay, questsDue, step, ulids } from "@questline/engine"
 import type { CommandRefusal, Context as StepContext, Input, PlayerState, ServerEvent, Step } from "@questline/schema"
 import { CommandRefusal as CommandRefusalSchema, Count, PlayerState as PlayerStateSchema, ServerEvent as ServerEventSchema } from "@questline/schema"
 import { Context, Effect, Layer, Option, Result, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
+import { randomBytes } from "node:crypto"
 import type { Admitted } from "./edge.ts"
 import { catalog, DevMode, inputSchemaVersion, rules } from "./game.ts"
 import { StreamHub } from "./hub.ts"
+import { QuestPacks } from "./quest-packs.ts"
 
 // Every change to a player goes through `apply`, in one transaction that holds the player's row: client events,
 // commands and, later, verified facts and rebalance grants. So there is exactly one place where state changes.
@@ -55,6 +57,7 @@ const make = (stepper: Stepper) =>
     const sql = yield* SqlClient.SqlClient
     const hub = yield* StreamHub
     const devMode = yield* DevMode
+    const questPacks = yield* QuestPacks
 
     const lock = SqlSchema.findOne({
       Request: Schema.String,
@@ -149,7 +152,7 @@ const make = (stepper: Stepper) =>
             rollSeed: head.roll_seed,
             rules,
             catalog,
-            questPacks: [],
+            questPacks: questPacks.active,
             mode: { kind: "live" },
             ...(devMode.isOn ? { dev: true } : {}),
           }
@@ -214,7 +217,24 @@ const make = (stepper: Stepper) =>
         Effect.map(({ applied }) => applied),
       )
 
-    return PlayerWriter.of({ apply })
+    const current = SqlSchema.findOne({
+      Request: Schema.String,
+      Result: Schema.Struct({ state: PlayerStateSchema }),
+      execute: (playerId) => sql`SELECT state FROM player_state WHERE player_id = ${playerId}`,
+    })
+
+    const refreshQuests = (playerId: string, now: string) =>
+      Effect.gen(function* () {
+        const { state } = yield* current(playerId).pipe(Effect.orDie)
+        if (!questsDue(state, now)) return []
+        // Keyed by the local day, so two sessions opening at once roll it once.
+        const naturalKey = `quests.refresh:${localDay(now, state.timezone)}`
+        const id = ulids(randomBytes(16).toString("hex"), 0, now)()
+        const input: Input = { kind: "system", event: { type: "quests.refresh" } }
+        return yield* apply(playerId, now, [{ id, input, naturalKey }])
+      })
+
+    return PlayerWriter.of({ apply, refreshQuests })
   })
 
 export class PlayerWriter extends Context.Service<
@@ -225,6 +245,14 @@ export class PlayerWriter extends Context.Service<
       playerId: string,
       now: string,
       inputs: ReadonlyArray<Admitted>,
+    ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError>
+    /**
+     * Rolls the missions of a local day or week begun since the player's last step, as `now`, so a session opened on
+     * a new day shows its missions before any event arrives. Does nothing when none is due.
+     */
+    readonly refreshQuests: (
+      playerId: string,
+      now: string,
     ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError>
   }
 >()("questline/PlayerWriter") {

@@ -4,8 +4,8 @@ import type { BandFrame, BandLook, BandSlot, ItemDef, Rarity, RulesConfig } from
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
 
 export const starterRules: RulesConfig = {
-  version: 5,
-  schemaVersion: 4,
+  version: 6,
+  schemaVersion: 5,
   appliesFrom: null,
   levelCurve: { base: 100, exponent: 1.6 },
   titles: [
@@ -67,7 +67,12 @@ export const starterRules: RulesConfig = {
     regretAt: 5,
   },
   catalogVersion: 3,
-  questPacks: [],
+  // Three dailies run each local day; each local week offers five weeklies, of which three can run at once.
+  missions: {
+    daily: { count: 3, tier: "uncommon" },
+    weekly: { offered: 5, active: 3, tier: "rare" },
+  },
+  questPacks: ["starter"],
 }
 
 const item = (def: Pick<ItemDef, "id" | "name" | "rarity" | "category" | "slot"> & Partial<ItemDef>): ItemDef => ({

@@ -25,6 +25,8 @@ export const SystemEvent = Schema.Union([
   /** After a rebalance: grants what the replayed progress reached that the kept holdings don't record yet. */
   Schema.Struct({ type: Schema.Literal("rules.published"), version: Count }),
   Schema.Struct({ type: Schema.Literal("timezone.changed"), tz: Schema.String }),
+  /** A local day or week began: the step that takes it rolls the new window's missions, as every step does. */
+  Schema.Struct({ type: Schema.Literal("quests.refresh") }),
 ])
 export type SystemEvent = typeof SystemEvent.Type
 

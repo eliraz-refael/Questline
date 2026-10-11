@@ -35,8 +35,19 @@ export const DevGrantStyles = command("dev.grantStyles", {})
 /** XP, crossing level-ups as play would. */
 export const DevGrantXp = command("dev.grantXp", { amount: Count.pipe(Schema.check(Schema.isGreaterThan(0))) })
 export const DevSetGold = command("dev.setGold", { gold: Count })
+/** A running mission finished at once, its rewards granted as play would, marked dev. */
+export const DevCompleteQuest = command("dev.completeQuest", { questId: Schema.String })
+/** This window's missions rolled again, as if the day and the week had just begun. */
+export const DevRollQuests = command("dev.rollQuests", {})
 
-export const DevCommand = Schema.Union([DevGrantItem, DevGrantStyles, DevGrantXp, DevSetGold])
+export const DevCommand = Schema.Union([
+  DevGrantItem,
+  DevGrantStyles,
+  DevGrantXp,
+  DevSetGold,
+  DevCompleteQuest,
+  DevRollQuests,
+])
 export type DevCommand = typeof DevCommand.Type
 
 export const Command = Schema.Union([
@@ -59,6 +70,8 @@ export const Command = Schema.Union([
   DevGrantStyles,
   DevGrantXp,
   DevSetGold,
+  DevCompleteQuest,
+  DevRollQuests,
 ])
 export type Command = typeof Command.Type
 export type CommandType = Command["type"]
