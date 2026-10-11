@@ -1,6 +1,7 @@
 import type { CharacterSlot, Context, PetSlot, Player, PlayerState, Slot, Snapshot } from "@questline/schema"
 import { isLater, localDay } from "./days.ts"
 import { glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
+import { questStatesOf } from "./quests.ts"
 import { statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
@@ -44,7 +45,6 @@ export const project = (
   const today = localDay(now, state.timezone)
   const streak = streakAsOf(progress.activeDays, today, rules.streak.restDaysPerWeek)
   const owned = new Set(holdings.inventory.map((entry) => entry.itemId))
-  const quests = context.questPacks.flatMap((pack) => pack.quests.map((quest) => ({ pack, quest })))
   return {
     serverId: meta.serverId,
     streamEpoch: meta.streamEpoch,
@@ -86,18 +86,8 @@ export const project = (
           },
     inventory: holdings.inventory,
     items: context.catalog.filter((def) => owned.has(def.id)),
-    quests: progress.quests.map((active) => {
-      const found = quests.find(({ pack, quest }) => pack.id === active.packId && quest.id === active.questId)
-      return {
-        questId: active.questId,
-        packId: active.packId,
-        title: found?.quest.title ?? active.questId,
-        status: "active",
-        progress: active.progress,
-        goal: found?.quest.goal.count ?? active.progress,
-        expiresAt: active.expiresAt,
-      }
-    }),
+    // A mission whose pack quest is gone has nothing to show; it idles until its window ends.
+    quests: questStatesOf(context.questPacks, progress.quests, state.timezone, now),
     claims: progress.claims.map((claim) => ({
       claimId: claim.claimId,
       kind: claim.kind,

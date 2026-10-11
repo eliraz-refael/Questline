@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { Boost, ClaimKind, ClaimStatus, InventoryEntry, Pet, Pity, PlayerStats } from "./domain.ts"
 import { Count, IsoDate, IsoDateTime, Name, Percent, QualityDimension, Rarity, Slot, Ulid } from "./primitives.ts"
+import { MissionCadence } from "./quests.ts"
 import { ScoringFact } from "./rules.ts"
 import { CheckoutRef, GitHubWork } from "./subjects.ts"
 
@@ -23,16 +24,6 @@ export interface DayTally extends Schema.Schema.Type<typeof DayTally> {}
 export const ArmedTestRun = Schema.Struct({ sessionId: Ulid, checkout: Schema.NullOr(CheckoutRef) })
 export interface ArmedTestRun extends Schema.Schema.Type<typeof ArmedTestRun> {}
 
-/** An accepted quest; its title and goal come from the pack. */
-export const ActiveQuest = Schema.Struct({
-  questId: Schema.String,
-  packId: Schema.String,
-  acceptedAt: IsoDateTime,
-  progress: Count,
-  expiresAt: Schema.NullOr(IsoDateTime),
-})
-export interface ActiveQuest extends Schema.Schema.Type<typeof ActiveQuest> {}
-
 /** A verified-tier hint on public work and what GitHub said about it. Private work opens none: it stays reported. */
 export const Claim = Schema.Struct({
   claimId: Ulid,
@@ -48,6 +39,24 @@ export interface Claim extends Schema.Schema.Type<typeof Claim> {}
 /** A session's context peak, kept so a later measurement in the same session only raises it. */
 export const SessionPeak = Schema.Struct({ sessionId: Ulid, peak: Percent })
 export interface SessionPeak extends Schema.Schema.Type<typeof SessionPeak> {}
+
+/**
+ * A mission of the current window: offered, running or done. Its title, goal and rewards come from the pack, so a
+ * pack's new version reads at once; one the packs no longer have stays here, idle, until its window ends.
+ */
+export const Mission = Schema.Struct({
+  questId: Schema.String,
+  packId: Schema.String,
+  cadence: MissionCadence,
+  /** The local day it runs on, or the Monday of its local week. */
+  window: IsoDate,
+  /** Dailies run as soon as they are offered; weeklies wait to be picked. */
+  status: Schema.Literals(["offered", "active", "completed"]),
+  progress: Count,
+  /** Context goals: each session measured while it ran and its peak, so it counts once and a crossing undoes it. */
+  sessions: Schema.Array(SessionPeak),
+})
+export interface Mission extends Schema.Schema.Type<typeof Mission> {}
 
 const NonNegative = Schema.Finite.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(0)))
 
@@ -95,7 +104,10 @@ export const Progress = Schema.Struct({
   activeDays: Schema.Array(IsoDate),
   /** The longest streak reached, in days, as the active days stood when each was added. */
   bestStreak: Count,
-  quests: Schema.Array(ActiveQuest),
+  /** The missions of the current daily and weekly windows. */
+  quests: Schema.Array(Mission),
+  /** The windows the missions were last rolled for; a step in a later one rolls its missions. */
+  questWindows: Schema.Struct({ daily: Schema.NullOr(IsoDate), weekly: Schema.NullOr(IsoDate) }),
   /** Food boosts; a new one replaces the running one, they never stack. */
   boosts: Schema.Array(Boost),
   tests: Schema.Struct({ armed: Schema.Array(ArmedTestRun) }),
@@ -129,7 +141,10 @@ export const Holdings = Schema.Struct({
   /** Highest level reached since the last prestige. Reaching a level at or below it again grants nothing. */
   peakLevel: Count,
   achievements: Schema.Array(Schema.Struct({ id: Schema.String, unlockedAt: IsoDateTime })),
-  completedQuests: Schema.Array(Schema.Struct({ questId: Schema.String, packId: Schema.String, completedAt: IsoDateTime })),
+  /** Missions whose rewards were granted, in the current windows: a mission completes once per window. */
+  completedQuests: Schema.Array(
+    Schema.Struct({ questId: Schema.String, packId: Schema.String, window: IsoDate, completedAt: IsoDateTime }),
+  ),
   /** Kept with the holdings so a roll number is never drawn twice. */
   loot: Schema.Struct({ nextRoll: Count, pity: Pity }),
   /** Today's purchases per offer id, for stock; offers themselves are derived from the day and the catalogue. */

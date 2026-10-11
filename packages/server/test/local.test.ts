@@ -1,5 +1,6 @@
 import { it } from "@effect/vitest"
-import { Effect, Exit, Layer } from "effect"
+import { EventsResponse } from "@questline/schema"
+import { Effect, Exit, Layer, Schema } from "effect"
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { request } from "node:http"
 import { homedir, tmpdir } from "node:os"
@@ -90,7 +91,10 @@ describe("localServer", () => {
       expect(statSync(paths.home).mode & 0o777).toBe(0o700)
 
       const reopened = yield* run(post(paths.socket, "/v1/sessions", { sessionId: session }))
-      expect(JSON.parse(reopened.body)).toMatchObject({ snapshot: { cursor: 3, character: { xp: { reported: 13 } } } })
+      // The commit's step also rolled the day's missions: the cursor is past every event it caused.
+      const caused = Schema.decodeUnknownSync(EventsResponse)(JSON.parse(first.body)).events.length
+      const snapshot = { cursor: caused, character: { xp: { reported: 13 } } }
+      expect(JSON.parse(reopened.body)).toMatchObject({ snapshot })
       expect(existsSync(paths.lock)).toBe(false)
     }),
     // Two cold starts of an on-disk PGlite, each running every migration: seconds apiece on a CI runner.

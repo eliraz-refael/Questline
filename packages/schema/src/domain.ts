@@ -7,6 +7,7 @@ import {
   HexColor,
   IsoDate,
   IsoDateTime,
+  ItemCategory,
   Name,
   Percent,
   PetSlot,
@@ -15,6 +16,7 @@ import {
   Slot,
   Ulid,
 } from "./primitives.ts"
+import { QuestState } from "./quests.ts"
 
 // The snapshot is everything the mod draws, sent whole when a session opens and kept current by server events.
 
@@ -78,17 +80,6 @@ export const Pet = Schema.Struct({
   equipped: Schema.Record(PetSlot, Schema.optionalKey(Ulid)),
 })
 export interface Pet extends Schema.Schema.Type<typeof Pet> {}
-
-export const ItemCategory = Schema.Literals([
-  "food",
-  "wearable",
-  "scene",
-  "title",
-  "artefact",
-  "levelUpEffect",
-  "bandStyle",
-])
-export type ItemCategory = typeof ItemCategory.Type
 
 // Band styles: a look for one band slot, drawn by the mod from data alone, so a new one ships without a mod update.
 // The mod draws each slot from named parts; a look names a glyph or a color for any of them, and the mod's own look
@@ -255,18 +246,6 @@ export const InventoryEntry = Schema.Struct({
   dye: Schema.NullOr(Schema.String),
 })
 export interface InventoryEntry extends Schema.Schema.Type<typeof InventoryEntry> {}
-
-export const QuestState = Schema.Struct({
-  questId: Schema.String,
-  packId: Schema.String,
-  title: Schema.String,
-  /** offered = today's dailies. */
-  status: Schema.Literals(["offered", "active", "completed", "expired"]),
-  progress: Count,
-  goal: Count,
-  expiresAt: Schema.NullOr(IsoDateTime),
-})
-export interface QuestState extends Schema.Schema.Type<typeof QuestState> {}
 
 export const ClaimKind = Schema.Literals(["change.merged", "review.submitted", "issue.closed"])
 export type ClaimKind = typeof ClaimKind.Type

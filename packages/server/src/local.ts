@@ -24,6 +24,7 @@ import { ApiRoutes } from "./http.ts"
 import { StreamHub } from "./hub.ts"
 import { migrate } from "./migrations.ts"
 import type { LocalProfile } from "./players.ts"
+import { QuestPacks } from "./quest-packs.ts"
 import { CurrentPlayer, Players } from "./players.ts"
 import type { Stepper } from "./writer.ts"
 import { PlayerWriter } from "./writer.ts"
@@ -192,6 +193,7 @@ export const services = (
   ).pipe(Layer.provideMerge(Players.layer))
   return Layer.mergeAll(Player, PlayerWriter.make(stepper)).pipe(
     Layer.provideMerge(StreamHub.layer),
+    Layer.provideMerge(QuestPacks.layer),
     Layer.provideMerge(Database),
     Layer.provideMerge(DevMode.layer(dev)),
   )

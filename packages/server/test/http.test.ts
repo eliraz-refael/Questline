@@ -15,6 +15,7 @@ import {
   prompt,
   session,
   start,
+  withoutQuests,
   withServer,
 } from "./fixtures.ts"
 
@@ -24,11 +25,12 @@ describe("POST /v1/sessions", () => {
       Effect.gen(function* () {
         const api = yield* client
         const opened = yield* api.openSession({ payload: { sessionId: session } })
-        expect(opened.snapshot.cursor).toBe(0)
+        // Opening on a new day rolls its missions first: the day's dailies and the week's weeklies, offered.
+        expect(opened.snapshot.cursor).toBe(2)
         expect(opened.snapshot.character).toMatchObject({ name: "Player", level: 0, gold: 0 })
         expect(opened.snapshot.pet).toBeNull()
         expect(opened.snapshot.serverId).toBe(`local-${opened.snapshot.player.id}`)
-        expect(opened.rules.version).toBe(5)
+        expect(opened.rules.version).toBe(6)
         expect(opened.acceptedEventTypes).toEqual(clientEventTypes)
       }),
     ),
@@ -46,9 +48,13 @@ describe("POST /v1/events", () => {
           { id: "x", status: "rejected", reason: "unknown_type" },
           { id: good.id, status: "accepted" },
         ])
-        expect(response.events.map((event) => event.type)).toEqual(["xp.granted", "streak.changed", "xp.granted"])
+        expect(withoutQuests(response.events).map((event) => event.type)).toEqual([
+          "xp.granted",
+          "streak.changed",
+          "xp.granted",
+        ])
         const opened = yield* api.openSession({ payload: { sessionId: session } })
-        expect(opened.snapshot.cursor).toBe(3)
+        expect(opened.snapshot.cursor).toBe(response.events.length)
         expect(opened.snapshot.character.xp.reported).toBe(13)
       }),
     ),
@@ -121,14 +127,13 @@ describe("POST /v1/commands: band styles", () => {
         const wrong = yield* api.runCommand({ payload: { id: nextId(), type: "item.equip", data: { entryId, slot: "xpBar" } } })
         expect(wrong).toMatchObject({ status: "refused", code: "invalid" })
         const equipped = yield* api.runCommand({ payload: { id: nextId(), type: "item.equip", data: { entryId, slot: "topEdge" } } })
-        expect(equipped.status === "ok" && equipped.events.map((event) => [event.type, event.data])).toEqual([
-          ["item.equipped", { slot: "topEdge", entryId }],
-        ])
+        const shown = equipped.status === "ok" && withoutQuests(equipped.events).map((one) => [one.type, one.data])
+        expect(shown).toEqual([["item.equipped", { slot: "topEdge", entryId }]])
         const opened = yield* api.openSession({ payload: { sessionId: session } })
         expect(opened.snapshot.character.equipped).toEqual({ topEdge: entryId })
         expect(opened.snapshot.items.map((item) => [item.id, item.look?.fps])).toEqual([["starlit-edge", 5]])
         const stream = yield* api.stream({ query: { after: 0 } })
-        expect(stream.events.map((event) => event.type)).toEqual(["item.equipped"])
+        expect(withoutQuests(stream.events).map((event) => event.type)).toEqual(["item.equipped"])
         const unequipped = yield* api.runCommand({ payload: { id: nextId(), type: "item.unequip", data: { slot: "topEdge" } } })
         expect(unequipped.status).toBe("ok")
         expect((yield* api.openSession({ payload: { sessionId: session } })).snapshot.character.equipped).toEqual({})
@@ -142,10 +147,10 @@ describe("GET /v1/stream", () => {
     withServer(
       Effect.gen(function* () {
         const api = yield* client
-        yield* api.sendEvents({ payload: { events: [commit("a")] } })
+        const sent = yield* api.sendEvents({ payload: { events: [commit("a")] } })
         const stream = yield* api.stream({ query: { after: 1 } })
-        expect(stream.events.map((event) => event.seq)).toEqual([2, 3])
-        expect(stream.cursor).toBe(3)
+        expect(stream.events.map((event) => event.seq)).toEqual(sent.events.slice(1).map((event) => event.seq))
+        expect(stream.cursor).toBe(sent.events.length)
         expect(stream.resync).toBeUndefined()
       }),
     ),
@@ -158,9 +163,9 @@ describe("GET /v1/stream", () => {
         const poll = yield* Effect.forkChild(api.stream({ query: { after: 0 } }))
         // Let the poll park; the test clock never fires the 25-second timer on its own.
         yield* TestClock.adjust("1 second")
-        yield* api.sendEvents({ payload: { events: [commit("a")] } })
+        const sent = yield* api.sendEvents({ payload: { events: [commit("a")] } })
         const stream = yield* Fiber.join(poll)
-        expect(stream.events.map((event) => event.seq)).toEqual([1, 2, 3])
+        expect(stream.events.map((event) => event.seq)).toEqual(sent.events.map((event) => event.seq))
       }),
     ),
   )
@@ -170,14 +175,15 @@ describe("GET /v1/stream", () => {
       Effect.gen(function* () {
         const api = yield* client
         const batch = { events: [commit("a")] }
-        yield* api.sendEvents({ payload: batch })
-        const poll = yield* Effect.forkChild(api.stream({ query: { after: 3 } }))
+        const sent = yield* api.sendEvents({ payload: batch })
+        const cursor = sent.events.length
+        const poll = yield* Effect.forkChild(api.stream({ query: { after: cursor } }))
         yield* TestClock.adjust("1 second")
         yield* api.sendEvents({ payload: batch })
         yield* TestClock.adjust("1 second")
         expect(poll.pollUnsafe()).toBeUndefined()
         yield* TestClock.adjust("23 seconds")
-        expect(yield* Fiber.join(poll)).toMatchObject({ events: [], cursor: 3 })
+        expect(yield* Fiber.join(poll)).toMatchObject({ events: [], cursor })
       }),
     ),
   )

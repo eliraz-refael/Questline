@@ -1,6 +1,7 @@
 import { Schema, Struct, Tuple } from "effect"
 import { ClaimState, InventoryEntry, ItemDef, Pet, Pity, PlayerStats } from "./domain.ts"
 import { Count, Glyph, IsoDateTime, Rarity, Slot, Ulid, XpTier } from "./primitives.ts"
+import { MissionCadence, QuestRewards, QuestState } from "./quests.ts"
 
 // Server events are the outcomes the mod renders, numbered by a per-player seq that only goes up. Each one below
 // is the draft the rules engine emits; the write path adds the envelope as it appends the draft to the stream.
@@ -15,7 +16,8 @@ const serverEvent = <Type extends string, Data extends Schema.Struct.Fields>(typ
   Schema.Struct({ type: Schema.Literal(type), data: Schema.Struct(data) })
 
 /**
- * Fills the XP bar, floats "+120 XP". `reason` is the scoring fact, or `dev` for XP a dev command granted. A graded
+ * Fills the XP bar, floats "+120 XP". `reason` is the scoring fact, `quest` for a quest's reward, or `dev` for XP a
+ * dev command granted. A graded
  * prompt's grant names the weighted grade (0-10) that priced it.
  */
 export const XpGranted = serverEvent("xp.granted", {
@@ -45,18 +47,30 @@ export const LootDropped = serverEvent("loot.dropped", {
   pity: Pity,
   tier,
 })
-/** Updates the gold counter. `reason`: `drop`, or `dev` for gold a dev command set. */
+/** Updates the gold counter. `reason`: `drop`, `quest` for a quest's reward, or `dev` for gold a dev command set. */
 export const GoldChanged = serverEvent("gold.changed", { delta: Schema.Int, totalAfter: Count, reason: Schema.String })
 /** A pending, verified, rejected or expired claim, shown in the quest log. */
 export const ClaimUpdated = serverEvent("claim.updated", ClaimState.fields)
+/**
+ * A local day's dailies, already running, or a local week's weeklies to pick from: they replace that cadence's
+ * missions in the pane. An empty set says the old window's missions are gone and nothing new is offered.
+ */
+export const QuestOffered = serverEvent("quest.offered", { cadence: MissionCadence, quests: Schema.Array(QuestState) })
+/** A weekly picked: it runs from now on. */
+export const QuestAccepted = serverEvent("quest.accepted", { quest: QuestState })
+/** A running weekly given up: back on offer, its progress gone. */
+export const QuestAbandoned = serverEvent("quest.abandoned", { quest: QuestState })
 /** Ticks the quest's bar. */
 export const QuestProgress = serverEvent("quest.progress", { questId: Schema.String, progress: Count, goal: Count })
-/** Quest banner; the rewards arrive as their own events. */
+/**
+ * Quest banner, named by its title; the rewards arrive as their own events (`xp.granted`, `gold.changed` with reason
+ * `quest`, `loot.dropped`), and `rewards` says what the quest promised, for the banner to list before they play.
+ */
 export const QuestCompleted = serverEvent("quest.completed", {
   questId: Schema.String,
+  title: Schema.String,
   tier,
-  // Not specified in the design doc yet: what the banner lists before the reward events arrive.
-  rewards: Schema.Array(Schema.String),
+  rewards: QuestRewards,
 })
 /** Achievement banner. */
 export const AchievementUnlocked = serverEvent("achievement.unlocked", {
@@ -102,6 +116,9 @@ export const ServerEventDraft = Schema.Union([
   LootDropped,
   GoldChanged,
   ClaimUpdated,
+  QuestOffered,
+  QuestAccepted,
+  QuestAbandoned,
   QuestProgress,
   QuestCompleted,
   AchievementUnlocked,

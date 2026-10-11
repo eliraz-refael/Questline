@@ -138,7 +138,7 @@ describe("migrations", () => {
   it.effect("work out the best grade and the profile from the graded prompts the log accepted, the best streak at 0", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
-      const { "0006_stats_profile": _profile, ...before } = migrations
+      const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0006"))
       yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
       const fresh = initialState({ ...profile, now: start })
       const { bestStreak: _best, ...progress } = fresh.progress
@@ -195,6 +195,30 @@ describe("migrations", () => {
       expect(old?.bestStreak).toBe(0)
       expect(quiet?.stats.prompts).toEqual({ ...fresh.progress.stats.prompts, graded: 2 })
       expect(kept).toEqual(newer.progress)
+    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
+  )
+
+  it.effect("give a player saved before missions no rolled windows, so the next step rolls today's", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0007"))
+      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      const fresh = initialState({ ...profile, now: start })
+      const { questWindows: _windows, ...progress } = fresh.progress
+      yield* sql`
+        INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
+        VALUES ('p', NULL, NULL, 'Player', 'seed', ${start})
+      `
+      yield* sql`
+        INSERT INTO player_state (player_id, state, log_seq, server_seq, stream_epoch, engine_version, rules_version)
+        VALUES ('p', ${JSON.stringify({ ...fresh, progress })}::jsonb, 0, 0, 1, 7, 5)
+      `
+      yield* migrate
+      const stored = yield* sql`SELECT state FROM player_state`
+      const states = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ state: PlayerState })))(stored)
+      expect(states.map((row) => row.state)).toEqual([fresh])
+      expect(yield* sql`SELECT * FROM quest_packs`).toEqual([])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
     coldStart,
   )

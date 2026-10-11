@@ -4,7 +4,8 @@ import { localDay } from "./days.ts"
 // Graded prompts are priced from their scores; the player stats are counted from stats events and graded prompts,
 // and earn no XP on their own.
 
-const quality: ReadonlyArray<QualityDimension> = [
+/** The quality scores, in the rubric's order. */
+export const qualityDimensions: ReadonlyArray<QualityDimension> = [
   "clarity",
   "grammar",
   "specificity",
@@ -19,8 +20,8 @@ const quality: ReadonlyArray<QualityDimension> = [
  * at least one weight above zero.
  */
 export const gradeOf = (rules: PromptRules, scores: Readonly<Record<GradeDimension, number>>): number => {
-  const total = quality.reduce((sum, dimension) => sum + rules.weights[dimension], 0)
-  const weighted = quality.reduce((sum, dimension) => sum + rules.weights[dimension] * scores[dimension], 0)
+  const total = qualityDimensions.reduce((sum, dimension) => sum + rules.weights[dimension], 0)
+  const weighted = qualityDimensions.reduce((sum, dimension) => sum + rules.weights[dimension] * scores[dimension], 0)
   // To the thousandth, so float error in the weights never puts a grade past 10 or just under a threshold.
   return total === 0 ? 0 : Math.round((weighted / total) * 1000) / 1000
 }

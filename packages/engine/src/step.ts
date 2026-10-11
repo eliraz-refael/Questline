@@ -9,10 +9,14 @@ import type {
   Input,
   InventoryEntry,
   ItemDef,
+  Mission,
   PlayerState,
   PlayerStats,
   Progress,
   RollRecord,
+  QuestDef,
+  QuestLoot,
+  Rarity,
   ScoringFact,
   ServerEventDraft,
   Slot,
@@ -24,16 +28,29 @@ import type {
 import { addDays, isLater, localDay } from "./days.ts"
 import { formFor, formsFor, glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import type { RarityWeights } from "./loot.ts"
-import { pityAfter, raiseRare, rollLoot } from "./loot.ts"
+import { pityAfter, raiseRare, rarityRank, rollLoot } from "./loot.ts"
 import { petSlots } from "./project.ts"
+import type { QuestSignal } from "./quests.ts"
+import {
+  defOf,
+  isNewWindow,
+  measureMission,
+  meets,
+  missionCadences,
+  offerFor,
+  type PromptSignal,
+  questStateOf,
+  questStatesOf,
+  windowOf,
+} from "./quests.ts"
 import { ulids } from "./random.ts"
 import { addScores, bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
 // This version covers the proof of concept: reported XP with daily caps, XP for graded prompts, levels, the streak,
-// a loot roll per turn, per graded prompt (better odds for a better grade) and per level-up, the player stats, and
-// hatching the pet, and equipping items. Verified-tier facts wait for the verifier, and other commands are refused
-// for now.
+// a loot roll per turn, per graded prompt (better odds for a better grade) and per level-up, the player stats, the
+// daily and weekly missions, hatching the pet, and equipping items. Verified-tier facts wait for the verifier, and
+// other commands are refused for now.
 
 /** What one step builds up. It lives only inside `step`, so the function stays pure. */
 interface Run {
@@ -46,7 +63,18 @@ interface Run {
   readonly isDev: boolean
 }
 
+/**
+ * Every step first rolls the missions of a local day or week begun since the last roll, then applies its input. A
+ * refused command changes nothing, the roll included: the next step rolls instead.
+ */
 export const step = (state: PlayerState, input: Input, context: Context): Step => {
+  const rolled = rollQuests(state, context)
+  const result = dispatch(rolled.state, input, context)
+  if (result.refusal !== null) return refuse(state, result.refusal)
+  return rolled.events.length === 0 ? result : { ...result, events: [...rolled.events, ...result.events] }
+}
+
+const dispatch = (state: PlayerState, input: Input, context: Context): Step => {
   switch (input.kind) {
     case "client":
       return applyClient(state, input.event, context)
@@ -54,6 +82,49 @@ export const step = (state: PlayerState, input: Input, context: Context): Step =
       return applyCommand(state, input.command, context)
     case "system":
       return applySystem(state, input.event, context)
+  }
+}
+
+/**
+ * The missions of each window begun since they were last rolled, or of both windows again when `salt` re-rolls them
+ * (a dev command): the old window's missions go, and the new set is offered. Grants recorded for windows now over
+ * are dropped, as a mission completes once per window.
+ */
+const rollQuests = (
+  state: PlayerState,
+  context: Context,
+  salt?: string,
+): { readonly state: PlayerState; readonly events: ReadonlyArray<ServerEventDraft> } => {
+  const { rules, now } = context
+  const today = localDay(now, state.timezone)
+  let quests = state.progress.quests
+  const windows = { ...state.progress.questWindows }
+  const events: Array<ServerEventDraft> = []
+  let rolled = false
+  for (const cadence of missionCadences) {
+    const window = windowOf(cadence, today)
+    if (salt === undefined && !isNewWindow(windows[cadence], window)) continue
+    rolled = true
+    const had = quests.some((mission) => mission.cadence === cadence)
+    const count = cadence === "daily" ? rules.missions.daily.count : rules.missions.weekly.offered
+    const offered = offerFor(context, cadence, window, count, state.timezone, salt)
+    quests = [...quests.filter((mission) => mission.cadence !== cadence), ...offered]
+    windows[cadence] = window
+    if (offered.length > 0 || had) {
+      const states = questStatesOf(context.questPacks, offered, state.timezone, now)
+      events.push({ type: "quest.offered", data: { cadence, quests: states } })
+    }
+  }
+  if (!rolled) return { state, events }
+  const current = new Set([windows.daily, windows.weekly])
+  const completedQuests = state.holdings.completedQuests.filter((done) => current.has(done.window))
+  return {
+    state: {
+      ...state,
+      progress: { ...state.progress, quests, questWindows: windows },
+      holdings: { ...state.holdings, completedQuests },
+    },
+    events,
   }
 }
 
@@ -102,11 +173,13 @@ const applyClient = (state: PlayerState, event: ClientEvent, context: Context): 
     case "session.cleared":
       setStats(run, { clears: run.state.progress.stats.clears + 1 })
       statsChanged(run, (stats) => ({ clears: stats.clears }))
+      advance(run, { kind: "clears" }, day)
       break
     case "session.compacted": {
       const compactions = run.state.progress.stats.compactions
       setStats(run, { compactions: { ...compactions, [event.data.trigger]: compactions[event.data.trigger] + 1 } })
       statsChanged(run, (stats) => ({ compactions: stats.compactions }))
+      advance(run, { kind: "compactions", trigger: event.data.trigger }, day)
       break
     }
     case "command.used": {
@@ -114,6 +187,7 @@ const applyClient = (state: PlayerState, event: ClientEvent, context: Context): 
       const name = commandKey(commands, event.data.command)
       setStats(run, { commands: { ...commands, [name]: (commands[name] ?? 0) + 1 } })
       statsChanged(run, (stats) => ({ commands: stats.commands }))
+      advance(run, { kind: "command", command: event.data.command }, day)
       break
     }
     case "context.measured": {
@@ -130,6 +204,7 @@ const applyClient = (state: PlayerState, event: ClientEvent, context: Context): 
           ...(peak ? { contextPeak: stats.contextPeak } : {}),
         }))
       }
+      measureQuests(run, event.sessionId, event.data.pct, day)
       break
     }
     case "commit.made":
@@ -181,7 +256,7 @@ const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>,
   const nth = (run.state.progress.tallies.find((t) => t.day === day)?.counts["prompt.graded"] ?? 0) + 1
   // maxXp * grade / 10 * pct / 100, to the thousandth so float error in the weights never costs a point.
   const xp = Math.round(rules.prompt.maxXp * grade * bandPct(rules.prompt, nth)) / 1000
-  grant(run, "prompt.graded", day, xp, grade)
+  grant(run, "prompt.graded", day, { xp, prompt: { scores, grade } })
   const prompts = run.state.progress.stats.prompts
   setStats(run, {
     prompts: {
@@ -194,7 +269,7 @@ const gradePrompt = (run: Run, scores: Readonly<Record<GradeDimension, number>>,
   })
   const { loot } = rules
   const weights = grade >= loot.promptGreatAt ? raiseRare(loot.weights, loot.promptGreatRareFactor) : loot.weights
-  roll(run, "prompt", (loot.promptChanceAtTen * grade) / 10, weights)
+  roll(run, "prompt", (loot.promptChanceAtTen * grade) / 10, { weights })
   statsChanged(run, (stats) => ({ prompts: stats.prompts, grades: stats.grades }))
 }
 
@@ -209,10 +284,16 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
       return equip(state, command.data, context)
     case "item.unequip":
       return unequip(state, command.data.slot, context)
+    case "quest.accept":
+      return accept(state, command.data.questId, context)
+    case "quest.abandon":
+      return abandon(state, command.data.questId, context)
     case "dev.grantItem":
     case "dev.grantStyles":
     case "dev.grantXp":
     case "dev.setGold":
+    case "dev.completeQuest":
+    case "dev.rollQuests":
       return context.dev === true
         ? runDev(state, command, context)
         : refuse(state, { code: "not_allowed", message: "Dev commands run only on a local server in dev mode" })
@@ -241,10 +322,16 @@ const bonusPct = (run: Run): number => {
 const promptRule: XpRule = { xp: 0, tier: "reported", dailyCap: null }
 
 /**
- * Counts one scoring fact and grants its XP, unless the day's cap is reached. `xp` overrides the rule's amount; a
- * graded prompt's `grade` rides on the grant, so the mod can say what earned it.
+ * Counts one scoring fact and grants its XP, unless the day's cap is reached, and counts it toward the missions whose
+ * goal it meets, capped or not. `xp` overrides the rule's amount; a graded prompt's grade rides on the grant, so the
+ * mod can say what earned it, and its scores reach the missions that filter on them.
  */
-const grant = (run: Run, fact: ScoringFact, day: string, xp?: number, grade?: number): void => {
+const grant = (
+  run: Run,
+  fact: ScoringFact,
+  day: string,
+  options: { readonly xp?: number; readonly prompt?: PromptSignal } = {},
+): void => {
   const { rules } = run.context
   const rule = fact === "prompt.graded" ? promptRule : rules.xp[fact]
   // Verified-tier facts are granted when the verifier confirms them; a hint alone earns nothing.
@@ -253,30 +340,35 @@ const grant = (run: Run, fact: ScoringFact, day: string, xp?: number, grade?: nu
   const totals = { ...progress.totals, [fact]: (progress.totals[fact] ?? 0) + 1 }
   const tally = progress.tallies.find((t) => t.day === day)
   const count = tally?.counts[fact] ?? 0
+  const { prompt } = options
+  const signal: QuestSignal = { kind: "fact", fact, ...(prompt === undefined ? {} : { prompt }) }
   if (rule.dailyCap !== null && count >= rule.dailyCap) {
     setProgress(run, { totals })
     run.events.push({ type: "xp.capped", data: { eventType: fact, cap: rule.dailyCap } })
+    advance(run, signal, day)
     return
   }
   const counts = { ...tally?.counts, [fact]: count + 1 }
   const tallies = [...progress.tallies.filter((t) => t.day !== day), { day, counts }].sort((a, b) =>
     a.day < b.day ? -1 : 1,
   )
-  const amount = Math.floor(((xp ?? rule.xp) * (100 + bonusPct(run))) / 100)
+  const amount = Math.floor(((options.xp ?? rule.xp) * (100 + bonusPct(run))) / 100)
   const before = levelOf(run.state, rules).level
   setProgress(run, { totals, tallies, xp: { ...progress.xp, reported: progress.xp.reported + amount } })
-  if (amount === 0) return
-  run.events.push({
-    type: "xp.granted",
-    data: {
-      amount,
-      tier: "reported",
-      reason: fact,
-      totalAfter: totalXp(run.state),
-      ...(grade === undefined ? {} : { grade }),
-    },
-  })
-  levelUp(run, before)
+  if (amount > 0) {
+    run.events.push({
+      type: "xp.granted",
+      data: {
+        amount,
+        tier: "reported",
+        reason: fact,
+        totalAfter: totalXp(run.state),
+        ...(prompt === undefined ? {} : { grade: prompt.grade }),
+      },
+    })
+    levelUp(run, before)
+  }
+  advance(run, signal, day)
 }
 
 /**
@@ -308,7 +400,7 @@ const levelUp = (run: Run, before: number): void => {
   const forms = evolves ? [...new Set([...pet.forms, ...formsFor(rules, after)])].sort((a, b) => a - b) : []
   setHoldings(run, { peakLevel: after, pet: evolves ? { ...pet, forms, form } : pet })
   if (evolves) run.events.push({ type: "pet.changed", data: { form } })
-  roll(run, "levelUp", 1, rules.loot.onLevelUp.weights)
+  roll(run, "levelUp", 1, { weights: rules.loot.onLevelUp.weights })
 }
 
 /** The first event of a local day extends the streak and earns its XP. */
@@ -327,11 +419,164 @@ const markActive = (run: Run, day: string): void => {
     .filter((other) => other > day && other < today)
     .map((other) => streakAsOf(activeDays, other, rules.streak.restDaysPerWeek).days)
   setProgress(run, { bestStreak: Math.max(progress.bestStreak, current.days, reached.days, ...joined) })
-  grant(run, "streak.day", day, Math.min(rules.streak.xpPerDay * reached.days, rules.streak.maxXp))
+  grant(run, "streak.day", day, { xp: Math.min(rules.streak.xpPerDay * reached.days, rules.streak.maxXp) })
   run.events.push({
     type: "streak.changed",
     data: { days: current.days, restDaysLeftThisWeek: current.restDaysLeftThisWeek },
   })
+}
+
+/** Puts `next` in place of the mission of the same quest, pack and cadence. */
+const setMission = (run: Run, next: Mission): void => {
+  const quests = run.state.progress.quests.map((mission) =>
+    mission.questId === next.questId && mission.packId === next.packId && mission.cadence === next.cadence
+      ? next
+      : mission,
+  )
+  setProgress(run, { quests })
+}
+
+/** The running missions of the window `day` falls in, with their pack quests. */
+const running = (run: Run, day: string): Array<{ readonly mission: Mission; readonly def: QuestDef }> =>
+  run.state.progress.quests.flatMap((mission) => {
+    if (mission.status !== "active" || mission.window !== windowOf(mission.cadence, day)) return []
+    const def = defOf(run.context.questPacks, mission)
+    return def === undefined ? [] : [{ mission, def }]
+  })
+
+/** A mission's new progress: its bar ticks, and reaching the goal completes it. */
+const progressTo = (run: Run, mission: Mission, def: QuestDef): void => {
+  setMission(run, mission)
+  run.events.push({
+    type: "quest.progress",
+    data: { questId: mission.questId, progress: mission.progress, goal: def.goal.count },
+  })
+  if (mission.progress >= def.goal.count) complete(run, mission, def)
+}
+
+/** Counts something that happened on `day` toward every running mission of its window whose goal it meets. */
+const advance = (run: Run, signal: QuestSignal, day: string): void => {
+  for (const { mission, def } of running(run, day)) {
+    if (meets(def.goal, signal)) progressTo(run, { ...mission, progress: mission.progress + 1 }, def)
+  }
+}
+
+/** A context measurement on `day`, for the running context missions of its window. */
+const measureQuests = (run: Run, sessionId: string, pct: number, day: string): void => {
+  for (const { mission, def } of running(run, day)) {
+    if (def.goal.kind !== "context") continue
+    const measured = measureMission(mission, sessionId, pct, def.goal.under)
+    if (measured.progress === mission.progress) setMission(run, measured)
+    else progressTo(run, measured, def)
+  }
+}
+
+/**
+ * A mission done: the banner at its cadence's tier, then its rewards, each as its own event: reported XP (which may
+ * level up, with that drop), gold, and a drop that always lands. A mission already granted in this window grants
+ * nothing again.
+ */
+const complete = (run: Run, mission: Mission, def: QuestDef): void => {
+  const { rules, now } = run.context
+  setMission(run, { ...mission, status: "completed", progress: Math.min(mission.progress, def.goal.count) })
+  const holdings = run.state.holdings
+  const granted = holdings.completedQuests.some(
+    (done) => done.questId === mission.questId && done.packId === mission.packId && done.window === mission.window,
+  )
+  if (granted) return
+  const done = { questId: mission.questId, packId: mission.packId, window: mission.window, completedAt: now }
+  setHoldings(run, { completedQuests: [...holdings.completedQuests, done] })
+  const { rewards } = def
+  const tier = rules.missions[mission.cadence].tier
+  run.events.push({ type: "quest.completed", data: { questId: def.id, title: def.title, tier, rewards } })
+  const reason = run.isDev ? "dev" : "quest"
+  if (rewards.xp !== undefined && rewards.xp > 0) {
+    const before = levelOf(run.state, rules).level
+    const xp = run.state.progress.xp
+    setProgress(run, { xp: { ...xp, reported: xp.reported + rewards.xp } })
+    run.events.push({
+      type: "xp.granted",
+      data: { amount: rewards.xp, tier: "reported", reason, totalAfter: totalXp(run.state) },
+    })
+    levelUp(run, before)
+  }
+  if (rewards.gold !== undefined && rewards.gold > 0) {
+    const gold = run.state.holdings.gold + rewards.gold
+    setHoldings(run, { gold })
+    run.events.push({ type: "gold.changed", data: { delta: rewards.gold, totalAfter: gold, reason } })
+  }
+  if (rewards.loot !== undefined) rewardDrop(run, rewards.loot, `${mission.packId}/${mission.questId}`)
+}
+
+/**
+ * A reward's drop: the item it names, or one from its pool (a category, else the whole catalogue) at its rarity,
+ * falling to the nearest lower rarity with items. An item the catalogue lacks rolls from the pool instead, and a pool
+ * with nothing at or below the rarity rolls from the whole catalogue, so the drop the banner promised lands.
+ */
+const rewardDrop = (run: Run, loot: QuestLoot, ref: string): void => {
+  const { catalog } = run.context
+  const named = loot.item === undefined ? undefined : catalog.find((def) => def.id === loot.item)
+  const keep = named?.rarity ?? loot.rarity
+  const category = loot.pool === undefined ? catalog : catalog.filter((def) => def.category === loot.pool)
+  const fits = category.some((def) => rarityRank(def.rarity) <= rarityRank(keep))
+  const pool = named !== undefined ? [named] : fits ? category : catalog
+  roll(run, "reward", 1, { keep, pool, source: { kind: "quest", ref } })
+}
+
+const weekliesRunning = (state: PlayerState): number =>
+  state.progress.quests.filter((mission) => mission.cadence === "weekly" && mission.status === "active").length
+
+/** The mission of the current windows with that quest id, a weekly first should a pack reuse an id. */
+const findMission = (state: PlayerState, questId: string): Mission | undefined => {
+  const found = state.progress.quests.filter((mission) => mission.questId === questId)
+  return found.find((mission) => mission.cadence === "weekly") ?? found[0]
+}
+
+/**
+ * Picks an offered weekly, up to the rules' number running at once. Dailies run on their own. A replay applies what
+ * the live run accepted, even if the rules or packs have changed since.
+ */
+const accept = (state: PlayerState, questId: string, context: Context): Step => {
+  const mission = findMission(state, questId)
+  if (mission === undefined) return refuse(state, { code: "not_allowed", message: "That mission is not on offer" })
+  if (mission.cadence === "daily") return refuse(state, { code: "not_allowed", message: "Dailies run on their own" })
+  const def = defOf(context.questPacks, mission)
+  if (context.mode.kind === "live") {
+    if (mission.status !== "offered") {
+      return refuse(state, { code: "not_allowed", message: "That mission is already taken" })
+    }
+    if (def === undefined) return refuse(state, { code: "not_allowed", message: "That mission is no longer offered" })
+    const most = context.rules.missions.weekly.active
+    if (weekliesRunning(state) >= most) {
+      return refuse(state, { code: "not_allowed", message: `The quest log is full: ${most} weeklies run at once` })
+    }
+  }
+  const run = begin(state, context)
+  const accepted: Mission = { ...mission, status: "active" }
+  setMission(run, accepted)
+  if (def !== undefined) {
+    const quest = questStateOf(accepted, def, state.timezone, context.now)
+    run.events.push({ type: "quest.accepted", data: { quest } })
+  }
+  return finish(run)
+}
+
+/** Gives up a running weekly: back on offer, its progress gone, its place in the quest log free. */
+const abandon = (state: PlayerState, questId: string, context: Context): Step => {
+  const mission = findMission(state, questId)
+  if (mission?.cadence === "daily") return refuse(state, { code: "not_allowed", message: "Dailies run on their own" })
+  if (mission === undefined || mission.status !== "active") {
+    return refuse(state, { code: "invalid", message: "That mission is not running" })
+  }
+  const run = begin(state, context)
+  const offered: Mission = { ...mission, status: "offered", progress: 0, sessions: [] }
+  setMission(run, offered)
+  const def = defOf(context.questPacks, mission)
+  if (def !== undefined) {
+    const quest = questStateOf(offered, def, state.timezone, context.now)
+    run.events.push({ type: "quest.abandoned", data: { quest } })
+  }
+  return finish(run)
 }
 
 const sameRun = (a: ArmedTestRun, b: ArmedTestRun): boolean =>
@@ -353,8 +598,18 @@ const disarm = (run: Run, passed: ArmedTestRun): boolean => {
   return left.length < armed.length
 }
 
-/** Rolls loot, by `weights` if the trigger has its own odds, or in a replay applies the roll the log recorded. */
-const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, weights?: RarityWeights): void => {
+/** How a roll differs from a turn's: its own rarity weights, or a reward's rarity, item pool and where it came from. */
+interface RollOptions {
+  readonly weights?: RarityWeights
+  /** A reward's rarity: the pity timers never raise it, though the drop moves them as any drop does. */
+  readonly keep?: Rarity
+  /** The items it draws from; the whole catalogue when absent. */
+  readonly pool?: ReadonlyArray<ItemDef>
+  readonly source?: InventoryEntry["source"]
+}
+
+/** Rolls loot, by the trigger's own odds if it has them, or in a replay applies the roll the log recorded. */
+const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, options: RollOptions = {}): void => {
   const { context } = run
   const { rules, catalog } = context
   const loot = run.state.holdings.loot
@@ -365,7 +620,9 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, weights?
     if (recorded === undefined) return
     record = recorded
   } else {
-    const drop = rollLoot(context.rollSeed, loot.nextRoll, chance, rules, catalog, loot.pity, weights)
+    const pool = options.pool ?? catalog
+    const { weights, keep } = options
+    const drop = rollLoot(context.rollSeed, loot.nextRoll, chance, rules, pool, loot.pity, weights, keep)
     record = {
       number: loot.nextRoll,
       trigger,
@@ -387,7 +644,9 @@ const roll = (run: Run, trigger: RollRecord["trigger"], chance: number, weights?
     id: drop.entryId,
     itemId: drop.itemId,
     acquiredAt: context.now,
-    source: { kind: run.isDev ? "dev" : "drop", ref: String(record.number) },
+    source: run.isDev
+      ? { kind: "dev", ref: String(record.number) }
+      : (options.source ?? { kind: "drop", ref: String(record.number) }),
     dye: null,
   }
   const gold = run.state.holdings.gold + drop.gold
@@ -516,6 +775,22 @@ const runDev = (state: PlayerState, command: DevCommand, context: Context): Step
       if (delta !== 0) {
         run.events.push({ type: "gold.changed", data: { delta, totalAfter: command.data.gold, reason: "dev" } })
       }
+      break
+    }
+    case "dev.completeQuest": {
+      // A running mission, or an offered weekly, which it takes first; its rewards are marked dev.
+      const mission = findMission(state, command.data.questId)
+      const def = mission === undefined ? undefined : defOf(context.questPacks, mission)
+      if (mission === undefined || def === undefined || mission.status === "completed") {
+        return refuse(state, { code: "invalid", message: "No mission on offer or running has that id" })
+      }
+      complete(run, { ...mission, status: "active", progress: def.goal.count }, def)
+      break
+    }
+    case "dev.rollQuests": {
+      const rolled = rollQuests(state, context, `:dev:${context.logSeq}`)
+      run.state = rolled.state
+      run.events.push(...rolled.events)
       break
     }
   }

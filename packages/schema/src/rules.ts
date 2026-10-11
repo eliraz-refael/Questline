@@ -81,6 +81,22 @@ const GlyphBands = Schema.Array(GlyphBand).check(
   ),
 )
 
+/** How many missions run: dailies offered and running on their own each local day, weeklies offered and picked. */
+export const MissionRules = Schema.Struct({
+  daily: Schema.Struct({
+    count: Count,
+    /** How big the celebration of a completed daily is. */
+    tier: Rarity,
+  }),
+  weekly: Schema.Struct({
+    offered: Count,
+    /** The most weeklies running at once. */
+    active: Count,
+    tier: Rarity,
+  }),
+})
+export interface MissionRules extends Schema.Schema.Type<typeof MissionRules> {}
+
 /** The game's tuning. The mod never hard-codes a number from it. */
 export const RulesConfig = Schema.Struct({
   /** Tuning version. */
@@ -126,6 +142,7 @@ export const RulesConfig = Schema.Struct({
   prompt: PromptRules,
   /** Item definitions to fetch if newer. */
   catalogVersion: Count,
+  missions: MissionRules,
   /** Active pack ids. */
   questPacks: Schema.Array(Schema.String),
 })

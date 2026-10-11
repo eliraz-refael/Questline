@@ -7,6 +7,7 @@ import type {
   PromptGraded,
   TurnCompleted,
 } from "@questline/schema"
+import type { ServerEvent } from "@questline/schema"
 import { QuestlineApi } from "@questline/schema"
 import { Effect, Layer } from "effect"
 import { HttpServer } from "effect/http"
@@ -93,6 +94,13 @@ export const contextMeasured = (pct: number, id = nextId()): typeof ContextMeasu
 })
 
 export const hatch = (id = nextId()): typeof PetHatch.Type => ({ id, type: "pet.hatch", data: { species: "fox", name: "Pixel" } })
+
+/**
+ * The events past the missions': which dailies a fresh player draws depends on its seed, so a test of something
+ * else leaves the offers and their progress out.
+ */
+export const withoutQuests = (events: ReadonlyArray<ServerEvent>): Array<ServerEvent> =>
+  events.filter((event) => !event.type.startsWith("quest."))
 
 /** The services behind the routes, over a fresh in-memory database, with the clock at `start`; `dev`: dev mode. */
 export const testServices = (stepper?: Stepper, dev = false) =>
