@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Count, Glyph, IsoDateTime, Probability, QualityDimension, Rarity, XpTier } from "./primitives.ts"
+import { Count, Glyph, IsoDateTime, Multiplier, Probability, QualityDimension, Rarity, XpTier } from "./primitives.ts"
 
 /** The scoring facts an `XpRule` prices: every one but a graded prompt, which the `prompt` section prices. */
 export const XpFact = Schema.Literals([
@@ -42,7 +42,31 @@ export interface LevelCurve extends Schema.Schema.Type<typeof LevelCurve> {}
 export const PromptBand = Schema.Struct({ upTo: Schema.NullOr(Count), pct: Count })
 export interface PromptBand extends Schema.Schema.Type<typeof PromptBand> {}
 
-/** How a graded prompt is priced: XP = maxXp * weighted average score / 10, then the day's band. */
+/** A sigil's multiplier range at one rarity: `[min, max]`, both inclusive. */
+export const MultiplierRange = Schema.Tuple([Multiplier, Multiplier]).check(
+  Schema.makeFilter(([min, max]) => min <= max || "a range runs from its least to its most"),
+)
+export type MultiplierRange = typeof MultiplierRange.Type
+
+/**
+ * The multiplier each rarity's sigils carry, in ranges that rise with the rarity and never overlap, so a rarer sigil
+ * always beats a more common one.
+ */
+export const SigilRanges = Schema.Record(Rarity, MultiplierRange).check(
+  Schema.makeFilter((ranges) => {
+    const rising = Rarity.literals.every((rarity, i) => {
+      const next = Rarity.literals[i + 1]
+      return next === undefined || ranges[rarity][1] < ranges[next][0]
+    })
+    return rising || "each rarity's range must sit above the one before, without overlap"
+  }),
+)
+export type SigilRanges = typeof SigilRanges.Type
+
+/**
+ * How a graded prompt is priced: XP = maxXp * weighted average score / 10, then the day's band, then the equipped
+ * sigil, then the flat boosts, rounded down once.
+ */
 export const PromptRules = Schema.Struct({
   /** The rubric the mod grades against. */
   rubricVersion: Count,
@@ -54,6 +78,8 @@ export const PromptRules = Schema.Struct({
   perDay: Schema.Array(PromptBand),
   /** A prompt counts as regretted from this regret score on: the grader gives small regrets as noise. */
   regretAt: Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 10 }))),
+  /** The range a sigil's multiplier sits in, by its rarity; the engine holds a sigil to it. */
+  sigilMultiplier: SigilRanges,
 }).check(
   Schema.makeFilter(
     (prompt) =>
@@ -122,6 +148,11 @@ export const RulesConfig = Schema.Struct({
     promptGreatRareFactor: Positive,
     chanceOnVerified: Probability,
     weights: Schema.Record(Rarity, Count),
+    /**
+     * Of the drops of each rarity, the share that is a sigil (when the rarity has sigils and other items): sigils
+     * come only from drops, and rarely, so a better one keeps coming as the levels get further apart.
+     */
+    sigilShare: Schema.Record(Rarity, Probability),
     /** Every level-up drops one item, by these rarity weights. */
     onLevelUp: Schema.Struct({ weights: Schema.Record(Rarity, Count) }),
     pity: Schema.Struct({ rareAfter: Count, epicAfter: Count }),

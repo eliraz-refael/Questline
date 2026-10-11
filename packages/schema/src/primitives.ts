@@ -20,6 +20,9 @@ export const GitSha = Schema.String.pipe(Schema.check(Schema.isPattern(/^(?:[0-9
 
 export const Count = Schema.Natural
 
+/** A factor on XP: 1 changes nothing, and nothing in the game lowers XP. */
+export const Multiplier = Schema.Finite.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1)))
+
 export const Probability = Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 1 })))
 
 /** A share of something in percent, 0-100: how full the context is. */
@@ -50,7 +53,8 @@ export type PetSlot = typeof PetSlot.Type
 export const BandSlot = Schema.Literals(["xpBar", "levelDisplay", "topEdge", "goldDisplay"])
 export type BandSlot = typeof BandSlot.Type
 
-export const CharacterSlot = Schema.Literals(["levelUpEffect", "scene", ...BandSlot.literals])
+/** The character's slots: a level-up effect, a scene, the band's own, and the one sigil, which multiplies prompt XP. */
+export const CharacterSlot = Schema.Literals(["levelUpEffect", "scene", ...BandSlot.literals, "sigil"])
 export type CharacterSlot = typeof CharacterSlot.Type
 
 export const Slot = Schema.Union([PetSlot, CharacterSlot])
@@ -65,6 +69,7 @@ export const ItemCategory = Schema.Literals([
   "artefact",
   "levelUpEffect",
   "bandStyle",
+  "sigil",
 ])
 export type ItemCategory = typeof ItemCategory.Type
 

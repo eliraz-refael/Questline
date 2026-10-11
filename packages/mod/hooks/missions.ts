@@ -1,6 +1,6 @@
 import type { QuestState, RulesConfig, Snapshot } from '@questline/schema'
 import type { MissionRewards, MissionsView, MissionView, Tier } from '../types'
-import { tierOf } from './celebrate'
+import { boostText, tierOf } from './celebrate'
 import type { Row, Run } from './cells'
 import { blank, cellsOf, cellsOfRow, clip, dim } from './cells'
 import { rarityColors } from './frames'
@@ -12,11 +12,18 @@ import { counted, fitting, meter } from './stats'
 
 const statuses: ReadonlyArray<MissionView['status']> = ['offered', 'active', 'completed', 'expired']
 
-const rewardsOf = (rewards: QuestState['rewards']): MissionRewards => ({
-  xp: rewards.xp ?? 0,
-  gold: rewards.gold ?? 0,
-  loot: rewards.loot === undefined ? null : tierOf(rewards.loot.rarity),
-})
+const rewardsOf = (rewards: QuestState['rewards']): MissionRewards => {
+  const boost = rewards.xpBoost
+  return {
+    xp: rewards.xp ?? 0,
+    gold: rewards.gold ?? 0,
+    loot: rewards.loot === undefined ? null : tierOf(rewards.loot.rarity),
+    // A server older than boosts sends none.
+    ...(typeof boost?.pct === 'number' && typeof boost.minutes === 'number'
+      ? { boost: { pct: boost.pct, minutes: boost.minutes } }
+      : {}),
+  }
+}
 
 const instantOf = (iso: string | null): number | null => {
   const at = iso === null ? Number.NaN : Date.parse(iso)
@@ -232,11 +239,16 @@ const meterOf = (missions: MissionsView, mission: MissionView, width: number): R
   return clip([...meter(share, bar, color), blank(2), ...count], width)
 }
 
-/** What a mission grants, as `Reward  +50 XP · +30 gold · rare drop`, in the band's colors and the drop's rarity. */
+/**
+ * What a mission grants, as `Reward  +50 XP · +30 gold · +10% XP for 1h · rare drop`, in the band's colors and the
+ * drop's rarity.
+ */
 export const rewardRuns = (rewards: MissionRewards): Array<Run> => {
+  const { boost } = rewards
   const parts: Array<Array<Run>> = [
     ...(rewards.xp > 0 ? [[{ text: `+${counted(rewards.xp)} XP`, color: 'success' }]] : []),
     ...(rewards.gold > 0 ? [[{ text: `◈ +${counted(rewards.gold)} gold`, color: 'suggestion' }]] : []),
+    ...(boost === undefined ? [] : [[{ text: boostText(boost), color: 'success' }]]),
     ...(rewards.loot === null ? [] : [[{ text: `◆ ${rewards.loot} drop`, color: rarityColors[rewards.loot] }]]),
   ]
   return parts.flatMap((part, i) => (i === 0 ? part : [dim(' · '), ...part]))

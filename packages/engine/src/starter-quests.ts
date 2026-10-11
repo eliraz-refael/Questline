@@ -2,14 +2,15 @@ import type { QuestPack } from "@questline/schema"
 
 // The missions a fresh local server offers: small dailies over graded prompts and reported work, and bigger weeklies
 // over a week's work, the player stats and sessions run together. All of it is reported-tier, so none waits for the
-// verifier. A version once published never changes: an edit here takes a new version.
+// verifier. A version once published never changes: an edit here takes a new version. Two prompt missions also grant
+// a short XP boost, so writing well pays a little more for a while.
 //
 // The parallel weeklies are modest on purpose: sessions cost the player tokens, so each one asks for a well-graded
 // prompt in every session, more sessions than asked earn nothing, and the rewards stay in the usual weekly range.
 
 export const starterQuestPack: QuestPack = {
   id: "starter",
-  version: 2,
+  version: 3,
   title: "First Quests",
   quests: [
     {
@@ -18,7 +19,7 @@ export const starterQuestPack: QuestPack = {
       description: "Write 5 prompts with clarity 8 or more today.",
       cadence: "daily",
       goal: { kind: "fact", fact: "prompt.graded", count: 5, scores: { clarity: 8 } },
-      rewards: { xp: 50, gold: 30 },
+      rewards: { xp: 50, gold: 30, xpBoost: { pct: 10, minutes: 60 } },
     },
     {
       id: "pinpoint",
@@ -106,7 +107,7 @@ export const starterQuestPack: QuestPack = {
       description: "Get 25 prompts graded 8 or more this week.",
       cadence: "weekly",
       goal: { kind: "fact", fact: "prompt.graded", count: 25, grade: 8 },
-      rewards: { xp: 300, gold: 150, loot: { rarity: "epic" } },
+      rewards: { xp: 300, gold: 150, xpBoost: { pct: 15, minutes: 120 }, loot: { rarity: "epic" } },
     },
     {
       id: "five-days",

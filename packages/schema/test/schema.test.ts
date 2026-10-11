@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {
+  catalogIssue,
   ClientEvent,
   clientEventTypes,
   CommandResponse,
@@ -9,6 +10,7 @@ import {
   LevelCurve,
   PromptRules,
   ServerEvent,
+  SigilRanges,
   Snapshot,
 } from "../src/index.ts"
 
@@ -138,6 +140,13 @@ describe("PromptRules", () => {
       { upTo: null, pct: 10 },
     ],
     regretAt: 5,
+    sigilMultiplier: {
+      common: [1.2, 1.3],
+      uncommon: [1.4, 1.6],
+      rare: [1.7, 1.9],
+      epic: [2, 2.2],
+      legendary: [2.3, 2.5],
+    },
   }
   const valid = Schema.is(PromptRules)
 
@@ -164,6 +173,18 @@ describe("PromptRules", () => {
   it("refuses bands that don't rise, or an open band before the last", () => {
     expect(valid({ ...rules, perDay: [{ upTo: 40, pct: 50 }, { upTo: 20, pct: 100 }] })).toBe(false)
     expect(valid({ ...rules, perDay: [{ upTo: null, pct: 10 }, { upTo: 20, pct: 100 }] })).toBe(false)
+  })
+
+  it("takes sigil ranges that rise with the rarity and never overlap, none below ×1", () => {
+    const ranges = rules.sigilMultiplier
+    expect(valid({ ...rules, sigilMultiplier: { ...ranges, legendary: [2.25, 2.5] } })).toBe(true)
+    // Epic's top and legendary's bottom may not meet, nor a range fall, nor run backwards, nor lower XP.
+    expect(valid({ ...rules, sigilMultiplier: { ...ranges, legendary: [2.2, 2.5] } })).toBe(false)
+    expect(valid({ ...rules, sigilMultiplier: { ...ranges, rare: [1.3, 1.35] } })).toBe(false)
+    expect(valid({ ...rules, sigilMultiplier: { ...ranges, epic: [2.2, 2] } })).toBe(false)
+    expect(valid({ ...rules, sigilMultiplier: { ...ranges, common: [0.9, 1.3] } })).toBe(false)
+    const { sigilMultiplier: _ranges, ...none } = rules
+    expect(valid(none)).toBe(false)
   })
 })
 
@@ -285,6 +306,52 @@ describe("ItemDef: band styles", () => {
     expect(decode(gold)._tag).toBe("Failure")
     const oneColor = { ...style, look: { ...look, frames: [head, head], fps: 6, sheen: { colors: ["#ffffff"], rest: 0 } } }
     expect(decode(oneColor)._tag).toBe("Failure")
+  })
+})
+
+describe("ItemDef: sigils", () => {
+  const sigil = {
+    id: "arcane-sigil",
+    name: "Arcane Sigil",
+    rarity: "epic",
+    category: "sigil",
+    slot: "sigil",
+    sprite: null,
+    lore: null,
+    effect: null,
+    look: null,
+    sigil: { multiplier: 2, glyph: "✹", color: "#c77dff" },
+  }
+  const decode = Schema.decodeUnknownExit(ItemDef)
+
+  it("fills the sigil slot with its power, and nothing else fills it or has one", () => {
+    expect(Schema.decodeUnknownSync(ItemDef)(sigil)).toEqual(sigil)
+    const { sigil: _power, ...powerless } = sigil
+    expect(decode(powerless)._tag).toBe("Failure")
+    expect(decode({ ...sigil, slot: "aura" })._tag).toBe("Failure")
+    const hat = { ...powerless, id: "hat", category: "wearable", slot: "head" }
+    expect(decode(hat)._tag).toBe("Success")
+    expect(decode({ ...hat, sigil: sigil.sigil })._tag).toBe("Failure")
+    expect(decode({ ...hat, slot: "sigil" })._tag).toBe("Failure")
+  })
+
+  it("never lowers XP, and draws in a #rrggbb color", () => {
+    expect(decode({ ...sigil, sigil: { ...sigil.sigil, multiplier: 0.5 } })._tag).toBe("Failure")
+    expect(decode({ ...sigil, sigil: { ...sigil.sigil, color: "violet" } })._tag).toBe("Failure")
+  })
+
+  it("sits inside its rarity's range under the rules it runs with", () => {
+    const ranges = Schema.decodeUnknownSync(SigilRanges)({
+      common: [1.2, 1.3],
+      uncommon: [1.4, 1.6],
+      rare: [1.7, 1.9],
+      epic: [2, 2.2],
+      legendary: [2.3, 2.5],
+    })
+    const inside = Schema.decodeUnknownSync(ItemDef)(sigil)
+    const outside = Schema.decodeUnknownSync(ItemDef)({ ...sigil, sigil: { ...sigil.sigil, multiplier: 2.3 } })
+    expect(catalogIssue(ranges, [inside])).toBe(undefined)
+    expect(catalogIssue(ranges, [inside, outside])).toBe("arcane-sigil: ×2.3 is outside epic's ×2-2.2")
   })
 })
 

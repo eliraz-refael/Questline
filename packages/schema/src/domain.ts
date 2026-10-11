@@ -8,6 +8,7 @@ import {
   IsoDate,
   IsoDateTime,
   ItemCategory,
+  Multiplier,
   Name,
   Percent,
   PetSlot,
@@ -202,6 +203,17 @@ const lookIssue = (look: BandLook, slot: BandSlot): string | undefined => {
   return undefined
 }
 
+/**
+ * What a sigil does and how it looks: the factor it puts on prompt XP while equipped, inside its rarity's range in the
+ * rules (`prompt.sigilMultiplier`), and the mark and color the pane draws it with.
+ */
+export const SigilPower = Schema.Struct({
+  multiplier: Multiplier,
+  glyph: Glyph,
+  color: HexColor,
+})
+export interface SigilPower extends Schema.Schema.Type<typeof SigilPower> {}
+
 /** A catalogue entry, versioned with the rules config. */
 export const ItemDef = Schema.Struct({
   /** "slayer-cape" */
@@ -217,7 +229,17 @@ export const ItemDef = Schema.Struct({
   effect: Schema.NullOr(Schema.Struct({ xpBoostPct: Count, minutes: Count })),
   /** Band styles only: the look its band slot draws. */
   look: Schema.NullOr(BandLook),
+  /** Sigils only, and every sigil has one; absent on any other item, so drops stored before sigils still read. */
+  sigil: Schema.optionalKey(SigilPower),
 }).check(
+  Schema.makeFilter((item) => {
+    if (item.category !== "sigil") {
+      if (item.slot === "sigil") return { path: ["slot"], issue: "only a sigil fills the sigil slot" }
+      return item.sigil === undefined || { path: ["sigil"], issue: "only a sigil has a power" }
+    }
+    if (item.slot !== "sigil") return { path: ["slot"], issue: "a sigil fills the sigil slot" }
+    return item.sigil !== undefined || { path: ["sigil"], issue: "a sigil needs its power" }
+  }),
   Schema.makeFilter((item) => {
     if (item.category !== "bandStyle") {
       return item.look === null || { path: ["look"], issue: "only a band style has a look" }
@@ -271,7 +293,13 @@ export const ShopOffer = Schema.Struct({
 })
 export interface ShopOffer extends Schema.Schema.Type<typeof ShopOffer> {}
 
+/**
+ * A flat XP boost running until `endsAt`: food the pet ate, or a mission's reward. Boosts of one kind never stack (the
+ * strongest running one counts); a happy pet's bonus and one of each kind add up.
+ */
 export const Boost = Schema.Struct({
+  kind: Schema.Literals(["food", "quest"]),
+  /** What it came from: the food's item id, or the mission as `<pack>/<quest>`. */
   source: Schema.String,
   xpBoostPct: Count,
   endsAt: IsoDateTime,

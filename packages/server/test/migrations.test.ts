@@ -1,11 +1,12 @@
 import { it } from "@effect/vitest"
-import { initialState } from "@questline/engine"
-import { PlayerState } from "@questline/schema"
+import { initialState, levelForXp, levelOf, starterRules, step } from "@questline/engine"
+import type { Context } from "@questline/schema"
+import { Input, PlayerState } from "@questline/schema"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
-import { migrate, migrations } from "../src/index.ts"
+import { carriedXp, catalog, migrate, migrations } from "../src/index.ts"
 import { commit, profile, prompt, start } from "./fixtures.ts"
 
 // Each test starts a fresh PGlite and runs every migration: the first cold start can take seconds on a CI runner.
@@ -219,6 +220,86 @@ describe("migrations", () => {
       const states = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ state: PlayerState })))(stored)
       expect(states.map((row) => row.state)).toEqual([fresh])
       expect(yield* sql`SELECT * FROM quest_packs`).toEqual([])
+    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
+  )
+
+  it("keep every level on the steeper curve, and the share of the way to the next, by adding XP only", () => {
+    const before = { base: 100, exponent: 1.6 }
+    for (let total = 0; total <= 250_000; total += 37) {
+      const was = levelForXp(before, total)
+      const carried = total + carriedXp(total)
+      const now = levelForXp(starterRules.levelCurve, carried)
+      expect(carriedXp(total)).toBeGreaterThanOrEqual(0)
+      expect(now.level).toBe(was.level)
+      expect(Math.abs(now.intoLevel / now.forNextLevel - was.intoLevel / was.forNextLevel)).toBeLessThan(0.01)
+    }
+  })
+
+  it.effect("carry a saved player's XP to the steeper curve, logged so a replay keeps it, and give old boosts a kind", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0009"))
+      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      const fresh = initialState({ ...profile, now: start })
+      // 5,000 XP was level 11 and about half way to 12 under 100 * L^1.6.
+      const boost = { source: "trail-mix", xpBoostPct: 10, endsAt: "2026-10-09T09:00:00.000Z" }
+      const mid = {
+        ...fresh,
+        progress: { ...fresh.progress, xp: { verified: 0, reported: 5000 }, boosts: [boost] },
+        holdings: { ...fresh.holdings, peakLevel: 11 },
+      }
+      for (const [id, state, logSeq] of [["mid", mid, 4], ["new", fresh, 0]] satisfies Array<[string, unknown, number]>) {
+        yield* sql`
+          INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
+          VALUES (${id}, NULL, NULL, 'Player', 'seed', ${start})
+        `
+        yield* sql`
+          INSERT INTO player_state (player_id, state, log_seq, server_seq, stream_epoch, engine_version, rules_version)
+          VALUES (${id}, ${JSON.stringify(state)}::jsonb, ${logSeq}, 0, 1, 9, 6)
+        `
+      }
+      yield* migrate
+      const stored = yield* sql`
+        SELECT player_id, state, log_seq, engine_version, rules_version FROM player_state ORDER BY player_id
+      `
+      const rows = yield* Schema.decodeUnknownEffect(
+        Schema.Array(
+          Schema.Struct({
+            player_id: Schema.String,
+            state: PlayerState,
+            log_seq: Schema.Number,
+            engine_version: Schema.Number,
+            rules_version: Schema.Number,
+          }),
+        ),
+      )(stored)
+      // Every row reads as what its state now is, carried or not, so nothing keyed on the versions carries it again.
+      expect(rows.map((row) => [row.player_id, row.engine_version, row.rules_version])).toEqual([
+        ["mid", 10, 7],
+        ["new", 10, 7],
+      ])
+      const [carried, untouched] = rows
+      expect(carried?.state.progress.xp.reported).toBe(5000 + carriedXp(5000))
+      expect(carriedXp(5000)).toBeGreaterThan(0)
+      expect(carried === undefined ? null : levelOf(carried.state, starterRules).level).toBe(11)
+      expect(carried?.state.progress.boosts).toEqual([{ ...boost, kind: "food" }])
+      expect(carried?.log_seq).toBe(5)
+      expect(untouched?.state).toEqual(fresh)
+      expect(untouched?.log_seq).toBe(0)
+      const logged = yield* sql<{ player_id: string; log_seq: number; natural_key: string; input: unknown }>`
+        SELECT player_id, log_seq, natural_key, input FROM event_log ORDER BY player_id
+      `
+      expect(logged.map((row) => [row.player_id, row.log_seq, row.natural_key])).toEqual([["mid", 5, "xp.carried:7"]])
+      const input = Schema.decodeUnknownSync(Input)(logged[0]?.input)
+      expect(input).toEqual({ kind: "system", event: { type: "xp.carried", amount: carriedXp(5000), rulesVersion: 7 } })
+      // The engine's step on the logged carry ends where the migration left the player, so a replay agrees with it.
+      const saved: PlayerState = { ...mid, progress: { ...mid.progress, boosts: [{ ...boost, kind: "food" }] } }
+      const context = { now: start, logSeq: 5, rollSeed: "seed", rules: starterRules, catalog, questPacks: [] }
+      const replaying = { kind: "replay", recorded: { rolls: [], refusal: null } } satisfies Context["mode"]
+      const stepped = step(saved, input, { ...context, mode: replaying })
+      expect(stepped.state).toEqual(carried?.state)
+      expect(stepped.events).toEqual([])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
     coldStart,
   )

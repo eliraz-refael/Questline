@@ -7,6 +7,16 @@ import type { Celebration, Motion, Tier } from '../types'
 
 const tiers: ReadonlyArray<Tier> = ['common', 'uncommon', 'rare', 'epic', 'legendary']
 
+/** A tier's place, common first: rarer sorts later. */
+export const tierRank = (tier: Tier): number => tiers.indexOf(tier)
+
+/** A boost's length in its largest unit: `1h`, `90m`, `2h`. */
+const lengthText = (minutes: number): string => (minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`)
+
+/** A mission's XP boost in words: `+10% XP for 1h`. */
+export const boostText = (boost: { readonly pct: number; readonly minutes: number }): string =>
+  `+${boost.pct}% XP for ${lengthText(boost.minutes)}`
+
 /** A tier from the wire; one this mod doesn't know yet plays as the smallest. */
 export const tierOf = (value: string): Tier => tiers.find((tier) => tier === value) ?? 'common'
 
@@ -34,11 +44,12 @@ export const celebrationOf = (event: ServerEvent, glyph: string): Celebration | 
   }
 }
 
-/** What a mission promised, in words: `+50 XP · +30 gold · rare drop`. */
+/** What a mission promised, in words: `+50 XP · +30 gold · +10% XP for 1h · rare drop`. */
 export const rewardsText = (rewards: QuestRewards): string =>
   [
     ...(rewards.xp !== undefined && rewards.xp > 0 ? [`+${rewards.xp} XP`] : []),
     ...(rewards.gold !== undefined && rewards.gold > 0 ? [`+${rewards.gold} gold`] : []),
+    ...(rewards.xpBoost === undefined ? [] : [boostText(rewards.xpBoost)]),
     ...(rewards.loot === undefined ? [] : [`${tierOf(rewards.loot.rarity)} drop`]),
   ].join(' · ')
 

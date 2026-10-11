@@ -1,5 +1,6 @@
 import type { ItemDef, Pity, Rarity, RulesConfig } from "@questline/schema"
 import { draws } from "./random.ts"
+import { isSigil } from "./sigils.ts"
 
 const rarities: ReadonlyArray<Rarity> = ["common", "uncommon", "rare", "epic", "legendary"]
 /** A rarity's place, common first. */
@@ -26,9 +27,9 @@ const pickRarity = (draw: number, weights: RarityWeights): Rarity => {
 
 /**
  * Roll `number`: whether anything drops at all, then a rarity by weight (the loot's own unless a trigger has its
- * odds), raised by the pity timers, then an item from that rarity's pool. A re-roll passes the rarity it keeps. A
- * rarity with no items falls back to the nearest lower one that has some; null when nothing drops or the catalogue
- * is empty.
+ * odds), raised by the pity timers, then an item from that rarity's pool (a sigil only `loot.sigilShare` of the time).
+ * A re-roll passes the rarity it keeps. A rarity with no items falls back to the nearest lower one that has some; null
+ * when nothing drops or the catalogue is empty.
  */
 export const rollLoot = (
   seed: string,
@@ -49,11 +50,22 @@ export const rollLoot = (
   }
   for (let r = rank(rarity); r >= 0; r--) {
     const found = rarities[r]
-    const pool = catalog.filter((item) => item.rarity === found)
+    if (found === undefined) continue
+    const pool = poolOf(catalog.filter((item) => item.rarity === found), rules.loot.sigilShare[found], next)
     const item = pool[Math.floor(next() * pool.length)]
-    if (found !== undefined && item !== undefined) return { rarity: found, item, gold: rules.loot.gold[found] }
+    if (item !== undefined) return { rarity: found, item, gold: rules.loot.gold[found] }
   }
   return null
+}
+
+/**
+ * The items a drop of one rarity is drawn from: its sigils `share` of the time, else the rest, so a sigil stays a rare
+ * find however many items its rarity has. A rarity with only one kind draws from what it has.
+ */
+const poolOf = (items: ReadonlyArray<ItemDef>, share: number, next: () => number): ReadonlyArray<ItemDef> => {
+  const sigils = items.filter(isSigil)
+  if (sigils.length === 0 || sigils.length === items.length) return items
+  return next() < share ? sigils : items.filter((item) => !isSigil(item))
 }
 
 /** The weights with rare and better multiplied by `factor`, as a great prompt rolls. */

@@ -1,6 +1,6 @@
 import { Schema, Struct, Tuple } from "effect"
 import { ClaimState, InventoryEntry, ItemDef, Pet, Pity, PlayerStats } from "./domain.ts"
-import { Count, Glyph, IsoDateTime, Rarity, Slot, Ulid, XpTier } from "./primitives.ts"
+import { Count, Glyph, IsoDateTime, Multiplier, Rarity, Slot, Ulid, XpTier } from "./primitives.ts"
 import { MissionCadence, QuestRewards, QuestState } from "./quests.ts"
 
 // Server events are the outcomes the mod renders, numbered by a per-player seq that only goes up. Each one below
@@ -17,8 +17,8 @@ const serverEvent = <Type extends string, Data extends Schema.Struct.Fields>(typ
 
 /**
  * Fills the XP bar, floats "+120 XP". `reason` is the scoring fact, `quest` for a quest's reward, or `dev` for XP a
- * dev command granted. A graded
- * prompt's grant names the weighted grade (0-10) that priced it.
+ * dev command granted. A graded prompt's grant names the weighted grade (0-10) that priced it, and the multiplier of
+ * the sigil worn then, when one was.
  */
 export const XpGranted = serverEvent("xp.granted", {
   amount: Count,
@@ -26,6 +26,7 @@ export const XpGranted = serverEvent("xp.granted", {
   reason: Schema.String,
   totalAfter: Count,
   grade: Schema.optionalKey(Schema.Finite.pipe(Schema.check(Schema.isBetween({ minimum: 0, maximum: 10 })))),
+  sigil: Schema.optionalKey(Multiplier),
 })
 /** Dim note: daily cap reached for that event. */
 export const XpCapped = serverEvent("xp.capped", { eventType: Schema.String, cap: Count })

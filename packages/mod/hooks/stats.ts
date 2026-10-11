@@ -3,6 +3,7 @@ import { goldRow, labelRun, levelRow } from './band'
 import type { Row, Run } from './cells'
 import { blank, cellsOf, cellsOfRow, clip, dim } from './cells'
 import { barRow, rarityColors } from './frames'
+import { multiplierText } from './sigils'
 
 // The pane's Stats tab, laid out as rows of styled runs that register.tsx draws: cards under a titled rule, a label on
 // the left of each row and its number on the right, and bars in the band's own ▰▱. Every number is the server's; this
@@ -135,9 +136,31 @@ const progressCard = (stats: StatsView, view: BandView, width: number, worn: Sta
       line([dim('└ '), dim('verified on GitHub')], [dim(counted(stats.xp.verified))], width),
       line([{ text: `To Lv ${view.level + 1}` }], [{ text: `${counted(toNext)} xp` }], width),
       line([{ text: 'Gold' }], goldRow(view, looks.goldDisplay ?? null, loop), width),
+      // A server older than sigils has no row for one.
+      ...(stats.sigil === null || stats.sigil === undefined
+        ? []
+        : [line([{ text: 'Sigil' }], sigilValue(stats.sigil, width - indent - cellsOf('Sigil') - 1), width)]),
       line([{ text: 'Items owned' }], [{ text: counted(stats.items) }], width),
     ],
   }
+}
+
+/**
+ * The sigil worn, as `✹ Arcane Sigil ×2`, then `✹ ×2` when the row is short; `none worn` without one, and
+ * `unknown sigil` for one the catalogue no longer has, as the Inventory lists it.
+ */
+const sigilValue = (sigil: NonNullable<StatsView['sigil']>, room: number): Row => {
+  const { worn } = sigil
+  if (worn === null) return [dim(sigil.isUnknown === true ? 'unknown sigil' : 'none worn')]
+  const mark: Run = { text: worn.glyph, ...(worn.color === '' ? {} : { color: worn.color }), bold: true }
+  const times: Run = { text: multiplierText(worn.multiplier), bold: true }
+  return fitting(
+    [
+      [mark, blank(1), { text: worn.name, color: rarityColors[worn.rarity] }, blank(1), times],
+      [mark, blank(1), times],
+    ],
+    room,
+  )
 }
 
 const streakCard = (stats: StatsView, width: number): StatCard => {

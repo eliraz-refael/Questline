@@ -1,4 +1,4 @@
-import type { ClientEvent, Command, ServerEvent } from '@questline/schema'
+import type { ClientEvent, Command, ServerEvent, Slot } from '@questline/schema'
 import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface, Register, TextProps, Timer } from 'claude-code'
 import type { BandSlot, BandView, Celebration, Gain, Link, Motion, PaneTab, Stage } from '../types'
@@ -51,6 +51,8 @@ import type { MissionEntry } from './missions'
 import { knowsTogether, missionChip, missionsLayout, missionsViewOf, roomBeside } from './missions'
 import type { Choice } from './pane'
 import { brand, headerGap, headerOf, lookSections, otherItems, paneId, tabBarOf, tabOf } from './pane'
+import type { SigilChoice } from './sigils'
+import { multiplierText, sigilChoices, wornSigil } from './sigils'
 import { statsLayout, titleRow } from './stats'
 import {
   batchesOf,
@@ -412,8 +414,9 @@ const refresh = async ($: EngineInterface, fromScratch: boolean) => {
   const opened = await openSession($)
   if (fromScratch) cursor = opened.snapshot.cursor
   const next = viewOf(opened.snapshot)
-  const owned = wardrobeOf(opened.snapshot)
-  const counted = statsViewOf(opened.snapshot)
+  // An older server's answer carries no rules: it deals in no sigils, and the pane shows none.
+  const owned = wardrobeOf(opened.snapshot, opened.rules ?? {})
+  const counted = statsViewOf(opened.snapshot, opened.rules ?? {}, owned)
   // An older server's answer carries no rules: the missions then read with no number of picks.
   const quests = missionsViewOf(opened.snapshot, opened.rules ?? {})
   await update($, view, () => next)
@@ -538,8 +541,11 @@ const commandFailed = async ($: EngineInterface, error: unknown) => {
   else $.ui.toast('The server answered something unexpected.')
 }
 
-/** Puts an owned band style in its slot, or with no entry the band's own look back; the band redraws at once. */
-const wear = async ($: EngineInterface, slot: BandSlot, entryId: string | null) => {
+/**
+ * Puts an owned band style or sigil in its slot, or with no entry empties it (the band's own look back); the band
+ * redraws at once.
+ */
+const wear = async ($: EngineInterface, slot: Slot, entryId: string | null) => {
   try {
     const { id } = await stamp($)
     const command: Command =
@@ -1249,9 +1255,83 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // The sigils owned, strongest first, the worn one marked: one counts at a time, so the pane says which.
+    const sigils = sigilChoices(owned)
+    const worn = wornSigil(owned)
+    const sigilRow = (choice: SigilChoice) => {
+      const color = choice.rarity === null ? undefined : rarityColors[choice.rarity]
+      const notes = [
+        choice.sigil === null ? 'no longer in the catalogue' : `${multiplierText(choice.sigil.multiplier)} prompt XP`,
+        ...(choice.rarity === null ? [] : [choice.rarity]),
+        ...(choice.count > 1 ? [`${choice.count} owned`] : []),
+      ].join(' · ')
+      const mark = choice.sigil?.glyph ?? '?'
+      const markColor = choice.sigil?.color ?? ''
+      return (
+        <Box key={`sigil:${choice.key}`} flexDirection="column" marginLeft={2} marginBottom={1}>
+          <Box flexWrap="wrap" columnGap={2}>
+            <Text>
+              <Text color={choice.isWorn ? 'success' : 'inactive'}>{choice.isWorn ? '●' : '○'}</Text>{' '}
+              <Text bold {...(markColor === '' ? {} : { color: markColor })}>
+                {mark}
+              </Text>{' '}
+              <Text bold {...(color === undefined ? {} : { color })}>
+                {choice.name}
+              </Text>
+              <Text dimColor> {notes}</Text>
+            </Text>
+            {choice.isWorn ? (
+              <Text color="success">equipped</Text>
+            ) : (
+              <Button
+                key={`equip:sigil:${choice.key}`}
+                label="Equip"
+                onPress={() => void wear($, 'sigil', choice.entryId)}
+              />
+            )}
+            {choice.isWorn ? (
+              <Button key="unequip:sigil" label="Unequip" dimColor onPress={() => void wear($, 'sigil', null)} />
+            ) : null}
+          </Box>
+          {choice.lore === null ? null : (
+            <Box marginLeft={2}>
+              <Text dimColor italic>
+                {choice.lore}
+              </Text>
+            </Box>
+          )}
+        </Box>
+      )
+    }
+    const sigilIntro =
+      worn?.sigil !== undefined
+        ? `${multiplierText(worn.sigil.multiplier)} on the XP your graded prompts earn · one worn at a time`
+        : owned.equipped['sigil'] !== undefined
+          ? 'the one worn is no longer in the catalogue, and adds nothing · one worn at a time'
+          : sigils.length === 0
+          ? 'none yet: they drop like any loot, and multiply the XP your graded prompts earn'
+          : 'none worn · one at a time multiplies the XP your graded prompts earn'
+    // Only a server that deals in sigils gets the section: an older one has none to show.
+    const sigilSection =
+      owned.knowsSigils !== true ? null : (
+        <Box key="sigils" flexDirection="column">
+          <Text>
+            <Text bold>Sigil</Text>
+            <Text dimColor>
+              {'  '}
+              {sigilIntro}
+            </Text>
+          </Text>
+          <Text> </Text>
+          {sigils.map(sigilRow)}
+          {sigils.length === 0 ? <Text> </Text> : null}
+        </Box>
+      )
+
     return (
       <Box flexDirection="column" paddingX={1}>
         {header}
+        {sigilSection}
         <Text>
           <Text bold>Band styles</Text>
           <Text dimColor>

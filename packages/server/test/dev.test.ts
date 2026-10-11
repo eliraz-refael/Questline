@@ -5,8 +5,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it as test } from "vitest"
-import { claimHome, isDevMode, localPaths, localServer, WrongHome } from "../src/index.ts"
-import { client, nextId, profile, session, withoutQuests, withServer } from "./fixtures.ts"
+import { starterCatalog, starterRules } from "@questline/engine"
+import { catalog, checkedCatalog, claimHome, isDevMode, localPaths, localServer, WrongHome } from "../src/index.ts"
+import { client, nextId, profile, prompt, session, withoutQuests, withServer } from "./fixtures.ts"
 
 // Dev mode: a sandbox save in a home of its own, the only place the dev commands run.
 
@@ -131,4 +132,43 @@ describe("dev commands over the command route", () => {
       true,
     ),
   )
+
+  it.effect("grant a sigil, which the player wears and a prompt is priced with, the rules saying its range", () =>
+    withServer(
+      Effect.gen(function* () {
+        const api = yield* client
+        const granted = yield* api.runCommand({
+          payload: { id: nextId(), type: "dev.grantItem", data: { itemId: "arcane-sigil" } },
+        })
+        if (granted.status !== "ok") throw new Error(granted.message)
+        const [drop] = withoutQuests(granted.events)
+        if (drop?.type !== "loot.dropped") throw new Error("no drop")
+        expect(drop.data.item.sigil).toEqual({ multiplier: 2, glyph: "✹", color: "#c77dff" })
+        const worn = yield* api.runCommand({
+          payload: { id: nextId(), type: "item.equip", data: { entryId: drop.data.entry.id, slot: "sigil" } },
+        })
+        expect(worn).toMatchObject({ status: "ok", events: [{ type: "item.equipped", data: { slot: "sigil" } }] })
+        const sent = yield* api.sendEvents({ payload: { events: [prompt(5)] } })
+        const grants = sent.events.flatMap((event) => (event.type === "xp.granted" ? [event.data] : []))
+        expect(grants.find((grant) => grant.reason === "prompt.graded")).toMatchObject({ amount: 20, sigil: 2 })
+        const opened = yield* api.openSession({ payload: { sessionId: session } })
+        expect(opened.snapshot.character.equipped).toEqual({ sigil: drop.data.entry.id })
+        expect(opened.rules.prompt.sigilMultiplier.epic).toEqual([2, 2.2])
+      }),
+      undefined,
+      true,
+    ),
+  )
+})
+
+describe("the catalogue the server runs", () => {
+  test("fits the rules, and a sigil outside its rarity's range stops the server from starting", () => {
+    expect(catalog).toBe(starterCatalog)
+    const off = starterCatalog.map((item) =>
+      item.id === "wyrm-sigil" && item.sigil !== undefined
+        ? { ...item, sigil: { ...item.sigil, multiplier: 3 } }
+        : item,
+    )
+    expect(() => checkedCatalog(starterRules, off)).toThrow("wyrm-sigil: ×3 is outside legendary's ×2.3-2.5")
+  })
 })

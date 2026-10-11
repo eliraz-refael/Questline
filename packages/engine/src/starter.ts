@@ -4,10 +4,12 @@ import type { BandFrame, BandLook, BandSlot, ItemDef, Rarity, RulesConfig } from
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
 
 export const starterRules: RulesConfig = {
-  version: 6,
-  schemaVersion: 5,
+  version: 7,
+  schemaVersion: 6,
   appliesFrom: null,
-  levelCurve: { base: 100, exponent: 1.6 },
+  // Steeper than the 1.6 before sigils: a player wearing the sigil typical of their stage reaches each level about
+  // when one without sigils did, on the doc's steady day of 400 XP of work and 200 of prompts. Level 1 stays 100 XP.
+  levelCurve: { base: 100, exponent: 1.66 },
   titles: [
     { fromLevel: 1, title: "Apprentice" },
     { fromLevel: 10, title: "Adept" },
@@ -44,6 +46,10 @@ export const starterRules: RulesConfig = {
     promptGreatRareFactor: 2,
     chanceOnVerified: 1,
     weights: { common: 60, uncommon: 25, rare: 10, epic: 4, legendary: 1 },
+    // Of each rarity's drops, the share that is a sigil. On about five drops a day the typical player wears a common
+    // by day 3, an uncommon by the first week, a rare by the first month, an epic by the third and a legendary late
+    // in the first year; legendaries are so rare a find that their sigils take a bigger share of them.
+    sigilShare: { common: 0.08, uncommon: 0.04, rare: 0.03, epic: 0.03, legendary: 0.06 },
     onLevelUp: { weights: { common: 50, uncommon: 30, rare: 15, epic: 4, legendary: 1 } },
     pity: { rareAfter: 25, epicAfter: 80 },
     gold: { common: 10, uncommon: 25, rare: 70, epic: 175, legendary: 400 },
@@ -65,8 +71,17 @@ export const starterRules: RulesConfig = {
     ],
     // Haiku scores a regret of 1 or 2 on many a prompt that walks nothing back.
     regretAt: 5,
+    // Never overlapping, and a tenth apart, so on a prompt worth 10 XP or more every rarity earns more than the one
+    // below it, after rounding down: epic's top ×2.2 earns 22 on 10 XP, legendary's bottom ×2.3 earns 23.
+    sigilMultiplier: {
+      common: [1.2, 1.3],
+      uncommon: [1.4, 1.6],
+      rare: [1.7, 1.9],
+      epic: [2, 2.2],
+      legendary: [2.3, 2.5],
+    },
   },
-  catalogVersion: 3,
+  catalogVersion: 4,
   // Three dailies run each local day; each local week offers five weeklies, of which three can run at once.
   missions: {
     daily: { count: 3, tier: "uncommon" },
@@ -295,6 +310,31 @@ const bandStyles: ReadonlyArray<ItemDef> = [
   ),
 ]
 
+/** A sigil: its multiplier on prompt XP, inside its rarity's range, and the mark the pane draws it with. */
+const sigil = (
+  id: string,
+  name: string,
+  rarity: Rarity,
+  multiplier: number,
+  glyph: string,
+  color: string,
+  lore: string,
+): ItemDef => item({ id, name, rarity, category: "sigil", slot: "sigil", lore, sigil: { multiplier, glyph, color } })
+
+// The sigils, two a rarity, one low in its range and one high: a mark that grows from an outlined star to a sun.
+const sigils: ReadonlyArray<ItemDef> = [
+  sigil("chalk-sigil", "Chalk Sigil", "common", 1.2, "✧", "#bcbcbc", "Drawn in a hurry on the back of a ticket."),
+  sigil("ember-sigil", "Ember Sigil", "common", 1.3, "✧", "#d7875f", "Still warm from the first green build."),
+  sigil("fern-sigil", "Fern Sigil", "uncommon", 1.4, "✦", "#5fd75f", "Unfurls a little with every clear ask."),
+  sigil("tide-sigil", "Tide Sigil", "uncommon", 1.6, "✦", "#5fd7d7", "Comes back stronger, like a prompt reworded."),
+  sigil("lantern-sigil", "Lantern Sigil", "rare", 1.7, "✶", "#4ea8ff", "Lights the next step, and only the next."),
+  sigil("frost-sigil", "Frost Sigil", "rare", 1.9, "✶", "#b8dcff", "Cold, precise, never vague."),
+  sigil("arcane-sigil", "Arcane Sigil", "epic", 2, "✹", "#c77dff", "Hums when the done criteria are spelled out."),
+  sigil("storm-sigil", "Storm Sigil", "epic", 2.2, "✹", "#9d4edd", "Crackles at a well-scoped ask."),
+  sigil("dawn-sigil", "Dawn Sigil", "legendary", 2.3, "❂", "#ffd23f", "Rises over every plan made before the code."),
+  sigil("wyrm-sigil", "Wyrm Sigil", "legendary", 2.5, "✺", "#ff9f1c", "Cut from a dragon that read every spec."),
+]
+
 export const starterCatalog: ReadonlyArray<ItemDef> = [
   item({ id: "plain-cap", name: "Plain Cap", rarity: "common", category: "wearable", slot: "head" }),
   item({ id: "paper-scarf", name: "Paper Scarf", rarity: "common", category: "wearable", slot: "neck" }),
@@ -321,4 +361,5 @@ export const starterCatalog: ReadonlyArray<ItemDef> = [
     lore: "Said to glow brighter with every merge.",
   }),
   ...bandStyles,
+  ...sigils,
 ]

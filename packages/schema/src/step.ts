@@ -3,7 +3,7 @@ import { CommandRefusal } from "./commands.ts"
 import { ClaimKind, ItemDef, Pity } from "./domain.ts"
 import { Count, IsoDateTime, Probability, Rarity, Ulid } from "./primitives.ts"
 import { QuestPack } from "./quests.ts"
-import { RulesConfig } from "./rules.ts"
+import { RulesConfig, type SigilRanges } from "./rules.ts"
 import { ServerEventDraft } from "./server-events.ts"
 import { PlayerState } from "./state.ts"
 import { GitHubWork } from "./subjects.ts"
@@ -60,6 +60,21 @@ export const Recorded = Schema.Struct({
   refusal: Schema.NullOr(CommandRefusal),
 })
 export interface Recorded extends Schema.Schema.Type<typeof Recorded> {}
+
+/**
+ * What is wrong with a catalogue under the rules' sigil ranges (`prompt.sigilMultiplier`), if anything: a sigil whose
+ * multiplier sits outside its rarity's range. The rules hold the ranges and each sigil its own multiplier, so they are
+ * checked together, by the server as it starts on them.
+ */
+export const catalogIssue = (ranges: SigilRanges, catalog: ReadonlyArray<ItemDef>): string | undefined => {
+  for (const item of catalog) {
+    if (item.sigil === undefined) continue
+    const [min, max] = ranges[item.rarity]
+    const { multiplier } = item.sigil
+    if (multiplier < min || multiplier > max) return `${item.id}: ×${multiplier} is outside ${item.rarity}'s ×${min}-${max}`
+  }
+  return undefined
+}
 
 export const Context = Schema.Struct({
   /** The log row's receipt time: the engine's only clock. */
