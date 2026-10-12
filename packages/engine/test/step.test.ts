@@ -22,6 +22,7 @@ import {
   levelOf,
   maxCommands,
   project,
+  type RarityWeights,
   starterCatalog,
   starterRules,
   statsOf,
@@ -205,6 +206,40 @@ describe("step: loot", () => {
     const commonOnly = { ...always, loot: { ...always.loot, weights: { common: 1, uncommon: 0, rare: 0, epic: 0, legendary: 0 } } }
     const { steps } = play([client("turn.completed")], commonOnly, pitied)
     expect(steps[0]?.rolls[0]?.drop?.rarity).toBe("rare")
+  })
+})
+
+describe("the starter loot odds", () => {
+  /** Each rarity's odds in thousandths of its table's total. */
+  const perMille = (weights: RarityWeights) => {
+    const total = Object.values(weights).reduce((sum, weight) => sum + weight, 0)
+    return Object.fromEntries(Object.entries(weights).map(([rarity, weight]) => [rarity, (weight * 1000) / total]))
+  }
+
+  it("give legendary exactly 0.4%, on a drop and on a level-up", () => {
+    expect(perMille(starterRules.loot.weights).legendary).toBe(4)
+    expect(perMille(starterRules.loot.onLevelUp.weights).legendary).toBe(4)
+  })
+
+  it("hand legendary's old 0.6 points to the rarities below it, in proportion to their odds", () => {
+    expect(perMille(starterRules.loot.weights)).toEqual({ common: 604, uncommon: 251, rare: 101, epic: 40, legendary: 4 })
+    expect(perMille(starterRules.loot.onLevelUp.weights)).toEqual({
+      common: 503,
+      uncommon: 302,
+      rare: 151,
+      epic: 40,
+      legendary: 4,
+    })
+  })
+
+  it("leave a drop rolled under the old odds as it was, in a replay under the new ones", () => {
+    const legendaryOnly = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 1 }
+    const before = { ...starterRules, version: 9, loot: { ...starterRules.loot, onLevelUp: { weights: legendaryOnly } } }
+    const inputs = [client("change.merged")]
+    const { state, steps } = play(inputs, before)
+    expect(steps[0]?.rolls[0]).toMatchObject({ rulesVersion: 9, drop: { rarity: "legendary" } })
+    const recorded = steps.map((s) => ({ rolls: s.rolls, refusal: s.refusal }))
+    expect(replay(inputs, recorded, starterRules).state).toEqual(state)
   })
 })
 
