@@ -8,6 +8,7 @@ import type {
   Input,
   InventoryEntry,
   PlayerState,
+  Rarity,
   Recorded,
   RulesConfig,
   Slot,
@@ -22,6 +23,7 @@ import {
   levelOf,
   maxCommands,
   project,
+  type RarityWeights,
   starterCatalog,
   starterRules,
   statsOf,
@@ -205,6 +207,29 @@ describe("step: loot", () => {
     const commonOnly = { ...always, loot: { ...always.loot, weights: { common: 1, uncommon: 0, rare: 0, epic: 0, legendary: 0 } } }
     const { steps } = play([client("turn.completed")], commonOnly, pitied)
     expect(steps[0]?.rolls[0]?.drop?.rarity).toBe("rare")
+  })
+})
+
+describe("the starter loot odds", () => {
+  const below: ReadonlyArray<Rarity> = ["common", "uncommon", "rare", "epic"]
+  /** Checks a table against the one before legendary fell to 0.4%, both in thousandths. */
+  const fromOld = (now: RarityWeights, old: RarityWeights) => {
+    const total = Object.values(now).reduce((sum, weight) => sum + weight, 0)
+    const perMille = (rarity: Rarity) => (now[rarity] * 1000) / total
+    expect(perMille("legendary")).toBe(4)
+    const given = old.legendary - 4
+    const rest = below.reduce((sum, rarity) => sum + old[rarity], 0)
+    for (const rarity of below) {
+      const share = (given * old[rarity]) / rest
+      const gained = perMille(rarity) - old[rarity]
+      expect(gained).toBeGreaterThanOrEqual(Math.floor(share))
+      expect(gained).toBeLessThanOrEqual(Math.ceil(share))
+    }
+  }
+
+  it("give legendary exactly 0.4%, its old 0.6 points going to the rarities below in proportion to their odds", () => {
+    fromOld(starterRules.loot.weights, { common: 600, uncommon: 250, rare: 100, epic: 40, legendary: 10 })
+    fromOld(starterRules.loot.onLevelUp.weights, { common: 500, uncommon: 300, rare: 150, epic: 40, legendary: 10 })
   })
 })
 
@@ -456,7 +481,7 @@ describe("step: review fixes, prompts and stats", () => {
 })
 
 describe("step: level-up loot", () => {
-  it("drops one item on a level-up, always, by the level-up's own weights, and replays it", () => {
+  it("drops one item on a level-up, always, by the level-up's own weights, and replays it under other odds", () => {
     const legendary = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 1 }
     const rules = { ...starterRules, loot: { ...starterRules.loot, onLevelUp: { weights: legendary } } }
     const inputs = [client("change.merged")]
@@ -479,7 +504,8 @@ describe("step: level-up loot", () => {
     ])
     expect(state.holdings.inventory).toHaveLength(1)
     const recorded = steps.map((s) => ({ rolls: s.rolls, refusal: s.refusal }))
-    expect(replay(inputs, recorded, rules).state).toEqual(state)
+    // The starter's level-up odds rarely give a legendary: the recorded roll, not today's odds, decides the replay.
+    expect(replay(inputs, recorded, starterRules).state).toEqual(state)
   })
 
   it("rolls nothing for a level already reached", () => {

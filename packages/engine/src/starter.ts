@@ -4,7 +4,7 @@ import type { BandFrame, BandLook, BandSlot, ItemDef, Rarity, RulesConfig } from
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
 
 export const starterRules: RulesConfig = {
-  version: 9,
+  version: 10,
   schemaVersion: 7,
   appliesFrom: null,
   // Steeper than the 1.6 before sigils: a player wearing the sigil typical of their stage reaches each level about
@@ -45,12 +45,16 @@ export const starterRules: RulesConfig = {
     promptGreatAt: 9,
     promptGreatRareFactor: 2,
     chanceOnVerified: 1,
-    weights: { common: 60, uncommon: 25, rare: 10, epic: 4, legendary: 1 },
+    // In thousandths, so legendary can be 0.4%: on about five drops a day, one legendary every 50 days or so. The 6
+    // thousandths it gave up went to the rarities below it in proportion to their odds, rounded so each table sums to
+    // 1000. The level-up table split its 6 the same way.
+    weights: { common: 604, uncommon: 251, rare: 101, epic: 40, legendary: 4 },
     // Of each rarity's drops, the share that is a sigil. On about five drops a day the typical player wears a common
-    // by day 3, an uncommon by the first week, a rare by the first month, an epic by the third and a legendary late
-    // in the first year; legendaries are so rare a find that their sigils take a bigger share of them.
+    // by day 3, an uncommon by the first week, a rare by the first month and an epic by the third; at 0.4% legendary,
+    // about a third find a legendary sigil in the first year. Legendaries are so rare a find that their sigils take a
+    // bigger share of them.
     sigilShare: { common: 0.08, uncommon: 0.04, rare: 0.03, epic: 0.03, legendary: 0.06 },
-    onLevelUp: { weights: { common: 50, uncommon: 30, rare: 15, epic: 4, legendary: 1 } },
+    onLevelUp: { weights: { common: 503, uncommon: 302, rare: 151, epic: 40, legendary: 4 } },
     pity: { rareAfter: 25, epicAfter: 80 },
     gold: { common: 10, uncommon: 25, rare: 70, epic: 175, legendary: 400 },
     shardsToCraft: 10,
@@ -67,7 +71,7 @@ export const starterRules: RulesConfig = {
     care: { fed: 30, petted: 5, pettedPerHour: 3 },
   },
   // Four band styles a day, common and uncommon, one of each, and the treats every day, three of each. A steady day
-  // earns about 250 gold (about 150 from five drops, the rest from missions), so a common style costs half a day's
+  // earns about 240 gold (about 140 from five drops, the rest from missions), so a common style costs half a day's
   // gold, an uncommon one a day's, and a treat a few percent. Treats lift the mood only: XP food is never sold. Pet
   // wear, scenes and level-up effects join the shelf once the band draws them.
   shop: {
