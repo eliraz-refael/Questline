@@ -579,11 +579,20 @@ export const petCardLayout = (care: CareView | null, pet: PetShown, columns: num
   return { title, rows, canPet: true, petHint, boost, food, meals, empty, note: null }
 }
 
-/** The card before the egg hatches. */
-export const eggCardLayout = (canHatch: boolean, columns: number): { title: Row; row: Row } => {
+/**
+ * The card before the egg hatches: the egg by its name and species when the server says them (`egg`, as the welcome
+ * picked it or the rules' default), and when it hatches.
+ */
+export const eggCardLayout = (
+  canHatch: boolean,
+  columns: number,
+  egg: { name: string; species: string } | null = null,
+): { title: Row; row: Row } => {
   const width = Math.max(20, Math.min(columns, maxWidth))
-  const row: Row = canHatch
-    ? [blank(entryIndent), { text: '🥚 ' }, dim('Your egg is ready to hatch.')]
-    : [blank(entryIndent), { text: '🥚 ' }, dim('Your egg hatches at Lv 1.')]
+  const unnamed = canHatch ? 'Your egg is ready to hatch.' : 'Your egg hatches at Lv 1.'
+  const when = canHatch ? 'ready to hatch' : 'hatches at Lv 1'
+  const said: Row =
+    egg === null ? [dim(unnamed)] : [{ text: egg.name, bold: true }, dim(` the ${egg.species} · ${when}`)]
+  const row: Row = [blank(entryIndent), { text: '🥚 ' }, ...said]
   return { title: sectionTitle('Pet', canHatch ? 'ready' : '', width), row: clip(row, width) }
 }

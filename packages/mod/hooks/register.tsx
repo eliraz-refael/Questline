@@ -1,7 +1,21 @@
 import type { ClientEvent, Command, ServerEvent, Slot } from '@pathofdev/schema'
 import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface, Register, TextProps, Timer } from 'claude-code'
-import type { BandLook, BandSlot, BandView, Celebration, Gain, Link, Loop, Motion, PaneTab, Stage } from '../types'
+import type {
+  BandLook,
+  BandSlot,
+  BandView,
+  Celebration,
+  Gain,
+  Link,
+  Loop,
+  Motion,
+  PaneTab,
+  Stage,
+  WelcomeStep,
+  WelcomeView,
+  Wizard,
+} from '../types'
 import { happyLine } from './care'
 import { goldRow, labelRun, edgeRow, levelRow } from './band'
 import { celebrationOf, chimeOf, chimeWav, gapMs, idleMs, joinQueue, motionOf, queueOf, scriptOf } from './celebrate'
@@ -57,6 +71,8 @@ import { careViewOf, eggCardLayout, petCardLayout, shopLayout, shopViewOf } from
 import type { SigilChoice } from './sigils'
 import { multiplierText, sigilChoices, wornSigil } from './sigils'
 import { statsLayout, titleRow } from './stats'
+import type { WelcomeLayout } from './welcome'
+import { closeSetsAside, freshWizard, stepAfter, stepBefore, welcomeLayout, welcomeViewOf } from './welcome'
 import {
   batchesOf,
   batchGainOf,
@@ -89,6 +105,8 @@ const abandoning = atom({ plugin: 'questline', key: 'abandoning' }, null)
 const session = atom({ plugin: 'questline', key: 'session' }, null)
 const shop = atom({ plugin: 'questline', key: 'shop' }, null)
 const care = atom({ plugin: 'questline', key: 'care' }, null)
+const welcome = atom({ plugin: 'questline', key: 'welcome' }, null)
+const wizard = atom({ plugin: 'questline', key: 'wizard' }, null)
 
 /** This copy of the mod: a reload makes a new one, and a frame the old one left behind is never drawn. */
 const load = Math.random()
@@ -122,6 +140,8 @@ const closeMs = 500
 /** The `toasts` and `server` options. */
 let toasts = true
 let server: ServerKind = 'default'
+/** The `minWords` option, which the welcome's grading step says. */
+let gradeWords = 6
 /** Takes the gain's line down once it has stood a minute. */
 let fadeTimer: Timer | null = null
 let sessionId = ''
@@ -447,12 +467,15 @@ const refresh = async ($: EngineInterface, fromScratch: boolean) => {
   // And no shop or pet care: the Shop tab and the pet's card say to restart it.
   const sold = shopViewOf(opened.snapshot, opened.rules ?? {})
   const cared = careViewOf(opened.snapshot, opened.rules ?? {}, await $.clock.now())
+  // And no welcome: the mod never offers it there.
+  const greeted = welcomeViewOf(opened.snapshot, opened.rules ?? {}, gradeWords)
   await update($, view, () => next)
   await update($, wardrobe, () => owned)
   await update($, stats, () => counted)
   await update($, missions, () => quests)
   await update($, shop, () => sold)
   await update($, care, () => cared)
+  await update($, welcome, () => greeted)
   // Again here, as a /clear empties the session's state after its end hook has written the new id.
   await update($, session, () => sessionId)
   await update($, link, () => 'online')
@@ -498,6 +521,7 @@ const connect = async ($: EngineInterface): Promise<void> => {
     retryLater($)
     return
   }
+  await offerWelcome($).catch(() => undefined)
   await flush($)
   await poll($)
 }
@@ -551,12 +575,17 @@ const observeTests = async ($: EngineInterface, command: string, failed: boolean
   })
 }
 
+/**
+ * Hatches the egg: as the server says it is, picked in the welcome or its default; an older server says nothing of it,
+ * and hatches the fox Ember, as every egg did before the welcome.
+ */
 const hatch = async ($: EngineInterface) => {
+  const egg = (await read($, welcome))?.egg ?? { species: 'fox', name: 'Ember' }
   try {
     const answer = await runCommand($, {
       ...(await stamp($)),
       type: 'pet.hatch',
-      data: { species: 'fox', name: 'Ember' },
+      data: { species: egg.species, name: egg.name },
     })
     if (answer.status === 'refused') $.ui.toast(answer.message)
     // The hatch arrives on the stream too, with its toast.
@@ -703,16 +732,153 @@ const pressDev = async ($: EngineInterface, ask: DevAsk) => {
   if (!ran.isDone) $.ui.toast(ran.text)
 }
 
-/** Opens the pane, and its previews loop while it stays open. */
-const openPane = async ($: EngineInterface) => {
-  await $.ui.open({ id: paneId, title: 'Path of Dev' })
+/**
+ * Opens the pane, and its previews loop while it stays open. `focus` asks for the keyboard, which the surface grants
+ * only over an empty prompt: the person asked for the pane.
+ */
+const openPane = async ($: EngineInterface, focus = false) => {
+  const opened = await $.ui.open({ id: paneId, title: 'Path of Dev', ...(focus ? { focus: true } : {}) })
   isPaneOpen = true
   syncPaneClock($)
   await syncLoop($)
+  return opened
 }
 
-/** What `/pathofdev <args>` answers: the pane opened, or dev mode's answer to `dev …`. */
+/**
+ * The welcome, offered on its own: when the mod connects to a server that runs it and the player hasn't finished or
+ * skipped it, it opens the pane on it, without the keyboard, so a prompt being typed keeps its keys. A pane up already
+ * is the player's: the welcome waits on its tab instead of taking the pane over. A terminal too narrow to place the
+ * pane unasked says how to open it.
+ */
+const offerWelcome = async ($: EngineInterface) => {
+  const shown = await read($, welcome)
+  if (shown?.isKnown !== true || shown.isDone) return
+  // Asked of the engine, whose record outlives a reload, rather than of a flag the session's start may not have set.
+  if ((await $.ui.panes().catch(() => [])).some((pane) => pane.id === paneId)) return
+  await update($, wizard, () => null)
+  await update($, tab, () => 'welcome')
+  const opened = await openPane($)
+  if (!opened.isPlaced) $.ui.toast('Welcome to Path of Dev: /pathofdev welcome opens your first-run guide.')
+}
+
+/** `/pathofdev welcome`, or the egg's Change: the welcome from its first step, or from `step`, with the keyboard. */
+const openWelcome = async ($: EngineInterface, step: WelcomeStep = 'hello'): Promise<string> => {
+  const shown = await read($, welcome)
+  if (shown === null) {
+    return (await read($, link)) === 'offline'
+      ? `The Path of Dev server is not answering. Start it: ${startHint(server)}`
+      : 'Connecting to the Path of Dev server…'
+  }
+  if (!shown.isKnown) return `The server predates the welcome: restart it with ${startHint(server)}`
+  await update($, wizard, () => ({ ...freshWizard, step }))
+  await update($, tab, () => 'welcome')
+  await openPane($, true)
+  return 'The Path of Dev welcome is open.'
+}
+
+/**
+ * The welcome finished, skipped or set aside: the server hears it once, so it never opens on its own again, and every
+ * other session stops offering it. Marked here at once, so a second press or a close right after sends nothing more.
+ */
+const markWelcomed = async ($: EngineInterface) => {
+  const shown = await read($, welcome)
+  if (shown?.isKnown !== true || shown.isDone) return
+  await update($, welcome, (was) => (was === null ? was : { ...was, isDone: true }))
+  await act($, (id) => ({ id, type: 'welcome.done', data: {} }))
+}
+
+/** Start playing, or Skip: the pane lands on the inventory, and the welcome starts afresh if opened again. */
+const leaveWelcome = async ($: EngineInterface) => {
+  await update($, wizard, () => null)
+  await update($, tab, () => 'inventory')
+  await markWelcomed($)
+}
+
+/**
+ * A choice of the welcome's, sent as it is made: null once the server took it, else why not in the server's words,
+ * which the step shows in place.
+ */
+const choose = async ($: EngineInterface, made: (id: string) => Command): Promise<string | null> => {
+  try {
+    const { id } = await stamp($)
+    const answer = await runCommand($, made(id))
+    if (answer.status === 'refused') return answer.message
+    // The choice has landed: a snapshot that can't be fetched now changes nothing about it.
+    await refresh($, false).catch(() => undefined)
+    return null
+  } catch (error) {
+    if (!(error instanceof ServerDown)) return 'The server answered something unexpected.'
+    await update($, link, () => 'offline')
+    return 'The Path of Dev server is not answering.'
+  }
+}
+
+/** What a step saves before the next one: the character's name, or the egg, each only when it changed. */
+const saveStep = async (
+  $: EngineInterface,
+  draft: Wizard,
+  band: BandView,
+  shown: WelcomeView,
+): Promise<string | null> => {
+  const name = draft.name
+  if (draft.step === 'name' && name !== null && name.trim() !== band.name) {
+    return choose($, (id) => ({ id, type: 'character.rename', data: { name } }))
+  }
+  const egg = shown.egg
+  if (draft.step === 'pet' && band.pet === null && egg !== null) {
+    const species = draft.species ?? egg.species
+    const petName = draft.petName ?? egg.name
+    if (species !== egg.species || petName.trim() !== egg.name) {
+      return choose($, (id) => ({ id, type: 'egg.choose', data: { species, name: petName } }))
+    }
+  }
+  return null
+}
+
+/**
+ * The welcome's next step: what this one picked saved first, and a refusal keeps the step, saying why. Enter in a
+ * field passes what it holds as `typed`. The last step lands on the pane.
+ */
+const nextStep = async ($: EngineInterface, typed?: string) => {
+  const at = (await read($, wizard)) ?? freshWizard
+  const band = await read($, view)
+  const shown = await read($, welcome)
+  if (band === null || shown === null) return
+  const draft: Wizard =
+    typed === undefined
+      ? at
+      : at.step === 'name'
+        ? { ...at, name: typed }
+        : at.step === 'pet'
+          ? { ...at, petName: typed }
+          : at
+  const error = await saveStep($, draft, band, shown)
+  if (error !== null) {
+    await update($, wizard, () => ({ ...draft, error }))
+    return
+  }
+  if (draft.step === 'ready') {
+    await leaveWelcome($)
+    return
+  }
+  await update($, wizard, () => ({ ...draft, step: stepAfter(draft.step), error: null }))
+}
+
+const backStep = async ($: EngineInterface) => {
+  await update($, wizard, (at) => {
+    const was = at ?? freshWizard
+    return { ...was, step: stepBefore(was.step), error: null }
+  })
+}
+
+/** What the player types or picks on a step, kept until the step saves it; a new try clears the last refusal. */
+const draftStep = async ($: EngineInterface, change: Partial<Pick<Wizard, 'name' | 'species' | 'petName'>>) => {
+  await update($, wizard, (at) => ({ ...(at ?? freshWizard), ...change, error: null }))
+}
+
+/** What `/pathofdev <args>` answers: the pane opened, the welcome, or dev mode's answer to `dev …`. */
 const runCommandLine = async ($: EngineInterface, args: string): Promise<string> => {
+  if (args.trim() === 'welcome') return openWelcome($)
   const ask = devAskOf(args)
   if (ask === null) {
     await openPane($)
@@ -812,6 +978,7 @@ const begin = async ($: EngineInterface, cwd: string, kept: string | null) => {
 
 export const register: Register = (on, options) => {
   const minWords = minWordsOf(options)
+  gradeWords = minWords
   motion = motionOf(options)
   toasts = toastsOf(options)
   server = serverOf(options)
@@ -838,7 +1005,8 @@ export const register: Register = (on, options) => {
       .register({
         name: 'pathofdev',
         description:
-          'Open the Path of Dev pane: your inventory, the shop, stats and missions (`dev …` on the dev server)',
+          'Open the Path of Dev pane: your inventory, the shop, stats and missions (`welcome` for the first-run ' +
+          'guide, `dev …` on the dev server)',
       })
       .catch(() => undefined)
     await $.command
@@ -864,6 +1032,8 @@ export const register: Register = (on, options) => {
 
   on('ui.close', { id: paneId }, async ($, e, next) => {
     const result = await next(e)
+    // The player closing the pane on the welcome sets it aside, as Skip does: it never opens on its own again.
+    if (closeSetsAside(e.origin.kind, tabOf(await read($, tab)))) later($, () => leaveWelcome($))
     isPaneOpen = false
     syncPaneClock($)
     await syncLoop($)
@@ -1095,7 +1265,10 @@ export const register: Register = (on, options) => {
   // The pane: a hub of tabs over the game, the inventory first. Each band style is listed with a live preview, drawn
   // by the band's own code, and a button that puts it on. The stats are cards that stats.ts lays out.
   on('ui.render', { component: 'Pane', requestId: paneId }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Button, Text } = elements
+    // The mobile app draws no text field yet: the welcome names nothing there.
+    const Input = 'Input' in elements ? elements.Input : null
     const status = await read($, link)
     const current = await read($, view)
     const owned = await read($, wardrobe)
@@ -1155,6 +1328,182 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" paddingX={1}>
           {header}
           <Text dimColor>{why}</Text>
+        </Box>
+      )
+    }
+
+    if (shownTab === 'welcome') {
+      const shown = await read($, welcome)
+      if (shown === null || !shown.isKnown) {
+        const why =
+          shown === null
+            ? 'Fetching the welcome…'
+            : `The server predates the welcome: restart it with ${startHint(server)}`
+        return (
+          <Box flexDirection="column" paddingX={1}>
+            {header}
+            <Text dimColor>{why}</Text>
+          </Box>
+        )
+      }
+      const layout: WelcomeLayout = welcomeLayout({
+        view: shown,
+        band: current,
+        wizard: (await read($, wizard)) ?? freshWizard,
+        columns,
+        isFocused: e.props.isFocused,
+        hasInput: Input !== null,
+      })
+      const { part } = layout
+      // The ready step draws the player's own band, by the band's own code, in the looks they wear.
+      const worn = wornLooks(owned)
+      const bandWidth = Math.max(20, layout.width - 2)
+      const field = (
+        key: string,
+        label: string,
+        value: string,
+        placeholder: string,
+        apply: (typed: string) => Partial<Pick<Wizard, 'name' | 'petName'>>,
+      ) =>
+        Input === null ? null : (
+          <Box key={`${key}:row`} marginLeft={2}>
+            <Input
+              key={key}
+              label={label}
+              value={value}
+              placeholder={placeholder}
+              submitLabel="next"
+              autoFocus
+              onInput={(typed) => void draftStep($, apply(typed))}
+              onSubmit={(typed) => void nextStep($, typed)}
+            />
+          </Box>
+        )
+      return (
+        <Box flexDirection="column" paddingX={1}>
+          {header}
+          {draw(Text, layout.stepper, 'welcome:stepper')}
+          <Text> </Text>
+          <Box key="welcome:body" flexDirection="column" width={layout.width}>
+            {draw(Text, layout.title, 'welcome:title')}
+            <Text> </Text>
+            {part.kind === 'band' ? (
+              <Box key="welcome:band" flexDirection="column" marginLeft={2} marginBottom={1}>
+                <Text dimColor>Your band, as it stands:</Text>
+                {draw(Text, edgeRow(bandWidth, worn.topEdge ?? null, moving), 'welcome:band:edge')}
+                <Box flexDirection="column" paddingX={2}>
+                  {draw(
+                    Text,
+                    [
+                      ...barRow(current, bandWidth - 4, null, worn.xpBar ?? null, moving),
+                      labelRun(current, worn.xpBar ?? null),
+                    ],
+                    'welcome:band:bar',
+                  )}
+                  <Box flexWrap="wrap" columnGap={2}>
+                    {draw(Text, levelRow(current, worn.levelDisplay ?? null, moving), 'welcome:band:level')}
+                    {draw(Text, goldRow(current, worn.goldDisplay ?? null, moving), 'welcome:band:gold')}
+                    {current.pet === null ? (
+                      <Text dimColor>🥚 {shown.egg?.name ?? 'your egg'}</Text>
+                    ) : (
+                      <Text>
+                        {sprite(current.pet)} {current.pet.name}{' '}
+                        <Text color="error">{hearts(current.pet.mood, happyLine(await read($, care)))}</Text>
+                      </Text>
+                    )}
+                  </Box>
+                </Box>
+              </Box>
+            ) : null}
+            {layout.paragraphs.map((row, i) => (
+              <Box key={`welcome:para:${i}`} marginLeft={2} marginBottom={1}>
+                {para(Text, row, `welcome:para:${i}:text`)}
+              </Box>
+            ))}
+            {part.kind === 'name' ? (
+              <Box key="welcome:name" flexDirection="column" marginBottom={1}>
+                {field('welcome:name', 'Name  ', part.value, current.name, (typed) => ({ name: typed }))}
+              </Box>
+            ) : null}
+            {part.kind === 'egg' ? (
+              <Box key="welcome:egg" flexDirection="column" marginBottom={1}>
+                <Box key="welcome:cards" flexWrap="wrap" columnGap={1} marginLeft={1}>
+                  {part.cards.map((card) => (
+                    <Box
+                      key={`welcome:card:${card.id}`}
+                      flexDirection="column"
+                      alignItems="center"
+                      width={18}
+                      borderStyle="round"
+                      borderColor={card.isPicked ? 'claude' : 'inactive'}
+                      hover={{ borderColor: 'claude' }}
+                    >
+                      <Text bold color={card.isPicked ? 'claude' : 'text'}>
+                        {card.face}
+                      </Text>
+                      <Button
+                        key={`welcome:species:${card.id}`}
+                        plain
+                        {...(card.hotkey === '' ? {} : { hotkey: card.hotkey })}
+                        onPress={() => void draftStep($, { species: card.id })}
+                      >
+                        {card.isPicked ? (
+                          <Text bold color="inverseText" backgroundColor="claude">
+                            {` ${card.name} `}
+                          </Text>
+                        ) : (
+                          <Text>{card.name}</Text>
+                        )}
+                      </Button>
+                      <Text dimColor wrap="truncate">
+                        {card.about}
+                      </Text>
+                    </Box>
+                  ))}
+                </Box>
+                <Text> </Text>
+                {field('welcome:petName', 'Its name  ', part.value, shown.egg?.name ?? '', (typed) => ({
+                  petName: typed,
+                }))}
+                <Box marginLeft={2}>{draw(Text, part.preview, 'welcome:preview')}</Box>
+              </Box>
+            ) : null}
+            {part.kind === 'hatched' ? (
+              <Box key="welcome:hatched" flexDirection="column" marginLeft={2} marginBottom={1}>
+                {draw(Text, part.card, 'welcome:pet')}
+                {draw(Text, part.note, 'welcome:pet:note')}
+              </Box>
+            ) : null}
+            {part.kind === 'points'
+              ? part.points.map((point) => (
+                  <Box key={`welcome:point:${point.key}`} flexDirection="column" marginBottom={1}>
+                    {draw(Text, point.title, `welcome:point:${point.key}:title`)}
+                    <Box marginLeft={3}>{para(Text, point.text, `welcome:point:${point.key}:text`)}</Box>
+                    {point.rows.map((row, i) => draw(Text, row, `welcome:point:${point.key}:${i}`))}
+                  </Box>
+                ))
+              : null}
+            {layout.error === null ? null : (
+              <Box key="welcome:error" marginLeft={2} marginBottom={1}>
+                {para(Text, layout.error, 'welcome:error:text')}
+              </Box>
+            )}
+            <Box key="welcome:buttons" flexWrap="wrap" columnGap={2} marginLeft={2}>
+              {layout.back === null ? null : (
+                <Button key="welcome:back" label={layout.back} onPress={() => void backStep($)} />
+              )}
+              <Button
+                key="welcome:next"
+                label={layout.next}
+                variant="primary"
+                {...(part.kind === 'name' || (part.kind === 'egg' && Input !== null) ? {} : { autoFocus: true })}
+                onPress={() => void nextStep($)}
+              />
+              <Button key="welcome:skip" label={layout.skip} dimColor onPress={() => void leaveWelcome($)} />
+            </Box>
+            <Text> </Text>
+            {draw(Text, layout.keys, 'welcome:keys')}
+          </Box>
         </Box>
       )
     }
@@ -1539,7 +1888,15 @@ export const register: Register = (on, options) => {
     const pet = current.pet
     let petSection
     if (pet === null) {
-      const egg = eggCardLayout(canHatch(current), columns)
+      // A server that runs the welcome names the egg, and its species and name can change there until it hatches.
+      const greeted = await read($, welcome)
+      const picked = greeted?.isKnown === true ? greeted.egg : null
+      const species = greeted?.species.find((one) => one.id === picked?.species)?.name ?? picked?.species ?? ''
+      const egg = eggCardLayout(
+        canHatch(current),
+        columns,
+        picked === null ? null : { name: picked.name, species: species.toLowerCase() },
+      )
       petSection = (
         <Box key="pet" flexDirection="column" marginBottom={1}>
           {draw(Text, egg.title, 'pet:title')}
@@ -1548,6 +1905,9 @@ export const register: Register = (on, options) => {
             {canHatch(current) ? (
               <Button key="pet:hatch" label="Hatch" variant="primary" onPress={() => void hatch($)} />
             ) : null}
+            {picked === null ? null : (
+              <Button key="pet:change" label="Change" dimColor onPress={() => void openWelcome($, 'pet')} />
+            )}
           </Box>
         </Box>
       )
@@ -1717,14 +2077,33 @@ const previewRow = (
   }
 }
 
-/** Shows a tab of the pane. */
+/** Shows a tab of the pane. Leaving the welcome for another sets it aside, as Skip does, its step kept for a return. */
 const showTab = async ($: EngineInterface, next: PaneTab) => {
+  const was = tabOf(await read($, tab))
   await update($, tab, () => next)
+  if (was === 'welcome' && next !== 'welcome') await markWelcomed($)
 }
 
 /** One row of styled runs as one Text, cut at the band's edge rather than wrapped. */
 const draw = (Text: ElementConstructor<TextProps>, row: Row, key: string) => (
   <Text key={key} wrap="truncate">
+    {row.map((run, i) => (
+      <Text
+        key={String(i)}
+        {...(run.color === undefined ? {} : { color: run.color })}
+        {...(run.bold === undefined ? {} : { bold: run.bold })}
+        {...(run.dim === undefined ? {} : { dimColor: run.dim })}
+        {...(run.background === undefined ? {} : { backgroundColor: run.background })}
+      >
+        {run.text}
+      </Text>
+    ))}
+  </Text>
+)
+
+/** One paragraph of styled runs, wrapped to the width it is given rather than cut. */
+const para = (Text: ElementConstructor<TextProps>, row: Row, key: string) => (
+  <Text key={key}>
     {row.map((run, i) => (
       <Text
         key={String(i)}

@@ -266,8 +266,60 @@ export type CareView = {
   boost: { pct: number; endsAt: number } | null
 }
 
-/** The `/pathofdev` pane's tabs. */
-export type PaneTab = 'inventory' | 'shop' | 'stats' | 'missions'
+/** The `/pathofdev` pane's tabs; the last is the first-run welcome, which a player may open again. */
+export type PaneTab = 'inventory' | 'shop' | 'stats' | 'missions' | 'welcome'
+
+/** A species an egg can hatch as, as the rules list it. */
+export type SpeciesView = { id: string; name: string; about: string }
+
+/**
+ * What the welcome's grading step says, from the rules and the `minWords` option: each number null when the rules
+ * don't say, and the step then says it without one.
+ */
+export type GradingView = {
+  /** A typed prompt shorter than this goes ungraded. */
+  minWords: number
+  /** XP for a perfect grade. */
+  maxXp: number | null
+  /** How a day's graded prompts taper, in order: up to the `upTo`-th earn `pct` percent; null = every one after. */
+  perDay: ReadonlyArray<{ upTo: number | null; pct: number }> | null
+  /** The quality scores that count toward XP, in the rubric's order. */
+  counted: ReadonlyArray<string>
+  /** The chance of a drop at a perfect grade, 0-1. */
+  lootAtTen: number | null
+  /** A grade from which a drop's rare-and-better odds rise, and by what factor. */
+  greatAt: number | null
+  greatFactor: number | null
+}
+
+/**
+ * The first-run welcome, as the snapshot and the rules give it. `isKnown` is false from a server older than the
+ * welcome, whose rules list no species: the mod then never offers it.
+ */
+export type WelcomeView = {
+  isKnown: boolean
+  /** The player finished or skipped it: it never opens on its own again. */
+  isDone: boolean
+  species: ReadonlyArray<SpeciesView>
+  /** The egg as it hatches, picked or the rules' default; null once it has hatched, or from an older server. */
+  egg: { species: string; name: string } | null
+  grading: GradingView
+}
+
+/** The welcome's steps, in order. */
+export type WelcomeStep = 'hello' | 'name' | 'pet' | 'grading' | 'ready'
+
+/**
+ * Where the player is in the welcome, and what they typed and picked that no step has saved yet: null for what they
+ * haven't touched, which reads as the server has it. `error` is the server's word on the last save, shown in place.
+ */
+export type Wizard = {
+  step: WelcomeStep
+  name: string | null
+  species: string | null
+  petName: string | null
+  error: string | null
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -292,6 +344,9 @@ declare module 'claude-code' {
       session: string | null
       shop: ShopView | null
       care: CareView | null
+      welcome: WelcomeView | null
+      /** The welcome's step and drafts while it shows; null when it starts afresh. */
+      wizard: Wizard | null
     }
   }
 }

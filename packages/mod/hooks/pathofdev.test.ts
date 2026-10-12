@@ -11,7 +11,7 @@ import type {
   SessionStartInput,
 } from 'claude-code'
 import type { QuestRewards } from '@pathofdev/schema'
-import type { BandLook, BandView, Celebration, MissionsView, MissionView } from '../types'
+import type { BandLook, BandView, Celebration, MissionsView, MissionView, WelcomeStep } from '../types'
 import { barCells } from './band'
 import { joinQueue, queueOf, rewardsText } from './celebrate'
 import { cellsOf, cellsOfRow, glyphSlot } from './cells'
@@ -24,6 +24,7 @@ import { headerOf, renamedNote, tabBarOf } from './pane'
 import { clientVersion, initOf, socketPathsOf } from './server'
 import { statsLayout, twoColumnsFrom } from './stats'
 import { statsViewOf } from './view'
+import { closeSetsAside, lootText, stepperRow, taperText, xpText } from './welcome'
 
 // A fake local server beneath the mod: it answers the four routes, records what the mod sends, and holds the
 // stream until the test's clock passes 25 seconds, as the real one does.
@@ -52,8 +53,21 @@ type Quest = {
 /** What the stats tab reads: the player stats, and the streak the character carries. */
 type Counted = { stats: unknown; streak: unknown }
 
-/** What the shop and the pet's card read: the offers, the pet, the boosts running, the shards and the gold. */
-type Kept = { shop?: Array<unknown>; pet?: unknown; boosts?: Array<unknown>; shards?: Record<string, number>; gold?: number }
+/** The welcome as a server that runs it keeps it: done or not, the egg, and the character's name, which it changes. */
+type Greeting = { done: boolean; egg: { species: string; name: string } | null; name: string }
+
+/**
+ * What the shop and the pet's card read: the offers, the pet, the boosts running, the shards and the gold; and the
+ * welcome, from a server that runs it.
+ */
+type Kept = {
+  shop?: Array<unknown>
+  pet?: unknown
+  boosts?: Array<unknown>
+  shards?: Record<string, number>
+  gold?: number
+  welcome?: Greeting
+}
 
 const snapshot = (
   level: number,
@@ -73,8 +87,9 @@ const snapshot = (
   pet: kept.pet ?? pet,
   ...(kept.shop === undefined ? {} : { shop: kept.shop }),
   ...(kept.boosts === undefined ? {} : { boosts: kept.boosts }),
+  ...(kept.welcome === undefined ? {} : { welcome: { done: kept.welcome.done }, egg: kept.welcome.egg }),
   character: {
-    name: 'Player',
+    name: kept.welcome?.name ?? 'Player',
     level,
     title: 'Apprentice',
     glyph,
@@ -101,7 +116,7 @@ const ran = (exitCode: number, stdout: string) => ({
 })
 
 /** A session's bottom: what the engine itself answers beneath every plugin, and the commands and panes it took. */
-const engineBeneath = (on: On) => {
+const engineBeneath = (on: On, isPaneUp = false) => {
   const registered: Array<string> = []
   const opened: Array<string> = []
   const toasts: Array<string> = []
@@ -124,9 +139,11 @@ const engineBeneath = (on: On) => {
     registered.push(e.name)
     return { value: { command: e.name } }
   })
-  on('ui.panes', () => ({ value: [] }))
+  on('ui.panes', () => ({
+    value: isPaneUp ? [{ id: 'questline', title: 'Path of Dev', isShown: true, isFocused: false, isPlaced: true }] : [],
+  }))
   on('ui.open', ($, e) => {
-    opened.push(e.id)
+    opened.push(e.focus === true ? `${e.id}+focus` : e.id)
     return { value: { isPlaced: true } }
   })
   on('ui.close', () => ({ value: undefined }))
@@ -177,6 +194,8 @@ type ServerOptions = {
   downAfterCommand?: boolean
   /** The one socket the server listens on, which a test may move; it answers on any when not given. */
   listensOn?: { at: string }
+  /** The mod's pane is up already, as the engine keeps it across a reload. */
+  isPaneUp?: boolean
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
@@ -185,8 +204,36 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
  * What the fake server answers a command: an equip or unequip changes what it owns, a pick or a give-up changes its
  * missions (a pick of a mission not on offer refused), and anything else is refused.
  */
-const commandAnswer = (body: unknown, owned: Owned | undefined, isDev: boolean, quests: Array<Quest> | undefined) => {
+const commandAnswer = (
+  body: unknown,
+  owned: Owned | undefined,
+  isDev: boolean,
+  quests: Array<Quest> | undefined,
+  kept: Kept = {},
+) => {
   const data = isRecord(body) && isRecord(body['data']) ? body['data'] : {}
+  const greeting = kept.welcome
+  // The welcome's choices, held to the server's rules on names and species as far as these tests go.
+  const named = typeof data['name'] === 'string' ? data['name'].trim().replace(/\s+/g, ' ') : ''
+  const message = `A name takes at most 20 characters, and that one has ${named.length}`
+  const tooLong = { status: 'refused', code: 'invalid', message }
+  if (greeting !== undefined && isRecord(body) && body['type'] === 'character.rename') {
+    if (named.length > 20) return tooLong
+    greeting.name = named
+    return { status: 'ok', events: [] }
+  }
+  if (greeting !== undefined && isRecord(body) && body['type'] === 'egg.choose') {
+    if (kept.pet !== undefined && kept.pet !== null) {
+      return { status: 'refused', code: 'not_allowed', message: 'It has hatched, and keeps its species and name' }
+    }
+    if (named.length > 20) return tooLong
+    greeting.egg = { species: String(data['species']), name: named }
+    return { status: 'ok', events: [] }
+  }
+  if (greeting !== undefined && isRecord(body) && body['type'] === 'welcome.done') {
+    greeting.done = true
+    return { status: 'ok', events: [] }
+  }
   const questId = typeof data['questId'] === 'string' ? data['questId'] : ''
   const type = isRecord(body) ? body['type'] : undefined
   const quest = quests?.find((one) => one.questId === questId)
@@ -226,7 +273,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
   const sockets = new Set<string>()
   /** The socket of each request the server answered, in order. */
   const answeredOn: Array<string> = []
-  const { registered, opened, toasts } = engineBeneath(on)
+  const { registered, opened, toasts } = engineBeneath(on, options.isPaneUp === true)
   on('http.fetch', async ($, e) => {
     tried.push(new URL(e.url).pathname)
     const socketPath = e.init?.socketPath ?? ''
@@ -273,7 +320,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     if (path === '/v1/commands') {
       if (options.commandStatus !== undefined) return reply(options.commandStatus, { error: 'internal' })
       if (options.downAfterCommand === true) options.isDown = true
-      return reply(200, commandAnswer(body, options.owned, options.isDev === true, options.quests))
+      return reply(200, commandAnswer(body, options.owned, options.isDev === true, options.quests, options.kept))
     }
     // The stream answers as soon as the test hands it events, or after 25 seconds with none.
     const stream = options.stream ?? []
@@ -1437,9 +1484,27 @@ describe('the pane fits its width', () => {
     for (const columns of [20, 28, 32, 38, 44, 60]) expect(widthOf(tabBarOf('inventory', columns))).toBeLessThanOrEqual(Math.max(columns, 11))
     expect(tabBarOf('inventory', 60)).toMatchObject({
       gap: 3,
-      chips: [{ kind: 'shown' }, { kind: 'ready' }, { kind: 'ready' }, { kind: 'ready', soon: false }],
+      chips: [
+        { kind: 'shown' },
+        { kind: 'ready' },
+        { kind: 'ready' },
+        { kind: 'ready', soon: false },
+        { kind: 'ready' },
+      ],
     })
-    expect(tabBarOf('stats', 60).chips.map((chip) => chip.kind)).toEqual(['ready', 'ready', 'shown', 'ready'])
+    expect(tabBarOf('stats', 60).chips.map((chip) => chip.kind)).toEqual(['ready', 'ready', 'shown', 'ready', 'ready'])
+    // The welcome, opened rarely, shrinks to its mark and then goes before any other tab gives way, unless it is shown.
+    expect(tabBarOf('inventory', 60).chips.map((chip) => chip.text).at(-1)).toBe('◇ Welcome')
+    expect(tabBarOf('inventory', 39).chips.map((chip) => chip.text)).toEqual([
+      '◆ Inventory',
+      '◇ Shop',
+      '◇ Stats',
+      '◇ Missions',
+      '?',
+    ])
+    const shut = tabBarOf('inventory', 38).chips.map((chip) => chip.text)
+    expect(shut).toEqual(['◆ Inventory', '◇ Shop', '◇ Stats', '◇ Missions'])
+    expect(tabBarOf('welcome', 24).chips.map((chip) => chip.text)).toEqual(['Inv', 'Shop', 'Stats', 'Quest', 'Hi'])
     expect(tabBarOf('missions', 34).chips.map((chip) => chip.text)).toEqual(['◇ Items', '◇ Shop', '◇ Stats', '◆ Missions'])
     expect(tabBarOf('missions', 28).chips.map((chip) => chip.text)).toEqual(['Items', 'Shop', 'Stats', 'Missions'])
     expect(tabBarOf('inventory', 20).chips.map((chip) => chip.text)).toEqual(['Inv', 'Shop', 'Stats', 'Quest'])
@@ -3022,5 +3087,324 @@ describe('dev mode: the shop and the pet', () => {
     expect((await run('dev restock')).text).toMatch(/^The dev server predates the shop: restart it/)
     expect((await run('dev mood 20')).text).toMatch(/^The dev server predates pet care: restart it/)
     expect(commandsOf(sent)).toEqual([])
+  })
+})
+
+describe('the welcome', () => {
+  const commandsOf = (sent: ReadonlyArray<Sent>) =>
+    sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+  /** The rules of a server that runs the welcome: the species, and the numbers its grading step says. */
+  const welcomeRules = {
+    pet: {
+      moodDecayPerDay: 10,
+      happyAbove: 70,
+      happyXpBonusPct: 5,
+      evolveAt: [10, 25, 50],
+      care: { fed: 30, petted: 5, pettedPerHour: 3 },
+      species: [
+        { id: 'fox', name: 'Fox', about: 'quick, curious' },
+        { id: 'slime', name: 'Slime', about: 'soft, cheerful' },
+        { id: 'robot', name: 'Robot', about: 'steady, precise' },
+        { id: 'owl', name: 'Owl', about: 'calm, wise' },
+      ],
+      egg: { species: 'fox', name: 'Ember' },
+    },
+    prompt: {
+      maxXp: 20,
+      perDay: [
+        { upTo: 20, pct: 100 },
+        { upTo: 40, pct: 50 },
+        { upTo: null, pct: 10 },
+      ],
+      weights: { clarity: 1, grammar: 1, specificity: 1, instructive: 1, context: 1, doneCriteria: 1, focus: 1 },
+    },
+    loot: { promptChanceAtTen: 0.24, promptGreatAt: 9, promptGreatRareFactor: 2 },
+  }
+  const fresh = (): Greeting => ({ done: false, egg: { species: 'fox', name: 'Ember' }, name: 'Player' })
+  const welcoming = ($: Parameters<TestBody>[0], on: On, greeting: Greeting, kept: Kept = {}) =>
+    streaming($, on, undefined, false, { rules: welcomeRules, kept: { ...kept, welcome: greeting } })
+  /** The pane drawn afresh, its texts, and what it holds. */
+  const look = async ($: Parameters<TestBody>[0]) => {
+    const ui = await mountPane($)
+    const all = await ui.findAll({ type: 'Text' })
+    return { ui, texts: all.map((one) => one.text).join('\n'), all }
+  }
+  const run = ($: Parameters<TestBody>[0], command: string, args: string) =>
+    $.command.run({ command, args, origin: composer, presentation })
+
+  test('opens on its own the first time the mod meets a server that runs it, without the keys', async ($, on) => {
+    const { opened } = await welcoming($, on, fresh())
+    // Opened unasked, without the keyboard: a prompt being typed keeps its keys.
+    expect(opened).toEqual(['questline'])
+    const { ui, texts, all } = await look($)
+    expect(texts).toContain('◆ Welcome')
+    expect(texts).toContain('Welcome to Path of Dev')
+    expect(texts).toContain('no account, no sign-in, and your save is yours')
+    // The progress row: the step shown filled in the accent, the rest dim, and how far along.
+    expect(texts).toMatch(/ 1 Welcome {2}── 2 Name ── 3 Pet ── 4 Grading ── 5 Ready +1 of 5/)
+    expect(all.find((one) => one.props['backgroundColor'] === 'claude')?.text).toBe(' 1 Welcome ')
+    expect(await ui.find({ type: 'Button', key: 'welcome:back' })).toBeUndefined()
+    expect(texts).toContain('tab moves · enter presses')
+    await ui.unmount()
+  })
+
+  test('stays shut on a server older than it, which /pathofdev welcome and the tab say to restart', async ($, on) => {
+    const { opened, sent } = await streaming($, on, ownedOf())
+    expect(opened).toEqual([])
+    const answer = await run($, 'pathofdev', 'welcome')
+    expect(answer.text).toBe('The server predates the welcome: restart it with pnpm --filter @pathofdev/server start')
+    expect(opened).toEqual([])
+    await run($, 'pathofdev', '')
+    const pane = await mountPane($)
+    await pane.press({ key: 'tab:welcome' })
+    await pane.unmount()
+    const { ui, texts } = await look($)
+    expect(texts).toContain('The server predates the welcome: restart it with')
+    expect(await ui.find({ type: 'Button', key: 'welcome:next' })).toBeUndefined()
+    await ui.unmount()
+    expect(commandsOf(sent)).toEqual([])
+  })
+
+  test('stays shut once done', async ($, on) => {
+    const { opened } = await welcoming($, on, { ...fresh(), done: true })
+    expect(opened).toEqual([])
+  })
+
+  test('leaves a pane already up, as after a reload, to the player: it waits on its tab', async ($, on) => {
+    const { opened } = await streaming($, on, undefined, false, {
+      rules: welcomeRules,
+      kept: { welcome: fresh() },
+      isPaneUp: true,
+    })
+    expect(opened).toEqual([])
+    const { ui, texts } = await look($)
+    expect(texts).toContain('◆ Inventory')
+    await ui.unmount()
+  })
+
+  test("names the character, picks the egg, says the rules' grading, and lands on the pane", async ($, on) => {
+    const greeting = fresh()
+    const { sent } = await welcoming($, on, greeting)
+    let shown = await look($)
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+
+    shown = await look($)
+    expect(shown.texts).toContain('Name your character')
+    expect(shown.texts).toMatch(/✔ Welcome ── {2}2 Name {2}── 3 Pet/)
+    expect((await shown.ui.find({ type: 'Input', key: 'welcome:name' }))?.props['value']).toBe('Player')
+    // Enter in the field saves the name and moves on.
+    await shown.ui.input({ key: 'welcome:name', text: '  Ada  ' })
+    await shown.ui.unmount()
+    expect(commandsOf(sent)).toMatchObject([{ type: 'character.rename', data: { name: '  Ada  ' } }])
+
+    shown = await look($)
+    expect(shown.texts).toContain('Pick your egg')
+    for (const face of ['ᓚᘏᗢ', '(•ᴗ•)', '[o_o]', '{◉,◉}', 'calm, wise']) expect(shown.texts).toContain(face)
+    expect(shown.texts).toContain('never gets sick, never leaves, and never nags')
+    expect(shown.all.filter((one) => one.props['backgroundColor'] === 'claude').map((one) => one.text)).toEqual([
+      ' 3 Pet ',
+      ' Fox ',
+    ])
+    await shown.ui.press({ key: 'welcome:species:owl' })
+    await shown.ui.input({ key: 'welcome:petName', text: 'Hoot', kind: 'change' })
+    await shown.ui.unmount()
+    shown = await look($)
+    expect(shown.texts).toContain('Hoot the owl · ready to hatch from the band')
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'egg.choose', data: { species: 'owl', name: 'Hoot' } })
+
+    shown = await look($)
+    expect(shown.texts).toContain('How grading works')
+    for (const said of [
+      'Once you send a prompt of 6 words or more, Haiku grades it on your own Claude account',
+      "never the prompt, and never Haiku's note",
+      "A day's graded prompts earn full XP for the first 20, half for the next 20 and a tenth after that.",
+      'A 10 earns 20 XP and a 7 earns 14',
+      'a 24% chance at a 10, less as the grade falls, and from a 9 the odds of a rare, epic or legendary drop double',
+      'A low grade only earns less. Nothing is ever taken away',
+      'Done criteria',
+    ]) {
+      expect(shown.texts).toContain(said)
+    }
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+
+    shown = await look($)
+    expect(shown.texts).toContain("You're all set, Ada")
+    expect(shown.texts).toContain('your egg, Hoot, and the mission closest to done')
+    // The player's own band, drawn by the band's own code: the bar and its label, the level, the gold, the egg.
+    expect(shown.texts).toContain('Your band, as it stands:')
+    expect(shown.texts).toMatch(/^▰+▱+ 30\/203 xp$/m)
+    expect(shown.texts).toContain('🥚 Hoot')
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    expect(commandsOf(sent).map((one) => (isRecord(one) ? one['type'] : null))).toEqual([
+      'character.rename',
+      'egg.choose',
+      'welcome.done',
+    ])
+
+    // The pane as it is, the egg on its card as picked.
+    shown = await look($)
+    expect(shown.texts).toContain('◆ Inventory')
+    expect(shown.texts).toContain('Hoot the owl · ready to hatch')
+    expect(shown.texts).toContain('Ada · Lv 4')
+    await shown.ui.unmount()
+  })
+
+  test('skips from any step, keeping the defaults, and says it once', async ($, on) => {
+    const greeting = fresh()
+    const { sent } = await welcoming($, on, greeting)
+    let shown = await look($)
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    shown = await look($)
+    await shown.ui.press({ key: 'welcome:skip' })
+    await shown.ui.unmount()
+    expect(commandsOf(sent)).toMatchObject([{ type: 'welcome.done', data: {} }])
+    shown = await look($)
+    expect(shown.texts).toContain('◆ Inventory')
+    expect(shown.texts).toContain('Ember the fox · ready to hatch')
+    expect(shown.texts).toContain('Player · Lv 4')
+    await shown.ui.unmount()
+    // Done once is done: opened again and skipped again, it sends nothing more.
+    await run($, 'pathofdev', 'welcome')
+    shown = await look($)
+    await shown.ui.press({ key: 'welcome:skip' })
+    await shown.ui.unmount()
+    expect(commandsOf(sent)).toHaveLength(1)
+  })
+
+  test("keeps the step on a name the server refuses, saying why in place, and a new try clears it", async ($, on) => {
+    const { sent } = await welcoming($, on, fresh())
+    let shown = await look($)
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    shown = await look($)
+    await shown.ui.input({ key: 'welcome:name', text: 'x'.repeat(30) })
+    await shown.ui.unmount()
+    shown = await look($)
+    expect(shown.texts).toContain('Name your character')
+    expect(shown.texts).toContain('A name takes at most 20 characters, and that one has 30')
+    await shown.ui.input({ key: 'welcome:name', text: 'Ada', kind: 'change' })
+    await shown.ui.unmount()
+    shown = await look($)
+    expect(shown.texts).not.toContain('A name takes at most')
+    await shown.ui.unmount()
+    expect(commandsOf(sent)).toHaveLength(1)
+  })
+
+  test('shows a pet that has hatched as it is, with no egg to pick, and sends no pick', async ($, on) => {
+    const goo = { species: 'slime', name: 'Goo', form: 0, mood: 90, equipped: {} }
+    const { sent } = await welcoming($, on, { ...fresh(), egg: null }, { pet: goo })
+    let shown = await look($)
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    shown = await look($)
+    expect(shown.texts).toContain('Your pet')
+    expect(shown.texts).toContain('(•ᴗ•)  Goo the slime')
+    expect(shown.texts).toContain('It has hatched, and a pet keeps its species and name for good.')
+    expect(await shown.ui.find({ type: 'Button', key: 'welcome:species:fox' })).toBeUndefined()
+    expect(await shown.ui.find({ type: 'Input', key: 'welcome:petName' })).toBeUndefined()
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    expect(commandsOf(sent)).toEqual([])
+    shown = await look($)
+    expect(shown.texts).toContain('How grading works')
+    await shown.ui.unmount()
+  })
+
+  test('opens again from /pathofdev and /questline welcome with what the player has, sending none', async ($, on) => {
+    const { opened, sent } = await welcoming($, on, { done: true, egg: { species: 'owl', name: 'Hoot' }, name: 'Ada' })
+    expect(opened).toEqual([])
+    expect((await run($, 'pathofdev', 'welcome')).text).toBe('The Path of Dev welcome is open.')
+    expect((await run($, 'questline', ' welcome ')).text).toMatch(/^The Path of Dev welcome is open\./)
+    // Asked for, so it asks for the keyboard.
+    expect(opened).toEqual(['questline+focus', 'questline+focus'])
+    let shown = await look($)
+    expect(await shown.ui.find({ type: 'Button', key: 'welcome:skip', text: 'Close' })).toBeDefined()
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    shown = await look($)
+    expect((await shown.ui.find({ type: 'Input', key: 'welcome:name' }))?.props['value']).toBe('Ada')
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    shown = await look($)
+    expect(shown.all.filter((one) => one.props['backgroundColor'] === 'claude').map((one) => one.text)).toEqual([
+      ' 3 Pet ',
+      ' Owl ',
+    ])
+    expect((await shown.ui.find({ type: 'Input', key: 'welcome:petName' }))?.props['value']).toBe('Hoot')
+    for (let i = 0; i < 3; i++) await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    shown = await look($)
+    expect(shown.texts).toContain('◆ Inventory')
+    await shown.ui.unmount()
+    expect(commandsOf(sent)).toEqual([])
+  })
+
+  test("the egg card's Change opens the welcome on the egg", async ($, on) => {
+    await welcoming($, on, { ...fresh(), done: true })
+    await run($, 'pathofdev', '')
+    let shown = await look($)
+    expect(shown.texts).toContain('Ember the fox · ready to hatch')
+    await shown.ui.press({ key: 'pet:change' })
+    await shown.ui.unmount()
+    shown = await look($)
+    expect(shown.texts).toContain('Pick your egg')
+    await shown.ui.unmount()
+  })
+
+  test('a close by the player sets it aside, as Skip does; a reload, its own close or another tab does not', () => {
+    expect(closeSetsAside('person', 'welcome')).toBe(true)
+    expect(closeSetsAside('unload', 'welcome')).toBe(false)
+    expect(closeSetsAside('plugin', 'welcome')).toBe(false)
+    expect(closeSetsAside('person', 'inventory')).toBe(false)
+  })
+
+  test('leaving it for another tab sets it aside too', async ($, on) => {
+    const { sent } = await welcoming($, on, fresh())
+    const shown = await look($)
+    await shown.ui.press({ key: 'tab:shop' })
+    await shown.ui.unmount()
+    expect(commandsOf(sent)).toMatchObject([{ type: 'welcome.done' }])
+  })
+
+  test('the band hatches the egg as picked; an older server hatches the fox Ember, as before', async ($, on) => {
+    const { sent } = await welcoming($, on, { ...fresh(), done: true, egg: { species: 'robot', name: 'Bolt' } })
+    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
+    await ui.press({ key: 'hatch' })
+    await ui.unmount()
+    expect(commandsOf(sent)).toMatchObject([{ type: 'pet.hatch', data: { species: 'robot', name: 'Bolt' } }])
+  })
+
+  test('says the grading in words from whatever bands the rules give, and fits its progress row at every width', () => {
+    expect(taperText([{ upTo: null, pct: 100 }])).toBe("A day's graded prompts earn full XP for every one.")
+    expect(
+      taperText([
+        { upTo: 10, pct: 100 },
+        { upTo: 30, pct: 25 },
+      ]),
+    ).toBe("A day's graded prompts earn full XP for the first 10, a quarter for the next 20 and nothing after that.")
+    expect(taperText(null)).toBeNull()
+    expect(lootText({ lootAtTen: 0.3, greatAt: 8, greatFactor: 3 })).toBe(
+      'It also rolls for loot: a 30% chance at a 10, less as the grade falls, and from a 8 the odds of a rare, ' +
+        'epic or legendary drop triple.',
+    )
+    expect(lootText({ lootAtTen: null, greatAt: null, greatFactor: null })).toBe(
+      'It also rolls for loot, likelier the better the grade.',
+    )
+    expect(xpText(null)).toBe('The better the grade, the more XP the prompt earns.')
+    for (const step of ['hello', 'name', 'pet', 'grading', 'ready'] satisfies Array<WelcomeStep>) {
+      for (let width = 16; width <= 80; width += 4) {
+        expect(cellsOfRow(stepperRow(step, width))).toBeLessThanOrEqual(width)
+      }
+    }
+    const narrow = stepperRow('grading', 30).map((run) => run.text).join('')
+    expect(narrow).toMatch(/^● ● ● {2}Grading {2}○ +4 of 5$/)
+    expect(cellsOf(narrow)).toBe(30)
   })
 })

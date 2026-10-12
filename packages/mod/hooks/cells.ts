@@ -1,8 +1,8 @@
 // Cells and styled runs: the band lays its pieces out by cells, and an emoji takes two. Every row the band draws
 // is a list of runs, each a stretch of text in one style.
 
-/** A stretch of text in one style. */
-export type Run = { text: string; color?: string; bold?: boolean; dim?: boolean }
+/** A stretch of text in one style; `background` fills its cells, for a chip that stands out of the row. */
+export type Run = { text: string; color?: string; bold?: boolean; dim?: boolean; background?: string }
 export type Row = ReadonlyArray<Run>
 
 export type Style = { color?: string; bold?: boolean; dim?: boolean }

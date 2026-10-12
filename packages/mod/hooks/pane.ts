@@ -17,13 +17,22 @@ export const renamedNote = 'Questline is now Path of Dev: /questline is /pathofd
 
 /**
  * The tabs in order, each with a shorter name for a narrow pane and a shortest for the narrowest; one not ready yet
- * shows dim, as what is coming.
+ * shows dim, as what is coming. One with a `mark` (the welcome, which a player opens rarely) shrinks to it first when
+ * it isn't the tab shown, and on the narrowest pane goes, still a command away.
  */
-export const tabs: ReadonlyArray<{ id: PaneTab; label: string; short: string; tiny: string; isReady: boolean }> = [
+export const tabs: ReadonlyArray<{
+  id: PaneTab
+  label: string
+  short: string
+  tiny: string
+  isReady: boolean
+  mark?: string
+}> = [
   { id: 'inventory', label: 'Inventory', short: 'Items', tiny: 'Inv', isReady: true },
   { id: 'shop', label: 'Shop', short: 'Shop', tiny: 'Shop', isReady: true },
   { id: 'stats', label: 'Stats', short: 'Stats', tiny: 'Stats', isReady: true },
   { id: 'missions', label: 'Missions', short: 'Missions', tiny: 'Quest', isReady: true },
+  { id: 'welcome', label: 'Welcome', short: 'Welcome', tiny: 'Hi', isReady: true, mark: '?' },
 ]
 
 /** The pane's title, which opens its header. */
@@ -52,19 +61,23 @@ export const headerOf = (view: Pick<BandView, 'name' | 'level' | 'title' | 'gold
 export type TabChip = { id: PaneTab; text: string; kind: 'shown' | 'ready' | 'later'; soon: boolean }
 
 /**
- * The tab bar as it fits `columns` on one row: first the gaps close up, then the `soon` labels go, then the names
- * shorten and lose their marks (the tab shown still stands out in the accent), shorten again, then the tabs still to
- * come go.
+ * The tab bar as it fits `columns` on one row: first the gaps close up, then the `soon` labels go, then a tab with a
+ * mark shrinks to it and then goes unless it is the one shown (it is a command away), then the names shorten and lose
+ * their marks (the tab shown still stands out in the accent), shorten again, then the tabs still to come go.
  */
 export const tabBarOf = (shown: PaneTab, columns: number): { gap: number; chips: Array<TabChip> } => {
   const chipsOf = (
     soon: boolean,
     withLater: boolean,
     size: 'full' | 'short' | 'bare' | 'tiny' = 'full',
+    marked: 'named' | 'mark' | 'gone' = 'mark',
   ): Array<TabChip> =>
     tabs.flatMap((tab): Array<TabChip> => {
       const kind = tab.id === shown ? 'shown' : tab.isReady ? 'ready' : 'later'
       if (kind === 'later' && !withLater) return []
+      if (tab.mark !== undefined && kind !== 'shown' && marked !== 'named') {
+        return marked === 'gone' ? [] : [{ id: tab.id, text: tab.mark, kind, soon: false }]
+      }
       const name = size === 'full' ? tab.label : size === 'tiny' ? tab.tiny : tab.short
       const text = size === 'bare' || size === 'tiny' ? name : `${kind === 'shown' ? '◆' : '◇'} ${name}`
       return [{ id: tab.id, text, kind, soon: soon && kind === 'later' }]
@@ -73,16 +86,18 @@ export const tabBarOf = (shown: PaneTab, columns: number): { gap: number; chips:
     bar.chips.reduce((sum, chip) => sum + cellsOf(chip.text) + (chip.soon ? ' soon'.length : 0), 0) +
     bar.gap * Math.max(0, bar.chips.length - 1)
   const tries = [
-    { gap: 3, chips: chipsOf(true, true) },
-    { gap: 2, chips: chipsOf(true, true) },
-    { gap: 2, chips: chipsOf(false, true) },
+    { gap: 3, chips: chipsOf(true, true, 'full', 'named') },
+    { gap: 2, chips: chipsOf(true, true, 'full', 'named') },
+    { gap: 2, chips: chipsOf(false, true, 'full', 'named') },
+    { gap: 1, chips: chipsOf(false, true, 'full', 'named') },
     { gap: 1, chips: chipsOf(false, true) },
-    { gap: 1, chips: chipsOf(false, true, 'short') },
-    { gap: 1, chips: chipsOf(false, true, 'bare') },
-    { gap: 1, chips: chipsOf(false, true, 'tiny') },
-    { gap: 1, chips: chipsOf(false, false, 'tiny') },
+    { gap: 1, chips: chipsOf(false, true, 'full', 'gone') },
+    { gap: 1, chips: chipsOf(false, true, 'short', 'gone') },
+    { gap: 1, chips: chipsOf(false, true, 'bare', 'gone') },
+    { gap: 1, chips: chipsOf(false, true, 'tiny', 'gone') },
+    { gap: 1, chips: chipsOf(false, false, 'tiny', 'gone') },
   ]
-  return tries.find((bar) => widthOf(bar) <= columns) ?? { gap: 1, chips: chipsOf(false, false, 'tiny') }
+  return tries.find((bar) => widthOf(bar) <= columns) ?? { gap: 1, chips: chipsOf(false, false, 'tiny', 'gone') }
 }
 
 /** A tab the pane can show: the one asked for when it is ready, else the first that is. */
