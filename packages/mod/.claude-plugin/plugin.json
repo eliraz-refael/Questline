@@ -4,7 +4,7 @@
   "description": "Path of Dev: an RPG around your Claude Code work: XP, levels, loot and a pixel pet, drawn in a band above the prompt.",
   "types": "./types/index.d.ts",
   "author": { "name": "eliraz-refael" },
-  "repository": "https://github.com/eliraz-refael/Questline",
+  "repository": "https://github.com/eliraz-refael/path-of-dev",
   "license": "MIT",
   "userConfig": {
     "minWords": {
