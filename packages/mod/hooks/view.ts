@@ -1,4 +1,4 @@
-import type { PlayerStats, RulesConfig, ScoringFact, ServerEvent, Snapshot } from '@questline/schema'
+import type { PlayerStats, RulesConfig, ScoringFact, ServerEvent, Snapshot } from '@pathofdev/schema'
 import type { PluginOptions } from 'claude-code'
 import type { BandView, GainLine, OwnedItem, StatsView, Wardrobe } from '../types'
 import { heartsFor, knowsCareOf } from './care'
@@ -270,8 +270,8 @@ export const gainOf = (event: ServerEvent, pet = somePet): GainLine | null => {
       if (count === 0) return null
       const text =
         event.data.cadence === 'daily'
-          ? `${count} new ${count === 1 ? 'daily' : 'dailies'} · /questline`
-          : `${count} ${count === 1 ? 'weekly' : 'weeklies'} on offer · /questline`
+          ? `${count} new ${count === 1 ? 'daily' : 'dailies'} · /pathofdev`
+          : `${count} ${count === 1 ? 'weekly' : 'weeklies'} on offer · /pathofdev`
       return { text, tone: 'quiet' }
     }
     default:

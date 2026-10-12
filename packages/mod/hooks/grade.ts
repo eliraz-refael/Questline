@@ -1,4 +1,4 @@
-import type { GradeDimension } from '@questline/schema'
+import type { GradeDimension } from '@pathofdev/schema'
 import type { PluginOptions } from 'claude-code'
 
 // Grading the prompts the player types: which ones are graded, what Haiku is asked, and reading its scores back.

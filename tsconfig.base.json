@@ -7,7 +7,7 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "customConditions": [
-      "@questline/source"
+      "@pathofdev/source"
     ],
     "strict": true,
     "exactOptionalPropertyTypes": true,

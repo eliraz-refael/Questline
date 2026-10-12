@@ -1,4 +1,4 @@
-import type { QuestState, RulesConfig, Snapshot } from '@questline/schema'
+import type { QuestState, RulesConfig, Snapshot } from '@pathofdev/schema'
 import type { MissionRewards, MissionsView, MissionView, Tier } from '../types'
 import { boostText, tierOf } from './celebrate'
 import type { Row, Run } from './cells'

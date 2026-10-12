@@ -1,4 +1,4 @@
-import type { LevelCurve } from "@questline/schema"
+import type { LevelCurve } from "@pathofdev/schema"
 
 /** Total XP needed to reach `level`: base * level^exponent, rounded down. Level 0 needs none. */
 export const xpForLevel = (curve: LevelCurve, level: number): number => Math.floor(curve.base * level ** curve.exponent)

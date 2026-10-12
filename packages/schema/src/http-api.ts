@@ -26,4 +26,4 @@ export class ModApi extends HttpApiGroup.make("mod", { topLevel: true }).add(
   }),
 ) {}
 
-export class QuestlineApi extends HttpApi.make("questline").add(ModApi) {}
+export class PathOfDevApi extends HttpApi.make("pathofdev").add(ModApi) {}

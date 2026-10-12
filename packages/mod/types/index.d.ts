@@ -266,11 +266,13 @@ export type CareView = {
   boost: { pct: number; endsAt: number } | null
 }
 
-/** The `/questline` pane's tabs. */
+/** The `/pathofdev` pane's tabs. */
 export type PaneTab = 'inventory' | 'shop' | 'stats' | 'missions'
 
 declare module 'claude-code' {
   interface PluginState {
+    // Under the mod's plugin id, which keeps the game's name from before Path of Dev: the engine keys the mod's state,
+    // its store and the player's options by it.
     questline: {
       view: BandView | null
       link: Link

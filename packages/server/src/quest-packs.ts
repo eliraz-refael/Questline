@@ -1,6 +1,6 @@
-import { starterQuestPack } from "@questline/engine"
-import type { QuestPack as QuestPackType } from "@questline/schema"
-import { QuestPack } from "@questline/schema"
+import { starterQuestPack } from "@pathofdev/engine"
+import type { QuestPack as QuestPackType } from "@pathofdev/schema"
+import { QuestPack } from "@pathofdev/schema"
 import { Context, Effect, Layer, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
@@ -36,7 +36,7 @@ export class QuestPacks extends Context.Service<
     /** The newest version of each active pack, in the rules config's order. */
     readonly active: ReadonlyArray<QuestPackType>
   }
->()("questline/QuestPacks") {
+>()("pathofdev/QuestPacks") {
   static readonly layer: Layer.Layer<QuestPacks, SqlError | Schema.SchemaError, SqlClient.SqlClient> = Layer.effect(
     QuestPacks,
     make,

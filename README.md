@@ -1,4 +1,4 @@
-# Questline
+# Path of Dev
 
 An RPG layer for your coding sessions with Claude Code. Every prompt you type is graded on seven qualities, from
 clarity to done criteria, and the grade earns XP, levels and loot. A pixel-art pet keeps you company in the terminal,
@@ -19,12 +19,16 @@ opened one nothing, and only work confirmed on GitHub ranks.
 
 | Package | What it holds |
 | --- | --- |
-| [`@questline/schema`](packages/schema) | The wire format: [Effect Schema](https://effect.website) definitions for every API object, event and command |
-| [`@questline/engine`](packages/engine) | The rules engine: pure functions, no I/O, no clock, no randomness of its own |
-| [`@questline/server`](packages/server) | The game server: the HTTP API, the write path and storage around the rules engine |
-| [`@questline/mod`](packages/mod) | The Claude Code mod: grades prompts, reports work to the server and draws the band |
+| [`@pathofdev/schema`](packages/schema) | The wire format: [Effect Schema](https://effect.website) definitions for every API object, event and command |
+| [`@pathofdev/engine`](packages/engine) | The rules engine: pure functions, no I/O, no clock, no randomness of its own |
+| [`@pathofdev/server`](packages/server) | The game server: the HTTP API, the write path and storage around the rules engine |
+| [`@pathofdev/mod`](packages/mod) | The Claude Code mod: grades prompts, reports work to the server and draws the band |
 
 The landing page for [pathof.dev](https://pathof.dev) lives in [`site/`](site): one static HTML file, no build step.
+
+Path of Dev was called Questline. The local server moves a save from `~/.questline` to `~/.pathofdev` (and
+`~/.questline-dev` to `~/.pathofdev-dev`) on its first start, and `/questline`, `QUESTLINE_DEV` and `QUESTLINE_HOME`
+still work for now.
 
 ## Development
 

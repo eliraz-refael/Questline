@@ -1,4 +1,4 @@
-import type { Context, ItemDef, PlayerState, ShopOffer } from "@questline/schema"
+import type { Context, ItemDef, PlayerState, ShopOffer } from "@pathofdev/schema"
 import { addDays, localDay, startOfDay } from "./days.ts"
 import { rarityRank } from "./loot.ts"
 import { draws } from "./random.ts"
@@ -50,6 +50,7 @@ export const shelfOf = (day: string, context: ShopContext): ReadonlyArray<ItemDe
         shop.categories.includes(item.category),
     )
     .sort((a, b) => a.id.localeCompare(b.id))
+  // The seed keeps the game's name from before Path of Dev: a new one would deal every player another shelf.
   const next = draws("questline-shop", day)
   const left = [...pool]
   const picked: Array<ItemDef> = []

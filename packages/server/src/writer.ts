@@ -1,6 +1,6 @@
-import { engineVersion, localDay, questsDue, step, ulids } from "@questline/engine"
-import type { CommandRefusal, Context as StepContext, Input, PlayerState, ServerEvent, Step } from "@questline/schema"
-import { CommandRefusal as CommandRefusalSchema, Count, PlayerState as PlayerStateSchema, ServerEvent as ServerEventSchema } from "@questline/schema"
+import { engineVersion, localDay, questsDue, step, ulids } from "@pathofdev/engine"
+import type { CommandRefusal, Context as StepContext, Input, PlayerState, ServerEvent, Step } from "@pathofdev/schema"
+import { CommandRefusal as CommandRefusalSchema, Count, PlayerState as PlayerStateSchema, ServerEvent as ServerEventSchema } from "@pathofdev/schema"
 import { Context, Effect, Layer, Option, Result, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
@@ -255,7 +255,7 @@ export class PlayerWriter extends Context.Service<
       now: string,
     ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError>
   }
->()("questline/PlayerWriter") {
+>()("pathofdev/PlayerWriter") {
   static readonly make = (stepper: Stepper) => Layer.effect(PlayerWriter, make(stepper))
   static readonly layer = PlayerWriter.make(step)
 }

@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest"
-import { EventsResponse } from "@questline/schema"
+import { EventsResponse } from "@pathofdev/schema"
 import { Effect, Exit, Layer, Schema } from "effect"
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { request } from "node:http"
@@ -7,9 +7,9 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it as test } from "vitest"
 import { holdLock, localPaths, localServer, ServerRunning } from "../src/index.ts"
-import { commit, profile, session } from "./fixtures.ts"
+import { commit, profile, session, unnamed, withEnv } from "./fixtures.ts"
 
-const scratch = () => mkdtempSync(join(tmpdir(), "ql-"))
+const scratch = () => mkdtempSync(join(tmpdir(), "pod-"))
 
 /** A pid no process has: above the usual pid_max on Linux and macOS. */
 const deadPid = 4_194_400
@@ -29,15 +29,8 @@ const post = (socketPath: string, path: string, body: unknown) =>
   )
 
 describe("localPaths", () => {
-  test("falls back to ~/.questline when QUESTLINE_HOME is set but empty", () => {
-    const saved = process.env["QUESTLINE_HOME"]
-    process.env["QUESTLINE_HOME"] = ""
-    try {
-      expect(localPaths().home).toBe(join(homedir(), ".questline"))
-    } finally {
-      if (saved === undefined) delete process.env["QUESTLINE_HOME"]
-      else process.env["QUESTLINE_HOME"] = saved
-    }
+  test("falls back to ~/.pathofdev when PATHOFDEV_HOME is set but empty", () => {
+    withEnv({ ...unnamed, PATHOFDEV_HOME: "" }, () => expect(localPaths().home).toBe(join(homedir(), ".pathofdev")))
   })
 })
 

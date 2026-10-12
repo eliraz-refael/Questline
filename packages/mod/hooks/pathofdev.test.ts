@@ -10,7 +10,7 @@ import type {
   SessionMessage,
   SessionStartInput,
 } from 'claude-code'
-import type { QuestRewards } from '@questline/schema'
+import type { QuestRewards } from '@pathofdev/schema'
 import type { BandLook, BandView, Celebration, MissionsView, MissionView } from '../types'
 import { barCells } from './band'
 import { joinQueue, queueOf, rewardsText } from './celebrate'
@@ -20,8 +20,8 @@ import { barRow } from './frames'
 import { sheenHead } from './looks'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
 import { missionChip, missionsLayout, timeLeft } from './missions'
-import { headerOf, tabBarOf } from './pane'
-import { socketPathOf } from './server'
+import { headerOf, renamedNote, tabBarOf } from './pane'
+import { clientVersion, initOf, socketPathsOf } from './server'
 import { statsLayout, twoColumnsFrom } from './stats'
 import { statsViewOf } from './view'
 
@@ -175,6 +175,8 @@ type ServerOptions = {
   kept?: Kept
   /** A server that goes away once it has answered a command. */
   downAfterCommand?: boolean
+  /** The one socket the server listens on, which a test may move; it answers on any when not given. */
+  listensOn?: { at: string }
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
@@ -219,12 +221,21 @@ const commandAnswer = (body: unknown, owned: Owned | undefined, isDev: boolean, 
 const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
   const sent: Array<Sent> = []
   const tried: Array<string> = []
+  /** Each request tried, with the socket it was tried on. */
+  const attempts: Array<{ path: string; socket: string }> = []
   const sockets = new Set<string>()
+  /** The socket of each request the server answered, in order. */
+  const answeredOn: Array<string> = []
   const { registered, opened, toasts } = engineBeneath(on)
   on('http.fetch', async ($, e) => {
     tried.push(new URL(e.url).pathname)
-    sockets.add(e.init?.socketPath ?? '')
-    if (options.isDown === true) throw new Error('connect ENOENT /home/player/.questline/server.sock')
+    const socketPath = e.init?.socketPath ?? ''
+    sockets.add(socketPath)
+    attempts.push({ path: new URL(e.url).pathname, socket: socketPath })
+    if (options.isDown === true) throw new Error('connect ENOENT /home/player/.pathofdev/server.sock')
+    const listening = options.listensOn?.at ?? socketPath
+    if (socketPath !== listening) throw new Error(`connect ENOENT ${socketPath}`)
+    answeredOn.push(socketPath)
     const path = new URL(e.url).pathname
     const body: unknown = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
     const method = e.init?.method ?? 'GET'
@@ -279,7 +290,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     if (args === 'git rev-parse --abbrev-ref HEAD') return ran(0, 'main\n')
     return ran(1, '')
   })
-  return { sent, tried, registered, opened, toasts, sockets }
+  return { sent, tried, attempts, registered, opened, toasts, sockets, answeredOn }
 }
 
 const start: SessionStartInput = { cwd: '/work/widgets', surface: 'terminal', isInteractive: true }
@@ -320,7 +331,7 @@ describe('the band', () => {
     await until(clock, async () => {
       const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() }).catch(() => null)
       if (ui === null) return false
-      const hint = await ui.find({ type: 'Text', text: /pnpm --filter @questline\/server start/ })
+      const hint = await ui.find({ type: 'Text', text: /pnpm --filter @pathofdev\/server start/ })
       await ui.unmount()
       return hint !== undefined
     })
@@ -631,8 +642,11 @@ describe('the link', () => {
     const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
     mock.store(on)
     mock.env(on, { HOME: '/home/player' })
-    const { tried } = fakeServer(on, clock, { isDown: true })
-    const opens = () => tried.filter((path) => path === '/v1/sessions').length
+    const { attempts } = fakeServer(on, clock, { isDown: true })
+    // Each open tries the socket in ~/.pathofdev, then the one a server from before the rename would listen on.
+    const opensOn = (socket: string) =>
+      attempts.filter((one) => one.path === '/v1/sessions' && one.socket === socket).length
+    const opens = () => opensOn('/home/player/.pathofdev/server.sock')
     await $.session.start(start)
     await until(clock, () => opens() === 1)
     for (const id of ['first', 'second', 'third']) {
@@ -641,6 +655,7 @@ describe('the link', () => {
     await until(clock, () => opens() === 4)
     await clock.advance(5_000)
     expect(opens()).toBe(5)
+    expect(opensOn('/home/player/.questline/server.sock')).toBe(5)
   })
 })
 
@@ -687,7 +702,7 @@ const streaming = async ($: Parameters<TestBody>[0], on: On, owned?: Owned, isDe
   mock.env(on, { HOME: '/home/player' })
   const stream: Array<{ seq: number }> = []
   const options = { ...more, level: 4, stream, isDev, ...(owned === undefined ? {} : { owned }) }
-  const { sent, registered, opened, toasts, sockets } = fakeServer(on, clock, options)
+  const { sent, registered, opened, toasts, sockets, answeredOn } = fakeServer(on, clock, options)
   const played: Array<string> = []
   on('audio.play', ($, e) => {
     played.push(e.clip.mime ?? e.clip.asset ?? '')
@@ -701,7 +716,7 @@ const streaming = async ($: Parameters<TestBody>[0], on: On, owned?: Owned, isDe
     await until(clock, () => stream.length === 0)
     await clock.settle()
   }
-  return { clock, send, played, sent, registered, opened, toasts, sockets }
+  return { clock, send, played, sent, registered, opened, toasts, sockets, answeredOn }
 }
 
 /** Samples the band every 100 ms for `ms`, keeping which of `names` it draws at each sample, without repeats. */
@@ -1086,7 +1101,7 @@ describe('review fixes: loop clocks', () => {
     const { clock } = await streaming($, on, ownedOf())
     const previews = async () => (await paneTexts($, 72)).texts.join('\n')
     const still = await previews()
-    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
     await clock.advance(500)
     expect(await previews()).not.toBe(still)
     // The fresh copy finds no pane open, so no clock runs, and the loops' frames from before must go.
@@ -1174,7 +1189,7 @@ describe('band styles', () => {
       const seen = await samples($, clock, 1_200)
       expect(new Set(seen).size).toBe(1)
       expect(seen[0]).toContain('◈ 25 ✧')
-      expect(seen[0]).toContain('✧ QUESTLINE ✧')
+      expect(seen[0]).toContain('✧ PATH OF DEV ✧')
     })
   }
 
@@ -1189,7 +1204,7 @@ describe('band styles', () => {
   test('an edge look keeps the band exactly as wide as its body, marks and all', async ($, on) => {
     const { clock } = await streaming($, on, ownedOf({ topEdge: '01K6ZQ8W3J0000000000009003' }))
     for (let at = 0; at < 600; at += 200) {
-      const edge = (await band($)).all.split('\n').find((text) => text.includes('QUESTLINE')) ?? ''
+      const edge = (await band($)).all.split('\n').find((text) => text.includes('PATH OF DEV')) ?? ''
       expect(cellsOf(edge)).toBe(bandOf().bodyColumns)
       await clock.advance(200)
     }
@@ -1197,7 +1212,7 @@ describe('band styles', () => {
 })
 
 const paneProps = (): RenderPropsOf['Pane'] => ({
-  title: 'Questline',
+  title: 'Path of Dev',
   isFocused: true,
   bodyColumns: 72,
   placement: 'dock',
@@ -1205,12 +1220,12 @@ const paneProps = (): RenderPropsOf['Pane'] => ({
   view: {},
 })
 
-describe('the /questline pane', () => {
-  test('registers /questline, which opens the pane on its inventory', async ($, on) => {
+describe('the /pathofdev pane', () => {
+  test('registers /pathofdev, which opens the pane on its inventory', async ($, on) => {
     const { registered, opened } = await streaming($, on, ownedOf(wearing))
-    expect(registered).toEqual(['questline', 'pet'])
-    const answer = await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
-    expect(answer.text).toBe('Questline pane opened.')
+    expect(registered).toEqual(['pathofdev', 'questline', 'pet'])
+    const answer = await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
+    expect(answer.text).toBe('Path of Dev pane opened.')
     expect(opened).toEqual(['questline'])
     for (const surface of surfaces) {
       const ui = await $.ui.mount({ plugin: 'questline', surface, component: 'Pane', requestId: 'questline', props: paneProps() })
@@ -1233,7 +1248,7 @@ describe('the /questline pane', () => {
 
   test('Equip sends the command and the band wears it at once; Unequip puts the band back', async ($, on) => {
     const { sent } = await streaming($, on, ownedOf())
-    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
     const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
     expect((await band($)).all).toMatch(/^▰+▱+ 30\/203 xp$/m)
     await ui.press({ key: 'equip:xpBar:solid-bar' })
@@ -1251,7 +1266,7 @@ describe('review fixes: the pane', () => {
   test('an equipped style the snapshot no longer names still shows, and can be taken off', async ($, on) => {
     const owned = ownedOf({ xpBar: '01K6ZQ8W3J0000000000009009' })
     const { sent } = await streaming($, on, owned)
-    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
     const props = paneProps()
     const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props })
     expect((await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')).toContain('Unknown style')
@@ -1269,7 +1284,7 @@ const gainLine = async ($: Parameters<TestBody>[0]) => {
   const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
   const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
   await ui.unmount()
-  return texts.find((text) => / · |!$/.test(text) && !text.includes('QUESTLINE')) ?? null
+  return texts.find((text) => / · |!$/.test(text) && !text.includes('PATH OF DEV')) ?? null
 }
 
 describe('the gain line', () => {
@@ -1395,10 +1410,13 @@ const paneTexts = async ($: Parameters<TestBody>[0], bodyColumns: number) => {
 describe('the pane fits its width', () => {
   test('a narrow pane drops the name, then closes the tabs up and shortens them, so neither row wraps', async ($, on) => {
     await streaming($, on, ownedOf())
-    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
+    const headerAt = async (columns: number) =>
+      (await paneTexts($, columns)).texts.find((text) => text.startsWith('✦ PATH OF DEV ✦')) ?? ''
+    expect(await headerAt(42)).toBe('✦ PATH OF DEV ✦  Lv 4 Apprentice · ◈ 25')
     const narrow = await paneTexts($, 40)
-    const header = narrow.texts.find((text) => text.startsWith('✦ QUESTLINE ✦')) ?? ''
-    expect(header).toBe('✦ QUESTLINE ✦  Lv 4 Apprentice · ◈ 25')
+    const header = narrow.texts.find((text) => text.startsWith('✦ PATH OF DEV ✦')) ?? ''
+    expect(header).toBe('✦ PATH OF DEV ✦  Lv 4 · ◈ 25')
     expect(cellsOf(header)).toBeLessThanOrEqual(38)
     // All four tabs still fit at 40 with their names, the gaps closed up.
     expect(narrow.texts).toContain('◆ Inventory')
@@ -1409,7 +1427,7 @@ describe('the pane fits its width', () => {
     expect(narrower.tabs?.props['columnGap']).toBe(1)
 
     const wide = await paneTexts($, 120)
-    expect(wide.texts).toContain('✦ QUESTLINE ✦  Player · Lv 4 Apprentice · ◈ 25')
+    expect(wide.texts).toContain('✦ PATH OF DEV ✦  Player · Lv 4 Apprentice · ◈ 25')
     expect(wide.tabs?.props['columnGap']).toBe(3)
   })
 
@@ -1427,18 +1445,19 @@ describe('the pane fits its width', () => {
     expect(tabBarOf('inventory', 20).chips.map((chip) => chip.text)).toEqual(['Inv', 'Shop', 'Stats', 'Quest'])
     const view = { name: 'Player', level: 12, title: 'Adept', gold: 1500 }
     expect(headerOf(view, 80)).toBe('Player · Lv 12 Adept · ◈ 1500')
-    expect(headerOf(view, 30)).toBe('Lv 12 · ◈ 1500')
+    expect(headerOf(view, 32)).toBe('Lv 12 · ◈ 1500')
+    expect(headerOf(view, 30)).toBe('Lv 12')
     expect(headerOf(view, 10)).toBe('')
   })
 })
 
 describe('dev mode', () => {
-  const run = ($: Parameters<TestBody>[0], args: string) => $.command.run({ command: 'questline', args, origin: composer, presentation })
+  const run = ($: Parameters<TestBody>[0], args: string) => $.command.run({ command: 'pathofdev', args, origin: composer, presentation })
   const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
 
   test('needs a dev server: on the real one it sends nothing and shows no dev controls', async ($, on) => {
     const { sent } = await streaming($, on, ownedOf())
-    expect((await run($, 'dev xp 50')).text).toContain('QUESTLINE_DEV=1 pnpm --filter @questline/server start')
+    expect((await run($, 'dev xp 50')).text).toContain('PATHOFDEV_DEV=1 pnpm --filter @pathofdev/server start')
     expect((await run($, 'dev celebrate rare')).text).toContain('needs the dev server')
     expect(commandsOf(sent)).toEqual([])
     expect((await band($)).grown).toBe(0)
@@ -1455,7 +1474,7 @@ describe('dev mode', () => {
       { type: 'dev.setGold', data: { gold: 7 } },
     ])
     for (const args of ['dev', 'dev xp', 'dev xp 0', 'dev xp lots', 'dev gold -1', 'dev celebrate huge', 'dev item', 'dev styles now']) {
-      expect((await run($, args)).text).toMatch(/^Dev mode: \/questline dev styles/)
+      expect((await run($, args)).text).toMatch(/^Dev mode: \/pathofdev dev styles/)
     }
     expect(commandsOf(sent)).toHaveLength(4)
   })
@@ -1494,9 +1513,73 @@ describe('dev mode', () => {
 
   test('the server option points the mod at the dev socket', { options: { server: 'dev' } }, async ($, on) => {
     const { sockets } = await streaming($, on)
-    expect([...sockets]).toEqual(['/home/player/.questline-dev/server.sock'])
-    expect(socketPathOf(undefined, '/home/player')).toBe('/home/player/.questline/server.sock')
-    expect(socketPathOf('/tmp/ql', '/home/player', true)).toBe('/tmp/ql/server.sock')
+    expect([...sockets]).toEqual(['/home/player/.pathofdev-dev/server.sock'])
+    expect(socketPathsOf(undefined, '/home/player')).toEqual([
+      '/home/player/.pathofdev/server.sock',
+      '/home/player/.questline/server.sock',
+    ])
+    expect(socketPathsOf(undefined, '/home/player', true)).toEqual([
+      '/home/player/.pathofdev-dev/server.sock',
+      '/home/player/.questline-dev/server.sock',
+    ])
+    expect(socketPathsOf('/tmp/pod', '/home/player', true)).toEqual(['/tmp/pod/server.sock'])
+  })
+})
+
+describe('the rename from Questline', () => {
+  const run = ($: Parameters<TestBody>[0], command: string, args: string) =>
+    $.command.run({ command, args, origin: composer, presentation })
+
+  test('plays on a server from before it in ~/.questline, then in ~/.pathofdev once it restarts', async ($, on) => {
+    const listensOn = { at: '/home/player/.questline/server.sock' }
+    const { answeredOn, clock } = await streaming($, on, ownedOf(), false, { listensOn })
+    expect(answeredOn).toContain('/home/player/.questline/server.sock')
+    expect((await band($)).all).not.toContain('offline')
+    // The server restarts in its new home: the next poll finds it there, and every request after goes there.
+    listensOn.at = '/home/player/.pathofdev/server.sock'
+    const before = answeredOn.length
+    await clock.advance(30_000)
+    await until(clock, () => answeredOn.length > before)
+    expect(answeredOn.slice(before).every((socket) => socket === '/home/player/.pathofdev/server.sock')).toBe(true)
+    expect((await run($, 'pathofdev', '')).text).toBe('Path of Dev pane opened.')
+    expect((await band($)).all).not.toContain('offline')
+  })
+
+  const homes: ReadonlyArray<[string, Record<string, string>, string]> = [
+    ['QUESTLINE_HOME while PATHOFDEV_HOME is unset', { QUESTLINE_HOME: '/srv/old' }, '/srv/old/server.sock'],
+    [
+      'PATHOFDEV_HOME over QUESTLINE_HOME',
+      { QUESTLINE_HOME: '/srv/old', PATHOFDEV_HOME: '/srv/new' },
+      '/srv/new/server.sock',
+    ],
+  ]
+  for (const [name, named, socket] of homes) {
+    test(`reads ${name}`, async ($, on) => {
+      const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
+      mock.store(on)
+      mock.env(on, { HOME: '/home/player', ...named })
+      const { sockets, sent } = fakeServer(on, clock)
+      await $.session.start(start)
+      await until(clock, () => sent.some((one) => one.path === '/v1/sessions'))
+      expect([...sockets]).toEqual([socket])
+    })
+  }
+
+  test('names its version under both header names, so a server from before the rename still hears it', () => {
+    expect(initOf('/home/player/.questline/server.sock').headers).toEqual({
+      'content-type': 'application/json',
+      'pathofdev-client': clientVersion,
+      'questline-client': clientVersion,
+    })
+  })
+
+  test('/questline does what /pathofdev does, and says once that it was renamed', async ($, on) => {
+    const { opened, sent } = await streaming($, on, ownedOf())
+    expect((await run($, 'questline', '')).text).toBe(`Path of Dev pane opened.\n${renamedNote}`)
+    expect(opened).toEqual(['questline'])
+    expect((await run($, 'questline', '')).text).toBe('Path of Dev pane opened.')
+    expect((await run($, 'questline', 'dev xp 50')).text).toBe((await run($, 'pathofdev', 'dev xp 50')).text)
+    expect(sent.filter((one) => one.path === '/v1/commands')).toEqual([])
   })
 })
 
@@ -1603,7 +1686,7 @@ const newPlayer: Counted = {
 
 /** Opens the pane and switches it to its Stats tab with the tab bar's button. */
 const openStats = async ($: Parameters<TestBody>[0]) => {
-  await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+  await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
   const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
   await ui.press({ key: 'tab:stats' })
   await ui.unmount()
@@ -1800,7 +1883,7 @@ const completed = (questId: string, title: string, tier: string, rewards: Record
 
 /** Opens the pane on its Missions tab with the tab bar's button. */
 const openMissions = async ($: Parameters<TestBody>[0]) => {
-  await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+  await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
   const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
   await ui.press({ key: 'tab:missions' })
   await ui.unmount()
@@ -2022,18 +2105,18 @@ describe('a mission completed', () => {
     const { send, toasts } = await streaming($, on, ownedOf(), false, { quests: missionsNow(), rules: missionRules })
     const dailies = missionsNow().filter((one) => one.cadence === 'daily')
     await send(serverEvent('quest.offered', { cadence: 'daily', quests: dailies }))
-    expect(await gainLine($)).toBe('3 new dailies · /questline')
+    expect(await gainLine($)).toBe('3 new dailies · /pathofdev')
     await send(serverEvent('quest.offered', { cadence: 'weekly', quests: [] }))
-    expect(await gainLine($)).toBe('3 new dailies · /questline')
+    expect(await gainLine($)).toBe('3 new dailies · /pathofdev')
     expect(toasts).toEqual([])
   })
 })
 
 describe('dev mode: missions', () => {
-  const run = ($: Parameters<TestBody>[0], args: string) => $.command.run({ command: 'questline', args, origin: composer, presentation })
+  const run = ($: Parameters<TestBody>[0], args: string) => $.command.run({ command: 'pathofdev', args, origin: composer, presentation })
   const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
 
-  test('completes a mission and re-rolls them, from /questline dev and from the Missions tab', async ($, on) => {
+  test('completes a mission and re-rolls them, from /pathofdev dev and from the Missions tab', async ($, on) => {
     const { sent } = await streaming($, on, ownedOf(), true, { quests: missionsNow(), rules: missionRules })
     expect((await run($, 'dev complete clear-thinker')).text).toBe('Done.')
     expect((await run($, 'dev roll')).text).toBe('Done.')
@@ -2119,7 +2202,7 @@ describe('review fixes: missions', () => {
       return { value: undefined }
     })
     const { clock } = await streaming($, on, undefined, false, { quests: missionsNow(), rules: missionRules })
-    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
     await clock.advance(60_000)
     expect(redraws).toEqual([])
     await openMissions($)
@@ -2150,7 +2233,7 @@ describe('review fixes: a server from before missions', () => {
     expect(texts).not.toContain('None this week')
     expect(await ui.find({ type: 'Button', key: 'dev:roll' })).toBeUndefined()
     await ui.unmount()
-    const answer = await $.command.run({ command: 'questline', args: 'dev roll', origin: composer, presentation })
+    const answer = await $.command.run({ command: 'pathofdev', args: 'dev roll', origin: composer, presentation })
     expect(answer.text).toContain('The dev server predates missions: restart it')
     expect(sent.filter((one) => one.path === '/v1/commands')).toEqual([])
     expect((await band($)).all).not.toMatch(/◎|missions done/)
@@ -2291,7 +2374,7 @@ describe('missions over sessions run together', () => {
   })
 
   test('dev mode opens a stand-in session on a server that knows them, and says to restart one that does not', async ($, on) => {
-    const run = ($$: Parameters<TestBody>[0], args: string) => $$.command.run({ command: 'questline', args, origin: composer, presentation })
+    const run = ($$: Parameters<TestBody>[0], args: string) => $$.command.run({ command: 'pathofdev', args, origin: composer, presentation })
     const quests = [...missionsNow(), together('active', 0)]
     const { sent } = await streaming($, on, ownedOf(), true, { quests, rules: missionRules })
     expect((await run($, 'dev session')).text).toMatch(/^A stand-in session is open/)
@@ -2306,7 +2389,7 @@ describe('missions over sessions run together', () => {
   })
 
   test('dev mode says to restart a dev server that predates parallel missions', async ($, on) => {
-    const run = ($$: Parameters<TestBody>[0], args: string) => $$.command.run({ command: 'questline', args, origin: composer, presentation })
+    const run = ($$: Parameters<TestBody>[0], args: string) => $$.command.run({ command: 'pathofdev', args, origin: composer, presentation })
     const { sent } = await streaming($, on, ownedOf(), true, { quests: missionsNow(), rules: missionRules })
     expect((await run($, 'dev session')).text).toMatch(/predates parallel missions: restart it/)
     expect(sent.filter((one) => one.path === '/v1/commands')).toEqual([])
@@ -2498,7 +2581,7 @@ describe('sigils', () => {
 
   test('dev mode grants a sigil by its id', async ($, on) => {
     const { sent } = await streaming($, on, ownedOf(), true, { rules: sigilRules })
-    const answer = await $.command.run({ command: 'questline', args: 'dev item arcane-sigil', origin: composer, presentation })
+    const answer = await $.command.run({ command: 'pathofdev', args: 'dev item arcane-sigil', origin: composer, presentation })
     expect(answer.text).toBe('Done.')
     expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'dev.grantItem', data: { itemId: 'arcane-sigil' } })
   })
@@ -2574,7 +2657,7 @@ describe('the shop', () => {
   })
   const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
   const openShop = async ($: Parameters<TestBody>[0]) => {
-    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
     const ui = await mountPane($)
     await ui.press({ key: 'tab:shop' })
     await ui.unmount()
@@ -2737,7 +2820,7 @@ describe('caring for the pet', () => {
   const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
   // Wide enough that every meal's head keeps all its notes.
   const inventory = async ($: Parameters<TestBody>[0]) => {
-    await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
+    await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
     return (await paneTexts($, 90)).texts.join('\n')
   }
 
@@ -2904,9 +2987,9 @@ describe('dev mode: the shop and the pet', () => {
   const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
   const ember = { species: 'fox', name: 'Ember', form: 0, mood: 60, equipped: {} }
 
-  test('restocks, sets the mood and the shards, from /questline dev and from the panes', async ($, on) => {
+  test('restocks, sets the mood and the shards, from /pathofdev dev and from the panes', async ($, on) => {
     const { sent } = await streaming($, on, ownedOf(), true, { rules: careRules, kept: { pet: ember } })
-    const run = (args: string) => $.command.run({ command: 'questline', args, origin: composer, presentation })
+    const run = (args: string) => $.command.run({ command: 'pathofdev', args, origin: composer, presentation })
     expect((await run('dev restock')).text).toBe('Done.')
     expect((await run('dev mood 20')).text).toBe('Done.')
     expect((await run('dev shards 10')).text).toBe('Done.')
@@ -2935,7 +3018,7 @@ describe('dev mode: the shop and the pet', () => {
 
   test('says to restart a dev server older than the shop or pet care, and sends nothing', async ($, on) => {
     const { sent } = await streaming($, on, ownedOf(), true, { kept: { pet: ember } })
-    const run = (args: string) => $.command.run({ command: 'questline', args, origin: composer, presentation })
+    const run = (args: string) => $.command.run({ command: 'pathofdev', args, origin: composer, presentation })
     expect((await run('dev restock')).text).toMatch(/^The dev server predates the shop: restart it/)
     expect((await run('dev mood 20')).text).toMatch(/^The dev server predates pet care: restart it/)
     expect(commandsOf(sent)).toEqual([])

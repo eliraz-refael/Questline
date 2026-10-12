@@ -13,7 +13,7 @@ import type {
   QuestState,
   ScoringFact,
   SessionSpan,
-} from "@questline/schema"
+} from "@pathofdev/schema"
 import { addDays, isLater, localDay, startOfDay, weekOf } from "./days.ts"
 import { draws } from "./random.ts"
 import { qualityDimensions } from "./stats.ts"

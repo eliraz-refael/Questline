@@ -1,4 +1,4 @@
-import type { Context, ItemDef, PlayerState } from "@questline/schema"
+import type { Context, ItemDef, PlayerState } from "@pathofdev/schema"
 
 // A sigil is loot that multiplies the XP graded prompts earn while it is equipped, one at a time, and never runs out.
 // Each sigil's multiplier is on its item definition, inside the range the rules give its rarity, so the multiplier

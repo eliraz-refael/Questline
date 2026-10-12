@@ -1,7 +1,7 @@
 {
   "name": "questline",
   "version": "0.1.0",
-  "description": "An RPG around your Claude Code work: XP, levels, loot and a pixel pet, drawn in a band above the prompt.",
+  "description": "Path of Dev: an RPG around your Claude Code work: XP, levels, loot and a pixel pet, drawn in a band above the prompt.",
   "types": "./types/index.d.ts",
   "author": { "name": "eliraz-refael" },
   "repository": "https://github.com/eliraz-refael/Questline",
@@ -29,7 +29,7 @@
     "server": {
       "type": "string",
       "title": "Server",
-      "description": "Which local server the mod plays on: your own save (default), or the dev sandbox in ~/.questline-dev for trying out band styles, XP and celebrations (start it with QUESTLINE_DEV=1 pnpm --filter @questline/server start). QUESTLINE_HOME, when set, picks the home for either.",
+      "description": "Which local server the mod plays on: your own save (default), or the dev sandbox in ~/.pathofdev-dev for trying out band styles, XP and celebrations (start it with PATHOFDEV_DEV=1 pnpm --filter @pathofdev/server start). PATHOFDEV_HOME, when set, picks the home for either.",
       "options": ["default", "dev"],
       "default": "default"
     }

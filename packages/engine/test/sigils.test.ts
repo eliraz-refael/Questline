@@ -15,7 +15,7 @@ import type {
   RulesConfig,
   ServerEventDraft,
   Step,
-} from "@questline/schema"
+} from "@pathofdev/schema"
 import {
   catalogIssue,
   ItemCategory,
@@ -23,7 +23,7 @@ import {
   Rarity as RaritySchema,
   RulesConfig as RulesSchema,
   Step as StepSchema,
-} from "@questline/schema"
+} from "@pathofdev/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {

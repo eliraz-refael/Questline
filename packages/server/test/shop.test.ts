@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest"
-import type { CommandResponse, ItemReroll, ItemSalvage, ShardsCraft, ShopBuy } from "@questline/schema"
+import type { CommandResponse, ItemReroll, ItemSalvage, ShardsCraft, ShopBuy } from "@pathofdev/schema"
 import { Effect } from "effect"
 import { describe, expect } from "vitest"
 import { client, hatch, nextId, session, withoutQuests, withServer } from "./fixtures.ts"

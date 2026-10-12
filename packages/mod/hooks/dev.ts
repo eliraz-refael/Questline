@@ -1,21 +1,21 @@
-import type { Command, InventoryEntry, ItemDef, ServerEvent } from '@questline/schema'
+import type { Command, InventoryEntry, ItemDef, ServerEvent } from '@pathofdev/schema'
 import type { PluginOptions } from 'claude-code'
 import type { BandView, Tier } from '../types'
 import { tierOf } from './celebrate'
 import { capitalised } from './frames'
 
-// Dev mode, for trying the game out: which server the mod talks to, what `/questline dev …` asks for, the commands
+// Dev mode, for trying the game out: which server the mod talks to, what `/pathofdev dev …` asks for, the commands
 // a dev server takes, and the stand-in events a celebration preview plays. Only a dev server runs the commands; the
 // mod shows its dev controls only when the snapshot says it talks to one.
 
-/** The `server` option: the player's own save, or the dev sandbox (`QUESTLINE_DEV=1`, in `~/.questline-dev`). */
+/** The `server` option: the player's own save, or the dev sandbox (`PATHOFDEV_DEV=1`, in `~/.pathofdev-dev`). */
 export type ServerKind = 'default' | 'dev'
 
 export const serverOf = (options: PluginOptions): ServerKind => (options['server'] === 'dev' ? 'dev' : 'default')
 
 /** How to start the server the mod looks for. */
 export const startHint = (server: ServerKind): string =>
-  server === 'dev' ? 'QUESTLINE_DEV=1 pnpm --filter @questline/server start' : 'pnpm --filter @questline/server start'
+  server === 'dev' ? 'PATHOFDEV_DEV=1 pnpm --filter @pathofdev/server start' : 'pnpm --filter @pathofdev/server start'
 
 /** What a celebration preview plays: a drop of a tier, a level-up, or an XP gain. */
 export type Preview = Tier | 'levelup' | 'xp'
@@ -35,7 +35,7 @@ export type DevAsk =
   | { kind: 'shards'; count: number }
 
 export const devUsage =
-  'Dev mode: /questline dev styles | item <id> | xp <amount> | gold <amount> | ' +
+  'Dev mode: /pathofdev dev styles | item <id> | xp <amount> | gold <amount> | ' +
   'celebrate <common|uncommon|rare|epic|legendary|levelup|xp> | complete <mission id> | roll | session | ' +
   'restock | mood <0-100> | shards <amount>'
 
@@ -48,7 +48,7 @@ const wholeOf = (text: string | undefined, least: number): number | null => {
 }
 
 /**
- * What `/questline <args>` asks dev mode for: null when the args are not `dev …`, a usage line when they don't
+ * What `/pathofdev <args>` asks dev mode for: null when the args are not `dev …`, a usage line when they don't
  * parse.
  */
 export const devAskOf = (args: string): DevAsk | string | null => {

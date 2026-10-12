@@ -12,8 +12,8 @@ import type {
   RulesConfig,
   Slot,
   Step,
-} from "@questline/schema"
-import { ItemDef, RulesConfig as RulesSchema, Step as StepSchema } from "@questline/schema"
+} from "@pathofdev/schema"
+import { ItemDef, RulesConfig as RulesSchema, Step as StepSchema } from "@pathofdev/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {

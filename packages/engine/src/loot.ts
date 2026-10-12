@@ -1,4 +1,4 @@
-import type { ItemDef, Pity, Rarity, RulesConfig } from "@questline/schema"
+import type { ItemDef, Pity, Rarity, RulesConfig } from "@pathofdev/schema"
 import { draws } from "./random.ts"
 import { isSigil } from "./sigils.ts"
 

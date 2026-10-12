@@ -10,13 +10,13 @@ import type {
   Recorded,
   ServerEventDraft,
   Step,
-} from "@questline/schema"
+} from "@pathofdev/schema"
 import {
   ItemCategory,
   Rarity as RaritySchema,
   Snapshot as SnapshotSchema,
   Step as StepSchema,
-} from "@questline/schema"
+} from "@pathofdev/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {

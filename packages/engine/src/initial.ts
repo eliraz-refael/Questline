@@ -1,4 +1,4 @@
-import type { PlayerState } from "@questline/schema"
+import type { PlayerState } from "@pathofdev/schema"
 import { localDay } from "./days.ts"
 
 /** A new player: level 0, no pet, nothing owned. */

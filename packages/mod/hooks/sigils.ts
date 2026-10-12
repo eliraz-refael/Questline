@@ -1,4 +1,4 @@
-import type { ItemDef, RulesConfig } from '@questline/schema'
+import type { ItemDef, RulesConfig } from '@pathofdev/schema'
 import type { OwnedItem, SigilView, Tier, Wardrobe } from '../types'
 import { tierRank } from './celebrate'
 import { cellsOf } from './cells'

@@ -1,4 +1,4 @@
-import type { OwnedPet, PlayerState, RulesConfig } from "@questline/schema"
+import type { OwnedPet, PlayerState, RulesConfig } from "@pathofdev/schema"
 import { daysBetween } from "./days.ts"
 import { type LevelProgress, levelForXp } from "./level.ts"
 

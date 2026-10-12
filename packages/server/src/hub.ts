@@ -15,7 +15,7 @@ export class StreamHub extends Context.Service<
     /** Wakes every waiter for the player. Called after a commit, never inside a transaction. */
     readonly notify: (playerId: string) => Effect.Effect<void>
   }
->()("questline/StreamHub") {
+>()("pathofdev/StreamHub") {
   static readonly layer = Layer.sync(StreamHub, () => {
     const waiters = new Map<string, Set<Deferred.Deferred<void>>>()
     const leave = (playerId: string, waiter: Deferred.Deferred<void>) =>

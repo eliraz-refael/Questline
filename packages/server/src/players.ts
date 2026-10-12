@@ -1,6 +1,6 @@
-import { engineVersion, initialState, project, ulids } from "@questline/engine"
-import type { Player as PlayerType, Snapshot, StreamResponse } from "@questline/schema"
-import { Count, Player, PlayerState, ServerEvent } from "@questline/schema"
+import { engineVersion, initialState, project, ulids } from "@pathofdev/engine"
+import type { Player as PlayerType, Snapshot, StreamResponse } from "@pathofdev/schema"
+import { Count, Player, PlayerState, ServerEvent } from "@pathofdev/schema"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
@@ -20,7 +20,7 @@ export interface LocalProfile {
 }
 
 /** The player a request acts for: on the local server, its one player. */
-export class CurrentPlayer extends Context.Service<CurrentPlayer, PlayerType>()("questline/CurrentPlayer") {}
+export class CurrentPlayer extends Context.Service<CurrentPlayer, PlayerType>()("pathofdev/CurrentPlayer") {}
 
 /** A mod more than this many events behind reloads the snapshot instead. */
 export const maxBehind = 1000
@@ -36,7 +36,7 @@ export class Players extends Context.Service<
     /** The stream after `after`, answered from what is committed now. */
     readonly streamAfter: (playerId: string, after: number) => Effect.Effect<StreamResponse, Failure>
   }
->()("questline/Players") {
+>()("pathofdev/Players") {
   static readonly layer = Layer.effect(Players, Effect.suspend(() => make))
 }
 

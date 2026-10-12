@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest"
-import { starterQuestPack, starterRules } from "@questline/engine"
+import { starterQuestPack, starterRules } from "@pathofdev/engine"
 import { Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
 import { TestClock } from "effect/testing"

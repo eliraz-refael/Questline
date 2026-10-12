@@ -10,8 +10,8 @@ import type {
   RulesConfig,
   ServerEventDraft,
   Step,
-} from "@questline/schema"
-import { QuestPack as QuestPackSchema, Step as StepSchema } from "@questline/schema"
+} from "@pathofdev/schema"
+import { QuestPack as QuestPackSchema, Step as StepSchema } from "@pathofdev/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {

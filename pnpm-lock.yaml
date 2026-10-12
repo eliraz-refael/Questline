@@ -27,7 +27,7 @@ importers:
 
   packages/engine:
     dependencies:
-      '@questline/schema':
+      '@pathofdev/schema':
         specifier: workspace:*
         version: link:../schema
     devDependencies:
@@ -37,7 +37,7 @@ importers:
 
   packages/mod:
     devDependencies:
-      '@questline/schema':
+      '@pathofdev/schema':
         specifier: workspace:*
         version: link:../schema
 
@@ -58,10 +58,10 @@ importers:
       '@electric-sql/pglite':
         specifier: 0.5.8
         version: 0.5.8
-      '@questline/engine':
+      '@pathofdev/engine':
         specifier: workspace:*
         version: link:../engine
-      '@questline/schema':
+      '@pathofdev/schema':
         specifier: workspace:*
         version: link:../schema
       effect:

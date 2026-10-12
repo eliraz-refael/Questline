@@ -1,5 +1,5 @@
-import type { CommandResponse, EventResult, ServerEvent } from "@questline/schema"
-import { clientEventTypes, QuestlineApi } from "@questline/schema"
+import type { CommandResponse, EventResult, ServerEvent } from "@pathofdev/schema"
+import { clientEventTypes, PathOfDevApi } from "@pathofdev/schema"
 import { Duration, Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import type { Admitted } from "./edge.ts"
@@ -17,6 +17,10 @@ import { PlayerWriter } from "./writer.ts"
 /** A held stream answers with nothing after this long, under the proxies' 30-second limit. */
 export const streamTimeout = Duration.seconds(25)
 
+/** The mod's version from `PathOfDev-Client`, or from `Questline-Client`, which a mod from before Path of Dev sends. */
+export const clientOf = (headers: Readonly<Record<string, string | undefined>>): string | null =>
+  headers["pathofdev-client"] ?? headers["questline-client"] ?? null
+
 const resultOf = (applied: Applied): EventResult => ({
   id: applied.id,
   status: applied.status,
@@ -25,7 +29,7 @@ const resultOf = (applied: Applied): EventResult => ({
 })
 
 export const ModHandlers = HttpApiBuilder.group(
-  QuestlineApi,
+  PathOfDevApi,
   "mod",
   Effect.fn(function* (handlers) {
     const player = yield* CurrentPlayer
@@ -41,7 +45,7 @@ export const ModHandlers = HttpApiBuilder.group(
           yield* writer.refreshQuests(player.id, yield* nowIso)
           // Only a mod that keeps its session live opens it: an older one would lapse between its polls.
           if (payload.presence === true) {
-            yield* presence.open(player.id, payload.sessionId, request.headers["questline-client"] ?? null)
+            yield* presence.open(player.id, payload.sessionId, clientOf(request.headers))
           }
           const snapshot = yield* players.snapshot(player)
           return { snapshot, rules, minClientVersion, acceptedEventTypes: clientEventTypes }
@@ -104,4 +108,4 @@ export const ModHandlers = HttpApiBuilder.group(
 )
 
 /** The HTTP routes with their handlers, needing the services the handlers read. */
-export const ApiRoutes = HttpApiBuilder.layer(QuestlineApi).pipe(Layer.provide(ModHandlers))
+export const ApiRoutes = HttpApiBuilder.layer(PathOfDevApi).pipe(Layer.provide(ModHandlers))
