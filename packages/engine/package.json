@@ -20,7 +20,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/eliraz-refael/Questline.git",
+    "url": "https://github.com/eliraz-refael/path-of-dev.git",
     "directory": "packages/engine"
   },
   "license": "MIT",
