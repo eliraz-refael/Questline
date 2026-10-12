@@ -21,7 +21,7 @@ import { sheenHead } from './looks'
 import { exitIsTheRuns, githubName, testRunner } from './observe'
 import { missionChip, missionsLayout, timeLeft } from './missions'
 import { headerOf, renamedNote, tabBarOf } from './pane'
-import { socketPathsOf } from './server'
+import { clientVersion, initOf, socketPathsOf } from './server'
 import { statsLayout, twoColumnsFrom } from './stats'
 import { statsViewOf } from './view'
 
@@ -1564,6 +1564,14 @@ describe('the rename from Questline', () => {
       expect([...sockets]).toEqual([socket])
     })
   }
+
+  test('names its version under both header names, so a server from before the rename still hears it', () => {
+    expect(initOf('/home/player/.questline/server.sock').headers).toEqual({
+      'content-type': 'application/json',
+      'pathofdev-client': clientVersion,
+      'questline-client': clientVersion,
+    })
+  })
 
   test('/questline does what /pathofdev does, and says once that it was renamed', async ($, on) => {
     const { opened, sent } = await streaming($, on, ownedOf())

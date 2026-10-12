@@ -33,7 +33,8 @@ export const urlOf = (path: string): string => `http://pathofdev${path}`
 export const initOf = (socketPath: string, body?: unknown, method?: 'DELETE'): HttpInit => ({
   method: method ?? (body === undefined ? 'GET' : 'POST'),
   socketPath,
-  headers: { 'content-type': 'application/json', 'pathofdev-client': clientVersion },
+  // `questline-client` too, for a server from before Path of Dev, which reads only that name.
+  headers: { 'content-type': 'application/json', 'pathofdev-client': clientVersion, 'questline-client': clientVersion },
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 })
 

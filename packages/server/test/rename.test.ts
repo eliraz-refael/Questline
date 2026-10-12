@@ -16,35 +16,12 @@ import {
   localServer,
   moveLegacyHome,
 } from "../src/index.ts"
-import { commit, profile, session } from "./fixtures.ts"
+import { commit, profile, session, unnamed, withEnv } from "./fixtures.ts"
 
 // The game was Questline before it was Path of Dev: its env vars, its header and its homes still work. Every home here
 // is under a temporary HOME, never the real one.
 
 const scratch = () => mkdtempSync(join(tmpdir(), "pod-rename-"))
-
-const withEnv = <A>(vars: Record<string, string | undefined>, body: () => A): A => {
-  const saved = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]))
-  const set = (values: Record<string, string | undefined>) => {
-    for (const [key, value] of Object.entries(values)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-  }
-  set(vars)
-  try {
-    return body()
-  } finally {
-    set(saved)
-  }
-}
-
-const unnamed = {
-  PATHOFDEV_HOME: undefined,
-  QUESTLINE_HOME: undefined,
-  PATHOFDEV_DEV: undefined,
-  QUESTLINE_DEV: undefined,
-}
 
 /** The paths a server would pick under the temporary `home`, checked to stay inside it. */
 const pathsUnder = (home: string, dev = false): LocalPaths => {
@@ -182,6 +159,12 @@ describe("the home from before Path of Dev", () => {
       const fresh = pathsUnder(scratch())
       expect((yield* logged(moveLegacyHome(fresh))).lines).toEqual([])
       expect(existsSync(fresh.home)).toBe(false)
+      const home = scratch()
+      saveIn(join(home, ".questline"), "old")
+      const named = withEnv({ ...unnamed, HOME: home }, () => localPaths(join(home, "named")))
+      expect((yield* logged(moveLegacyHome(named))).lines).toEqual([])
+      expect(existsSync(named.home)).toBe(false)
+      expect(readFileSync(join(home, ".questline", "data", "save"), "utf8")).toBe("old")
     }),
   )
 

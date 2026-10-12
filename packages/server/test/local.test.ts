@@ -7,7 +7,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it as test } from "vitest"
 import { holdLock, localPaths, localServer, ServerRunning } from "../src/index.ts"
-import { commit, profile, session } from "./fixtures.ts"
+import { commit, profile, session, unnamed, withEnv } from "./fixtures.ts"
 
 const scratch = () => mkdtempSync(join(tmpdir(), "pod-"))
 
@@ -30,14 +30,7 @@ const post = (socketPath: string, path: string, body: unknown) =>
 
 describe("localPaths", () => {
   test("falls back to ~/.pathofdev when PATHOFDEV_HOME is set but empty", () => {
-    const saved = process.env["PATHOFDEV_HOME"]
-    process.env["PATHOFDEV_HOME"] = ""
-    try {
-      expect(localPaths().home).toBe(join(homedir(), ".pathofdev"))
-    } finally {
-      if (saved === undefined) delete process.env["PATHOFDEV_HOME"]
-      else process.env["PATHOFDEV_HOME"] = saved
-    }
+    withEnv({ ...unnamed, PATHOFDEV_HOME: "" }, () => expect(localPaths().home).toBe(join(homedir(), ".pathofdev")))
   })
 })
 

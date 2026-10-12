@@ -172,7 +172,8 @@ async function call<A>(
   method?: 'DELETE',
 ): Promise<A> {
   let failure: unknown = null
-  for (const at of [socket, ...sockets.filter((other) => other !== socket)]) {
+  const tried = [socket, ...sockets.filter((other) => other !== socket)]
+  for (const at of tried) {
     let response
     try {
       response = await $.http.fetch(urlOf(path), initOf(at, body, method))
@@ -183,7 +184,7 @@ async function call<A>(
     socket = at
     return answerOf(path, response, is)
   }
-  throw new ServerDown(`The Path of Dev server does not answer on ${socket}`, { cause: failure })
+  throw new ServerDown(`The Path of Dev server does not answer on ${tried.join(' or ')}`, { cause: failure })
 }
 
 /** Opens the session, or says it is still here; `presence` asks the server to count it live while this mod polls. */

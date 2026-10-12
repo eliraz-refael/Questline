@@ -22,6 +22,31 @@ export const start = "2026-10-09T08:00:00.000Z"
 export const session = "01K6ZQ8W3J5V7XKQ2M4N6P8R9T"
 export const profile: LocalProfile = { displayName: "Player", characterName: "Player", timezone: "UTC" }
 
+/** Runs `body` with `vars` set in the environment (undefined unsets one), then puts back what was there. */
+export const withEnv = <A>(vars: Record<string, string | undefined>, body: () => A): A => {
+  const saved = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]))
+  const set = (values: Record<string, string | undefined>) => {
+    for (const [key, value] of Object.entries(values)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+  set(vars)
+  try {
+    return body()
+  } finally {
+    set(saved)
+  }
+}
+
+/** Every env var the local server reads its home and mode from, under its new name and its name from before. */
+export const unnamed = {
+  PATHOFDEV_HOME: undefined,
+  QUESTLINE_HOME: undefined,
+  PATHOFDEV_DEV: undefined,
+  QUESTLINE_DEV: undefined,
+}
+
 const key = (char: string): string => char.repeat(64)
 
 let ids = 0

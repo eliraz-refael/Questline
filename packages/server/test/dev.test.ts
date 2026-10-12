@@ -7,40 +7,24 @@ import { join } from "node:path"
 import { describe, expect, it as test } from "vitest"
 import { starterCatalog, starterRules } from "@pathofdev/engine"
 import { catalog, checkedCatalog, claimHome, isDevMode, localPaths, localServer, WrongHome } from "../src/index.ts"
-import { client, nextId, profile, prompt, session, withoutQuests, withServer } from "./fixtures.ts"
+import { client, nextId, profile, prompt, session, unnamed, withEnv, withoutQuests, withServer } from "./fixtures.ts"
 
 // Dev mode: a sandbox save in a home of its own, the only place the dev commands run.
 
 const scratch = () => mkdtempSync(join(tmpdir(), "pod-dev-"))
 
-const withEnv = (vars: Record<string, string | undefined>, body: () => void) => {
-  const saved = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]))
-  const set = (values: Record<string, string | undefined>) => {
-    for (const [key, value] of Object.entries(values)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-  }
-  set(vars)
-  try {
-    body()
-  } finally {
-    set(saved)
-  }
-}
-
 describe("the dev home", () => {
   test("is ~/.pathofdev-dev under PATHOFDEV_DEV=1, apart from the real save, unless PATHOFDEV_HOME names one", () => {
-    withEnv({ PATHOFDEV_DEV: "1", PATHOFDEV_HOME: undefined }, () => {
+    withEnv({ ...unnamed, PATHOFDEV_DEV: "1" }, () => {
       expect(isDevMode()).toBe(true)
       const dev = localPaths()
       expect(dev).toMatchObject({ home: join(homedir(), ".pathofdev-dev"), dev: true })
       expect(dev.socket).toBe(join(homedir(), ".pathofdev-dev", "server.sock"))
     })
-    withEnv({ PATHOFDEV_DEV: undefined, PATHOFDEV_HOME: undefined }, () => {
+    withEnv(unnamed, () => {
       expect(localPaths()).toMatchObject({ home: join(homedir(), ".pathofdev"), dev: false })
     })
-    withEnv({ PATHOFDEV_DEV: "1", PATHOFDEV_HOME: "/tmp/sandbox" }, () => {
+    withEnv({ ...unnamed, PATHOFDEV_DEV: "1", PATHOFDEV_HOME: "/tmp/sandbox" }, () => {
       expect(localPaths()).toMatchObject({ home: "/tmp/sandbox", dev: true })
     })
     expect(isDevMode("true")).toBe(false)
