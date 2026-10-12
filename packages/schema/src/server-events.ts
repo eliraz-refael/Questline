@@ -1,7 +1,8 @@
 import { Schema, Struct, Tuple } from "effect"
 import { ClaimState, InventoryEntry, ItemDef, Pet, Pity, PlayerStats } from "./domain.ts"
-import { Count, Glyph, IsoDateTime, Multiplier, Rarity, Slot, Ulid, XpTier } from "./primitives.ts"
+import { Count, Glyph, IsoDateTime, Multiplier, Name, Rarity, Slot, Ulid, XpTier } from "./primitives.ts"
 import { MissionCadence, QuestRewards, QuestState } from "./quests.ts"
+import { Egg } from "./rules.ts"
 
 // Server events are the outcomes the mod renders, numbered by a per-player seq that only goes up. Each one below
 // is the draft the rules engine emits; the write path adds the envelope as it appends the draft to the stream.
@@ -142,6 +143,12 @@ export const ShardsCrafted = serverEvent("shards.crafted", {
 export const ItemEquipped = serverEvent("item.equipped", { slot: Slot, entryId: Ulid })
 /** A slot was emptied: the band draws its own look there again. */
 export const ItemUnequipped = serverEvent("item.unequipped", { slot: Slot })
+/** The character took a new name: the band and the pane's header show it. */
+export const CharacterRenamed = serverEvent("character.renamed", { name: Name })
+/** The egg picked in the welcome: what it hatches as, and under what name. */
+export const EggChosen = serverEvent("egg.chosen", Egg.fields)
+/** The first-run welcome was finished or skipped: every session stops offering it. */
+export const WelcomeFinished = serverEvent("welcome.done", {})
 /** Streak flame in the band. */
 export const StreakChanged = serverEvent("streak.changed", { days: Count, restDaysLeftThisWeek: Count })
 /** Fetch `GET /v1/rules/{version}` and swap the config; no reload needed. */
@@ -185,6 +192,9 @@ export const ServerEventDraft = Schema.Union([
   ShardsCrafted,
   ItemEquipped,
   ItemUnequipped,
+  CharacterRenamed,
+  EggChosen,
+  WelcomeFinished,
   StreakChanged,
   RulesUpdated,
   Notice,

@@ -5,6 +5,7 @@ import {
   IsoDateTime,
   ItemCategory,
   Multiplier,
+  Name,
   Probability,
   QualityDimension,
   Rarity,
@@ -168,6 +169,47 @@ export const PetCare = Schema.Struct({
 })
 export interface PetCare extends Schema.Schema.Type<typeof PetCare> {}
 
+/** A species an egg can hatch as: its id, the name the welcome gives it, and a few words about it. */
+export const PetSpecies = Schema.Struct({
+  id: Schema.String.pipe(Schema.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,31}$/u))),
+  name: Schema.String.pipe(Schema.check(Schema.isMinLength(1))),
+  about: Schema.String,
+})
+export interface PetSpecies extends Schema.Schema.Type<typeof PetSpecies> {}
+
+/** The egg before it hatches: the species it hatches as, and the name it takes. */
+export const Egg = Schema.Struct({ species: Schema.String, name: Name })
+export interface Egg extends Schema.Schema.Type<typeof Egg> {}
+
+/**
+ * The pet's rules: how its mood drifts and what a happy one adds, when it evolves, how care lifts it, the species an
+ * egg can be, and the egg a player who never picks one hatches.
+ */
+export const PetRules = Schema.Struct({
+  moodDecayPerDay: Schema.Finite,
+  /** A pet whose mood is above this is happy, and adds `happyXpBonusPct` to the flat boosts. */
+  happyAbove: Schema.Finite,
+  happyXpBonusPct: Count,
+  evolveAt: Schema.Array(Count),
+  care: PetCare,
+  /** In the order the welcome offers them. */
+  species: Schema.Array(PetSpecies).check(Schema.isMinLength(1)),
+  egg: Egg,
+}).check(
+  Schema.makeFilter((pet) => {
+    const ids = pet.species.map((species) => species.id)
+    return new Set(ids).size === ids.length || { path: ["species"], issue: "each species needs an id of its own" }
+  }),
+  Schema.makeFilter(
+    (pet) =>
+      pet.species.some((species) => species.id === pet.egg.species) || {
+        path: ["egg", "species"],
+        issue: "the default egg must be one of the species",
+      },
+  ),
+)
+export interface PetRules extends Schema.Schema.Type<typeof PetRules> {}
+
 /** The game's tuning. The mod never hard-codes a number from it. */
 export const RulesConfig = Schema.Struct({
   /** Tuning version. */
@@ -208,14 +250,7 @@ export const RulesConfig = Schema.Struct({
     /** Gold to re-roll a duplicate, by its rarity. */
     rerollGold: Schema.Record(Rarity, Count),
   }),
-  pet: Schema.Struct({
-    moodDecayPerDay: Schema.Finite,
-    /** A pet whose mood is above this is happy, and adds `happyXpBonusPct` to the flat boosts. */
-    happyAbove: Schema.Finite,
-    happyXpBonusPct: Count,
-    evolveAt: Schema.Array(Count),
-    care: PetCare,
-  }),
+  pet: PetRules,
   shop: ShopRules,
   streak: Schema.Struct({ xpPerDay: Count, maxXp: Count, restDaysPerWeek: Count }),
   prompt: PromptRules,

@@ -4,6 +4,7 @@ import { localDay } from "./days.ts"
 /** A new player: level 0, no pet, nothing owned. */
 export const initialState = (options: { characterName: string; timezone: string; now: string }): PlayerState => ({
   characterName: options.characterName,
+  welcomedAt: null,
   timezone: options.timezone,
   progress: {
     xp: { verified: 0, reported: 0 },
@@ -39,6 +40,7 @@ export const initialState = (options: { characterName: string; timezone: string;
     inventory: [],
     equipped: {},
     pet: null,
+    egg: null,
     peakLevel: 0,
     achievements: [],
     completedQuests: [],

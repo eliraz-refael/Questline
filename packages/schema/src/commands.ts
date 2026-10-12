@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Count, Name, Rarity, Slot, Ulid } from "./primitives.ts"
+import { Count, Name, Rarity, Slot, TypedName, Ulid } from "./primitives.ts"
 
 // Commands are player choices, answered synchronously. Like events they carry a ULID and are idempotent;
 // unlike events they can be refused.
@@ -26,8 +26,16 @@ export const ShopBuy = command("shop.buy", { offerId: Schema.String })
 export const ShardsCraft = command("shards.craft", { rarity: Rarity, itemId: Schema.String })
 export const QuestAccept = command("quest.accept", { questId: Schema.String })
 export const QuestAbandon = command("quest.abandon", { questId: Schema.String })
-export const CharacterRename = command("character.rename", { name: Name })
+/** The character's name, as the band and the pane show it. */
+export const CharacterRename = command("character.rename", { name: TypedName })
 export const CharacterPrestige = command("character.prestige", {})
+/**
+ * The egg picked in the welcome: a species of the rules' and a name, which the egg hatches as. Only before it hatches:
+ * after that the pet keeps both.
+ */
+export const EggChoose = command("egg.choose", { species: Schema.String, name: TypedName })
+/** The first-run welcome finished or skipped, so it never shows again on its own. Done once; again changes nothing. */
+export const WelcomeDone = command("welcome.done", {})
 
 // Dev commands, for trying the game out in a sandbox: a local server in dev mode runs them, with its own home, and
 // every other server refuses them. What they make is marked `dev` (an entry's source, an XP or gold reason).
@@ -87,6 +95,8 @@ export const Command = Schema.Union([
   QuestAbandon,
   CharacterRename,
   CharacterPrestige,
+  EggChoose,
+  WelcomeDone,
   DevGrantItem,
   DevGrantStyles,
   DevGrantXp,

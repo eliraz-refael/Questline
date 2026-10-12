@@ -277,13 +277,83 @@ describe("migrations", () => {
           }),
         ),
       )(stored)
+      // The welcome's migration after it marks them engine 13, rules 11.
       expect(rows.map((row) => [row.player_id, row.engine_version, row.rules_version])).toEqual([
-        ["egg", 11, 8],
-        ["pet", 11, 8],
+        ["egg", 13, 11],
+        ["pet", 13, 11],
       ])
       expect(rows[1]?.state).toEqual(replayed)
       expect(rows[1]?.state.holdings.pet?.petted).toEqual([])
       expect(rows[0]?.state).toEqual(initialState({ ...profile, now: start }))
+    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    coldStart,
+  )
+
+  it.effect("offer a player saved before the welcome the welcome, nothing else changed, as a replay ends", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0011"))
+      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      // The log: the egg hatched, then a prompt graded 8, which earned XP and dropped nothing.
+      const context = { rollSeed: "seed", rules: starterRules, catalog, questPacks: [] }
+      const replaying: Context["mode"] = { kind: "replay", recorded: { rolls: [], refusal: null } }
+      const hatched: Input = { kind: "command", command: hatch() }
+      const graded: Input = { kind: "client", event: prompt(8) }
+      const first = step(initialState({ ...profile, now: start }), hatched, {
+        ...context,
+        now: start,
+        logSeq: 1,
+        mode: replaying,
+      })
+      const replayed = step(first.state, graded, { ...context, now: minutesLater(1), logSeq: 2, mode: replaying }).state
+      expect(replayed.progress.xp.reported).toBeGreaterThan(0)
+      expect(replayed.holdings.pet?.name).toBe("Pixel")
+      // What a server before the welcome saved: the same player, with neither field.
+      const unwelcomed = (state: PlayerState) => {
+        const { welcomedAt: _welcomedAt, ...rest } = state
+        const { egg: _egg, ...holdings } = rest.holdings
+        return { ...rest, holdings }
+      }
+      const players: Array<[string, unknown, number, number]> = [
+        ["pet", unwelcomed(replayed), 12, 10],
+        ["egg", unwelcomed(initialState({ ...profile, now: start })), 11, 8],
+      ]
+      for (const [id, state, engineVersion, rulesVersion] of players) {
+        yield* sql`
+          INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
+          VALUES (${id}, NULL, NULL, 'Player', 'seed', ${start})
+        `
+        yield* sql`
+          INSERT INTO player_state (player_id, state, log_seq, server_seq, stream_epoch, engine_version, rules_version)
+          VALUES (${id}, ${JSON.stringify(state)}::jsonb, 2, 0, 1, ${engineVersion}, ${rulesVersion})
+        `
+      }
+      yield* migrate
+      const stored = yield* sql`
+        SELECT player_id, state, log_seq, engine_version, rules_version FROM player_state ORDER BY player_id
+      `
+      const rows = yield* Schema.decodeUnknownEffect(
+        Schema.Array(
+          Schema.Struct({
+            player_id: Schema.String,
+            state: PlayerState,
+            log_seq: Schema.Number,
+            engine_version: Schema.Number,
+            rules_version: Schema.Number,
+          }),
+        ),
+      )(stored)
+      expect(rows.map((row) => [row.player_id, row.log_seq, row.engine_version, row.rules_version])).toEqual([
+        ["egg", 2, 13, 11],
+        ["pet", 2, 13, 11],
+      ])
+      // Where a replay of the log ends: XP, the pet and everything else as they were, the welcome not done yet.
+      expect(rows[1]?.state).toEqual(replayed)
+      expect(rows[1]?.state.welcomedAt).toBeNull()
+      expect(rows[1]?.state.holdings.egg).toBeNull()
+      expect(rows[0]?.state).toEqual(initialState({ ...profile, now: start }))
+      // Nothing was logged for it.
+      expect(yield* sql`SELECT * FROM event_log`).toEqual([])
     }).pipe(Effect.provide(PgliteClient.layer({}))),
     coldStart,
   )
@@ -339,10 +409,10 @@ describe("migrations", () => {
         ),
       )(stored)
       // Every row reads as what its state now is, carried or not, so nothing keyed on the versions carries it again;
-      // the shop's migration after it marks them engine 11, rules 8.
+      // the shop's and the welcome's migrations after it mark them engine 13, rules 11.
       expect(rows.map((row) => [row.player_id, row.engine_version, row.rules_version])).toEqual([
-        ["mid", 11, 8],
-        ["new", 11, 8],
+        ["mid", 13, 11],
+        ["new", 13, 11],
       ])
       const [carried, untouched] = rows
       expect(carried?.state.progress.xp.reported).toBe(5000 + carriedXp(5000))

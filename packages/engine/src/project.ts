@@ -92,6 +92,9 @@ export const project = (
             mood: moodNow(holdings.pet, rules, now),
             equipped: slotsOf(holdings.equipped, petSlots),
           },
+    // Until it hatches: as the player picked it, else the rules' default egg.
+    egg: holdings.pet === null ? (holdings.egg ?? rules.pet.egg) : null,
+    welcome: { done: state.welcomedAt !== null },
     inventory: holdings.inventory,
     items: context.catalog.filter((def) => shown.has(def.id)),
     // A mission whose pack quest is gone has nothing to show; it idles until its window ends.

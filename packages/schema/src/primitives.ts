@@ -40,6 +40,12 @@ export const HexColor = Schema.String.pipe(Schema.check(Schema.isPattern(/^#[0-9
 /** A character or pet name. */
 export const Name = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(32)))
 
+/**
+ * A name as the player typed it, before the engine tidies and checks it: the engine refuses one it can't keep, in
+ * words the player reads, rather than the request failing on its shape.
+ */
+export const TypedName = Schema.String.pipe(Schema.check(Schema.isMaxLength(200)))
+
 // Enums the mod reads are open on the wire: a newer server may send a value an older mod doesn't know, and the
 // mod renders it with a fallback. The schemas stay closed because the server validates what it accepts.
 

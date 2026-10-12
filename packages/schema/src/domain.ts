@@ -18,6 +18,7 @@ import {
   Ulid,
 } from "./primitives.ts"
 import { QuestState } from "./quests.ts"
+import { Egg } from "./rules.ts"
 
 // The snapshot is everything the mod draws, sent whole when a session opens and kept current by server events.
 
@@ -356,6 +357,10 @@ export const Snapshot = Schema.Struct({
   character: Character,
   /** Null until hatched at level 1. */
   pet: Schema.NullOr(Pet),
+  /** The egg it hatches from, as the player picked it or the rules' default; null once it has hatched. */
+  egg: Schema.NullOr(Egg),
+  /** The first-run welcome: `done` once the player finished or skipped it, so it shows only until then. */
+  welcome: Schema.Struct({ done: Schema.Boolean }),
   inventory: Schema.Array(InventoryEntry),
   /**
    * The definitions of the items the inventory holds, the shop offers and the shards can craft, band looks included,
