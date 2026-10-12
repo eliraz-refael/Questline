@@ -2533,6 +2533,14 @@ describe('the shop', () => {
   })
   const trailMix = food('trail-mix', 'Trail Mix', 'common', 60)
   const berryTart = food('berry-tart', 'Berry Tart', 'uncommon', 120)
+  /** A treat: food that only lifts the mood, which is all the shop sells. */
+  const treat = (id: string, name: string, rarity: string, lore: string | null = null) => ({
+    ...food(id, name, rarity, 0),
+    lore,
+    effect: null,
+  })
+  const honeyBiscuit = treat('honey-biscuit', 'Honey Biscuit', 'common', 'Baked in the shape of a tiny paw.')
+  const sugarPlum = treat('sugar-plum', 'Sugar Plum', 'uncommon')
   const offer = (itemId: string, price: number, stock: number) => ({
     offerId: `2026-10-09/${itemId}`,
     itemId,
@@ -2546,19 +2554,19 @@ describe('the shop', () => {
     loot: { rerollGold: { common: 20, uncommon: 50 }, salvageShards: { common: 1, uncommon: 1 }, shardsToCraft: 10 },
   }
   const ember = (mood: number) => ({ species: 'fox', name: 'Ember', form: 0, mood, equipped: {} })
-  /** Two Solid Bars (the first worn), a Trail Mix, and the shelf and the food on offer. */
+  /** Two Solid Bars (the first worn), a Honey Biscuit, and the shelf and the treats on offer. */
   const stocked: Owned = {
     inventory: [
       { id: '01K6ZQ8W3J0000000000009001', itemId: 'solid-bar' },
       { id: '01K6ZQ8W3J0000000000009002', itemId: 'solid-bar' },
-      { id: '01K6ZQ8W3J0000000000009003', itemId: 'trail-mix' },
+      { id: '01K6ZQ8W3J0000000000009003', itemId: 'honey-biscuit' },
     ],
-    items: [solidBar, beadString, copperPurse, trailMix, berryTart],
+    items: [solidBar, beadString, copperPurse, honeyBiscuit, sugarPlum, trailMix, berryTart],
     equipped: { xpBar: '01K6ZQ8W3J0000000000009001' },
   }
   const shelf = [offer('copper-purse', 120, 0), offer('solid-bar', 120, 1), offer('bead-string', 250, 1)]
   const kept = (more: Kept = {}): Kept => ({
-    shop: [...shelf, offer('trail-mix', 25, 3), offer('berry-tart', 60, 2)],
+    shop: [...shelf, offer('honey-biscuit', 15, 3), offer('sugar-plum', 35, 2)],
     pet: ember(82),
     shards: { common: 3, uncommon: 10, rare: 0, epic: 0, legendary: 0 },
     gold: 200,
@@ -2581,7 +2589,7 @@ describe('the shop', () => {
     await streaming($, on, stocked, false, { rules: shopRules, kept: kept() })
     await openShop($)
     const all = (await paneTexts($, 72)).texts.join('\n')
-    expect(all).toMatch(/^Shop {2}looks and food for gold, a new shelf each day · ◈ 200 gold$/m)
+    expect(all).toMatch(/^Shop {2}looks and treats for gold, a new shelf each day · ◈ 200 gold$/m)
     expect(all).toMatch(/^Today's shelf ─+ restocks in 16h 0m$/m)
     expect(all).toMatch(/^◆ Copper Purse {2}common · Gold$/m)
     expect(all).toContain('sold out today')
@@ -2592,13 +2600,16 @@ describe('the shop', () => {
     // Each band style's preview is the band's own drawing, in the player's real XP.
     expect(all).toMatch(/^●+○+ 30\/203 xp$/m)
     expect(all).toContain('Strung one bead per green build.')
-    expect(all).toMatch(/^Food ─+ for Ember$/m)
-    expect(all).toContain('+10% XP for 1h · mood +30 · 3 left today')
-    expect(all).toContain('+10% XP for 2h · mood +30 · 2 left today')
-    expect(all).toMatch(/^◆ Trail Mix {2}common · 1 owned$/m)
+    // Treats lift the mood and nothing else, and the tab says so.
+    expect(all).toMatch(/^Treats ─+ for Ember$/m)
+    expect(all).toContain('XP food comes from play')
+    expect(all).toContain('+30 mood · no XP · 3 left today')
+    expect(all).toContain('+30 mood · no XP · 2 left today')
+    expect(all).toMatch(/^◆ Honey Biscuit {2}common · 1 owned$/m)
+    expect(all).not.toContain('% XP for')
     const ui = await mountPane($)
     expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/solid-bar' })).toBeDefined()
-    expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/trail-mix' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/honey-biscuit' })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/copper-purse' })).toBeUndefined()
     expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/bead-string' })).toBeUndefined()
     await ui.unmount()
@@ -2607,8 +2618,8 @@ describe('the shop', () => {
   test('Buy sends shop.buy for the offer pressed', async ($, on) => {
     const { sent } = await streaming($, on, stocked, false, { rules: shopRules, kept: kept() })
     await openShop($)
-    await pressIn($, 'buy:2026-10-09/trail-mix')
-    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'shop.buy', data: { offerId: '2026-10-09/trail-mix' } })
+    await pressIn($, 'buy:2026-10-09/honey-biscuit')
+    expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'shop.buy', data: { offerId: '2026-10-09/honey-biscuit' } })
   })
 
   test('trades a spare copy in, never the one worn, and crafts with enough shards', async ($, on) => {
@@ -2623,11 +2634,12 @@ describe('the shop', () => {
     expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'item.reroll', data: { entryId: '01K6ZQ8W3J0000000000009002' } })
     await pressIn($, 'salvage:solid-bar')
     expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'item.salvage', data: { entryId: '01K6ZQ8W3J0000000000009002' } })
-    // Ten uncommon shards make any uncommon the snapshot names, food included.
+    // Ten uncommon shards make any uncommon the snapshot names, a treat included, but never XP food.
     await pressIn($, 'craft:uncommon:bead-string')
     expect(commandsOf(sent).at(-1)).toMatchObject({ type: 'shards.craft', data: { rarity: 'uncommon', itemId: 'bead-string' } })
     const ui = await mountPane($)
-    expect(await ui.find({ type: 'Button', key: 'craft:uncommon:berry-tart' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'craft:uncommon:sugar-plum' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'craft:uncommon:berry-tart' })).toBeUndefined()
     expect(await ui.find({ type: 'Button', key: 'craft:common:solid-bar' })).toBeUndefined()
     await ui.unmount()
   })
@@ -2636,7 +2648,7 @@ describe('the shop', () => {
     await streaming($, on, stocked, false, { rules: shopRules, kept: kept() })
     await openShop($)
     // Lore wraps as prose does; every other row is cut to the pane.
-    const lore = ['Nuts, seeds and the odd chocolate chip.', 'Strung one bead per green build.']
+    const lore = ['Baked in the shape of a tiny paw.', 'Strung one bead per green build.']
     const wide = (await paneTexts($, 40)).texts.filter((text) => cellsOf(text) > 38 && !lore.includes(text))
     expect(wide).toEqual([])
   })
@@ -2644,14 +2656,25 @@ describe('the shop', () => {
   test('lists no food among the duplicates: food is eaten, never traded in', async ($, on) => {
     const meals: Owned = {
       ...stocked,
-      inventory: [...stocked.inventory, { id: '01K6ZQ8W3J0000000000009004', itemId: 'trail-mix' }],
+      inventory: [...stocked.inventory, { id: '01K6ZQ8W3J0000000000009004', itemId: 'honey-biscuit' }],
     }
     await streaming($, on, meals, false, { rules: shopRules, kept: kept() })
     await openShop($)
     const ui = await mountPane($)
     expect(await ui.find({ type: 'Button', key: 'reroll:solid-bar' })).toBeDefined()
-    expect(await ui.find({ type: 'Button', key: 'reroll:trail-mix' })).toBeUndefined()
-    expect(await ui.find({ type: 'Button', key: 'salvage:trail-mix' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'reroll:honey-biscuit' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'salvage:honey-biscuit' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('never offers XP food to buy, even when a server lists it: gold never buys XP', async ($, on) => {
+    const xpOffers = kept({ shop: [...shelf, offer('trail-mix', 25, 3), offer('honey-biscuit', 15, 3)] })
+    await streaming($, on, stocked, false, { rules: shopRules, kept: xpOffers })
+    await openShop($)
+    const ui = await mountPane($)
+    expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/trail-mix' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'buy:2026-10-09/honey-biscuit' })).toBeDefined()
+    expect(await textsOf(ui)).not.toContain('Trail Mix')
     await ui.unmount()
   })
 
@@ -2702,15 +2725,20 @@ describe('caring for the pet', () => {
     inventory: [
       { id: '01K6ZQ8W3J0000000000009101', itemId: 'trail-mix' },
       { id: '01K6ZQ8W3J0000000000009102', itemId: 'trail-mix' },
+      { id: '01K6ZQ8W3J0000000000009103', itemId: 'honey-biscuit' },
     ],
-    items: [trailMix],
+    items: [
+      trailMix,
+      { ...trailMix, id: 'honey-biscuit', name: 'Honey Biscuit', lore: null, effect: null },
+    ],
     equipped: {},
   }
   const meal = { kind: 'food', source: 'trail-mix', xpBoostPct: 10, endsAt: '2026-10-09T08:42:00.000Z' }
   const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+  // Wide enough that every meal's head keeps all its notes.
   const inventory = async ($: Parameters<TestBody>[0]) => {
     await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
-    return (await paneTexts($, 72)).texts.join('\n')
+    return (await paneTexts($, 90)).texts.join('\n')
   }
 
   test('the card shows how it feels, takes a pat, and feeds it the food owned', async ($, on) => {
@@ -2722,8 +2750,10 @@ describe('caring for the pet', () => {
     expect(all).toMatch(/^ {2}Mood ▰+▱+ 82$/m)
     expect(all).toContain('a pat lifts the mood +5, 3 pats an hour')
     expect(all).toMatch(/^ {2}Fed {2}\+10% XP · 42m left$/m)
-    expect(all).toMatch(/^Food {2}a meal lifts the mood \+30$/m)
-    expect(all).toMatch(/^◆ Trail Mix {2}common · \+10% XP for 1h · 2 owned$/m)
+    expect(all).toMatch(/^Food {2}treats lift the mood; XP food boosts XP too$/m)
+    expect(all).toMatch(/^◆ Trail Mix {2}common · \+30 mood · \+10% XP for 1h · 2 owned$/m)
+    // A treat says it lifts the mood, and nothing about XP.
+    expect(all).toMatch(/^◆ Honey Biscuit {2}common · \+30 mood$/m)
     // Food sits on the pet's card, not among the other items.
     expect(all).not.toMatch(/Trail Mix common · food/)
     expect(all.indexOf('Ember')).toBeLessThan(all.indexOf('Band styles'))
@@ -2742,7 +2772,7 @@ describe('caring for the pet', () => {
     const all = await inventory($)
     expect(all).toMatch(/^Ember ─+ sleepy$/m)
     expect(all).toMatch(/^ {2}ᓚᘏᗢ {2}Ember {2}♥$/m)
-    expect(all).toContain('No food yet: the Shop tab sells it, and it drops as loot.')
+    expect(all).toContain('No food yet: the Shop tab sells treats, and XP food drops as loot.')
     expect(all).not.toMatch(/sad|hungry|lonely|neglect|miss/i)
   })
 
@@ -2828,10 +2858,16 @@ describe('the words for the shop and the pet', () => {
     )
     expect(await gainLine($)).toBe('Bead String · bought for 250 gold')
     expect(toasts.at(-1)).toBe('Bought Bead String (uncommon) · −250 gold')
-    const fed = { entryId: entry.id, itemId: 'trail-mix', name: 'Trail Mix', mood: 90, xpBoost: { pct: 10, minutes: 60 } }
+    const boost = { pct: 10, minutes: 60 }
+    const fed = { entryId: entry.id, itemId: 'trail-mix', name: 'Trail Mix', mood: 90, gained: 30, xpBoost: boost }
     await send(...causedBy('01K6ZQ8W3J0000000000000D02', serverEvent('pet.fed', fed)))
-    expect(await gainLine($)).toBe('Ember ate Trail Mix · +10% XP for 1h')
-    expect(toasts.at(-1)).toBe('Ember ate Trail Mix · +10% XP for 1h')
+    expect(await gainLine($)).toBe('Ember ate Trail Mix · mood +30 · +10% XP for 1h')
+    expect(toasts.at(-1)).toBe('Ember ate Trail Mix · mood +30 · +10% XP for 1h')
+    // A treat lifts the mood, and its words say nothing of XP.
+    const treat = { entryId: entry.id, itemId: 'honey-biscuit', name: 'Honey Biscuit', mood: 100, gained: 10 }
+    await send(...causedBy('01K6ZQ8W3J0000000000000D08', serverEvent('pet.fed', treat)))
+    expect(await gainLine($)).toBe('Ember ate Honey Biscuit · mood +10')
+    expect(toasts.at(-1)).toBe('Ember ate Honey Biscuit · mood +10')
     await send(...causedBy('01K6ZQ8W3J0000000000000D03', serverEvent('pet.petted', { mood: 95, gained: 5 })))
     expect(await gainLine($)).toBe('Ember enjoyed the pat · mood +5')
     await send(...causedBy('01K6ZQ8W3J0000000000000D04', serverEvent('pet.petted', { mood: 95, gained: 0 })))

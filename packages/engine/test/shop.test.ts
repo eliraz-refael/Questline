@@ -11,7 +11,12 @@ import type {
   ServerEventDraft,
   Step,
 } from "@questline/schema"
-import { Snapshot as SnapshotSchema, Step as StepSchema } from "@questline/schema"
+import {
+  ItemCategory,
+  Rarity as RaritySchema,
+  Snapshot as SnapshotSchema,
+  Step as StepSchema,
+} from "@questline/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {
@@ -162,6 +167,8 @@ const snapshotOf = (state: PlayerState, now = start) =>
 
 const typesOf = (events: ReadonlyArray<ServerEventDraft>) => events.map((event) => event.type)
 
+const RarityLiterals = RaritySchema.literals
+
 const shelf = shelfOf(today, { rules: starterRules, catalog: starterCatalog })
 const firstOffer = shelf[0]
 
@@ -173,16 +180,17 @@ describe("the shop: today's offers", () => {
       expect(["common", "uncommon"]).toContain(item.rarity)
     }
     expect(pantryOf({ rules: starterRules, catalog: starterCatalog }).map((item) => item.id)).toEqual([
-      "trail-mix",
-      "berry-tart",
+      "honey-biscuit",
+      "sugar-plum",
     ])
     const offers = shopOffers(player(), { rules: starterRules, catalog: starterCatalog }, start)
-    expect(offers.map((offer) => offer.itemId)).toEqual([...shelf.map((item) => item.id), "trail-mix", "berry-tart"])
+    const treats = ["honey-biscuit", "sugar-plum"]
+    expect(offers.map((offer) => offer.itemId)).toEqual([...shelf.map((item) => item.id), ...treats])
     expect(offers.map((offer) => offer.stock)).toEqual([1, 1, 1, 1, 3, 3])
-    expect(offers.find((offer) => offer.itemId === "trail-mix")).toEqual({
-      offerId: "2026-10-09/trail-mix",
-      itemId: "trail-mix",
-      price: 25,
+    expect(offers.find((offer) => offer.itemId === "honey-biscuit")).toEqual({
+      offerId: "2026-10-09/honey-biscuit",
+      itemId: "honey-biscuit",
+      price: 15,
       stock: 3,
       endsAt: "2026-10-10T00:00:00.000Z",
     })
@@ -239,15 +247,15 @@ describe("the shop: buying", () => {
   })
 
   it("sells three of each food a day, and restocks at the next local midnight", () => {
-    const offerId = offerIdOf(today, "trail-mix")
+    const offerId = offerIdOf(today, "honey-biscuit")
     const { state, steps } = play([buy(offerId), buy(offerId), buy(offerId), buy(offerId)], player({ gold: 1000 }))
     expect(steps.map((one) => one.refusal?.code ?? null)).toEqual([null, null, null, "sold_out"])
-    expect(state.holdings.gold).toBe(1000 - 3 * 25)
+    expect(state.holdings.gold).toBe(1000 - 3 * 15)
     const tomorrow = "2026-10-10T09:00:00.000Z"
-    expect(snapshotOf(state, tomorrow).shop.find((offer) => offer.itemId === "trail-mix")?.stock).toBe(3)
-    const next = step(state, buy(offerIdOf("2026-10-10", "trail-mix")), contextAt(9, tomorrow))
+    expect(snapshotOf(state, tomorrow).shop.find((offer) => offer.itemId === "honey-biscuit")?.stock).toBe(3)
+    const next = step(state, buy(offerIdOf("2026-10-10", "honey-biscuit")), contextAt(9, tomorrow))
     expect(next.refusal).toBe(null)
-    expect(next.state.holdings.shop).toEqual({ day: "2026-10-10", bought: { "2026-10-10/trail-mix": 1 } })
+    expect(next.state.holdings.shop).toEqual({ day: "2026-10-10", bought: { "2026-10-10/honey-biscuit": 1 } })
   })
 
   it("refuses an offer it can't afford, one that has ended, and one that never was", () => {
@@ -255,7 +263,7 @@ describe("the shop: buying", () => {
     const price = starterRules.shop.prices[firstOffer.rarity]
     const poor = player({ gold: price - 1 })
     const { steps, state } = play(
-      [buy(offerIdOf(today, firstOffer.id)), buy(offerIdOf("2026-10-08", "trail-mix")), buy("wizard-hat")],
+      [buy(offerIdOf(today, firstOffer.id)), buy(offerIdOf("2026-10-08", "honey-biscuit")), buy("wizard-hat")],
       poor,
     )
     expect(steps.map((one) => one.refusal)).toEqual([
@@ -271,8 +279,39 @@ describe("the shop: buying", () => {
     expect(notToday.refusal).toEqual({ code: "invalid", message: "The shop has no such offer today" })
   })
 
+  it("never sells XP food: the food on offer only lifts the mood, and an XP food's id is refused", () => {
+    const pantry = pantryOf({ rules: starterRules, catalog: starterCatalog })
+    expect(pantry.map((item) => item.effect)).toEqual([null, null])
+    const refused = step(player({ gold: 1000 }), buy(offerIdOf(today, "trail-mix")), contextAt(1, start))
+    expect(refused.refusal).toEqual({
+      code: "not_allowed",
+      message: "Trail Mix boosts XP, so it comes only from play, never from gold or shards",
+    })
+    const sigil = step(player({ gold: 1000 }), buy(offerIdOf(today, "arcane-sigil")), contextAt(1, start))
+    expect(sigil.refusal?.code).toBe("not_allowed")
+  })
+
+  it("never sells XP food under rules that would sell every rarity and category", () => {
+    const everything = {
+      ...starterRules,
+      shop: {
+        ...starterRules.shop,
+        offers: 100,
+        rarities: [...RarityLiterals],
+        categories: [...ItemCategory.literals],
+      },
+    }
+    for (let day = 0; day < 30; day++) {
+      const at = new Date(Date.parse(start) + day * 86_400_000).toISOString().slice(0, 10)
+      const sold = shopOffers(player(), { rules: everything, catalog: starterCatalog }, `${at}T08:00:00.000Z`)
+      const items = sold.map((offer) => starterCatalog.find((item) => item.id === offer.itemId))
+      expect(items.filter((item) => item?.effect !== null && item?.effect !== undefined)).toEqual([])
+      expect(items.filter((item) => item?.sigil !== undefined)).toEqual([])
+    }
+  })
+
   it("replays a purchase as it was made: the same entry, the same gold", () => {
-    const inputs = [buy(offerIdOf(today, "trail-mix")), buy(offerIdOf(today, "berry-tart"))]
+    const inputs = [buy(offerIdOf(today, "honey-biscuit")), buy(offerIdOf(today, "sugar-plum"))]
     const live = play(inputs, player({ gold: 500 }))
     const replayed = replay(
       inputs,
@@ -300,6 +339,7 @@ describe("caring for the pet", () => {
           itemId: "trail-mix",
           name: "Trail Mix",
           mood: 70,
+          gained: 30,
           xpBoost: { pct: 10, minutes: 60 },
         },
       },
@@ -422,6 +462,24 @@ describe("duplicates", () => {
     expect(made.some((itemId) => itemId === "")).toBe(false)
   })
 
+  it("never crafts XP food, so gold, a style, its salvage and the shards never buy XP", () => {
+    // Two Solid Bars bought, the spare salvaged into the tenth common shard: shards make a treat, never XP food.
+    const bought = player({ items: ["solid-bar", "solid-bar"], shards: 9 })
+    const salvaged = step(bought, salvage(entryIds[1] ?? ""), contextAt(1, start)).state
+    expect(salvaged.holdings.shards.common).toBe(10)
+    const craftOf = (itemId: string): Input =>
+      command({ id: nextId(), type: "shards.craft", data: { rarity: "common", itemId } })
+    expect(step(salvaged, craftOf("trail-mix"), contextAt(2, start)).refusal).toEqual({
+      code: "not_allowed",
+      message: "Trail Mix boosts XP, so it comes only from play, never from gold or shards",
+    })
+    expect(step(salvaged, craftOf("honey-biscuit"), contextAt(2, start)).refusal).toBe(null)
+    // Nor does the snapshot offer XP food to craft, while it does offer the treat.
+    const shown = new Set(snapshotOf(salvaged).items.map((item) => item.id))
+    expect(shown.has("trail-mix")).toBe(false)
+    expect(shown.has("honey-biscuit")).toBe(true)
+  })
+
   it("refuses to trade in spare food, which the shop sells by the copy", () => {
     const meals = player({ gold: 100, items: ["trail-mix", "trail-mix"] })
     const refusal = { code: "not_allowed", message: "Trail Mix is food: feed it to your pet" }
@@ -476,7 +534,7 @@ describe("dev mode: the shop and the pet", () => {
     step(state, command(cmd), contextAt(1, start, { kind: "live" }, isDev))
 
   it("restocks the shop, sets the pet's mood and the shards, and refuses all three off dev mode", () => {
-    const offerId = offerIdOf(today, "trail-mix")
+    const offerId = offerIdOf(today, "honey-biscuit")
     const bought = play([buy(offerId)], player({ gold: 100, mood: 50 })).state
     const restocked = dev({ id: nextId(), type: "dev.restockShop", data: {} }, bought)
     expect(restocked.state.holdings.shop).toEqual({ day: today, bought: {} })

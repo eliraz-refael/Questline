@@ -210,9 +210,15 @@ const shardsText = (count: number, rarity: string): string => `${count} ${rarity
 const patText = (pet: string, gained: number): string =>
   Math.round(gained) > 0 ? `${pet} enjoyed the pat · mood +${Math.round(gained)}` : `${pet} enjoyed the pat`
 
-/** A meal in words, with the boost it started. */
-const mealText = (pet: string, food: string, boost: { readonly pct: number; readonly minutes: number } | undefined) =>
-  `${pet} ate ${food}${boost === undefined ? '' : ` · ${boostText(boost)}`}`
+/**
+ * A meal in words: what it lifted the mood by (an older server doesn't say), and the XP boost, which only XP food
+ * starts; a treat only lifts the mood.
+ */
+const mealText = (pet: string, meal: Extract<ServerEvent, { type: 'pet.fed' }>['data']): string => {
+  const { name, gained, xpBoost } = meal
+  const lift = typeof gained === 'number' && Math.round(gained) > 0 ? ` · mood +${Math.round(gained)}` : ''
+  return `${pet} ate ${name}${lift}${xpBoost === undefined ? '' : ` · ${boostText(xpBoost)}`}`
+}
 
 /** The pet as the words name it, when the band has not named it yet. */
 const somePet = 'Your pet'
@@ -239,7 +245,7 @@ export const gainOf = (event: ServerEvent, pet = somePet): GainLine | null => {
     case 'pet.hatched':
       return { text: `${event.data.name} hatched!`, tone: 'loot' }
     case 'pet.fed':
-      return { text: mealText(pet, event.data.name, event.data.xpBoost), tone: 'pet' }
+      return { text: mealText(pet, event.data), tone: 'pet' }
     case 'pet.petted':
       return { text: patText(pet, event.data.gained), tone: 'pet' }
     case 'shop.bought':
@@ -346,7 +352,7 @@ export const toastOf = (events: ReadonlyArray<ServerEvent>, pet = somePet): stri
       const { item, spent, rarity } = event.data
       deeds.push(`Crafted ${item.name} (${item.rarity}) · −${shardsText(spent, rarity)}`)
     }
-    if (event.type === 'pet.fed') deeds.push(mealText(pet, event.data.name, event.data.xpBoost))
+    if (event.type === 'pet.fed') deeds.push(mealText(pet, event.data))
     if (event.type === 'pet.petted') deeds.push(patText(pet, event.data.gained))
     if (event.type === 'quest.completed') missions.push(`Mission complete: ${event.data.title || 'Mission'}`)
     const boost = event.type === 'quest.completed' ? event.data.rewards?.xpBoost : undefined

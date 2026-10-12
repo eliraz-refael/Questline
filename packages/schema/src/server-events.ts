@@ -89,12 +89,16 @@ export const PetChanged = serverEvent("pet.changed", {
   form: Schema.optionalKey(Pet.fields.form),
   equipped: Schema.optionalKey(Pet.fields.equipped),
 })
-/** Food the pet ate: its mood now, and the XP boost the food started, if any. */
+/**
+ * Food the pet ate: its mood now and what the meal lifted it by, and the XP boost the food started, which only XP food
+ * does; a treat only lifts the mood.
+ */
 export const PetFed = serverEvent("pet.fed", {
   entryId: Ulid,
   itemId: Schema.String,
   name: Schema.String,
   mood: Pet.fields.mood,
+  gained: Schema.optionalKey(Schema.Finite),
   xpBoost: Schema.optionalKey(Schema.Struct({ pct: Count, minutes: Count })),
 })
 /** A pat: the mood it lifted (0 once the hour's pats are spent) and the mood now. */
