@@ -1,7 +1,8 @@
 import type { PlayerStats, RulesConfig, ScoringFact, ServerEvent, Snapshot } from '@questline/schema'
 import type { PluginOptions } from 'claude-code'
 import type { BandView, GainLine, OwnedItem, StatsView, Wardrobe } from '../types'
-import { boostText, tierOf } from './celebrate'
+import { heartsFor, knowsCareOf } from './care'
+import { boostText, foodOf, tierOf } from './celebrate'
 import { knowsSigilsOf, multiplierText, sigilOf, wornSigil } from './sigils'
 
 // What the band draws, worked out from the server's snapshot and stream; no game rule is computed here.
@@ -40,15 +41,27 @@ export const wardrobeOf = (snapshot: Snapshot, rules: Partial<RulesConfig> = {})
     const { name, category, slot, lore } = def
     const look = def.look ?? null
     const sigil = sigilOf(def)
+    const food = foodOf(def)
     const rarity = tierOf(def.rarity)
-    const owned: OwnedItem = { entryId: entry.id, itemId: def.id, name, rarity, category, slot, look, lore }
-    return [sigil === null ? owned : { ...owned, sigil }]
+    const owned: OwnedItem = {
+      entryId: entry.id,
+      itemId: def.id,
+      name,
+      rarity,
+      category,
+      slot,
+      look,
+      lore,
+      ...(sigil === null ? {} : { sigil }),
+      ...(food === undefined ? {} : { food }),
+    }
+    return [owned]
   })
   const equipped: Record<string, string> = {}
   const worn = [...Object.entries(snapshot.character.equipped ?? {}), ...Object.entries(snapshot.pet?.equipped ?? {})]
   for (const [slot, entryId] of worn)
     if (typeof entryId === 'string') equipped[slot] = entryId
-  return { items, equipped, knowsSigils: knowsSigilsOf(rules) }
+  return { items, equipped, knowsSigils: knowsSigilsOf(rules), knowsCare: knowsCareOf(rules) }
 }
 
 /** A count or a share as the snapshot has it; `fallback` for one an older server doesn't send. */
@@ -142,7 +155,8 @@ export const sprite = (pet: NonNullable<BandView['pet']>): string => {
   return forms[Math.min(pet.form, forms.length - 1)] ?? '?'
 }
 
-export const hearts = (mood: number): string => (mood > 70 ? '♥♥♥' : mood > 40 ? '♥♥' : '♥')
+/** Hearts for a mood, by the rules' happy line; the starter's when an older server doesn't say. */
+export const hearts = (mood: number, happyAbove = 70): string => heartsFor(mood, happyAbove)
 
 /** What each XP reason the engine names means to a player; the type keeps a word for every scoring fact. */
 const xpWords: Record<ScoringFact | 'quest' | 'dev', string> = {
@@ -160,7 +174,13 @@ const xpWords: Record<ScoringFact | 'quest' | 'dev', string> = {
   quest: 'mission reward',
   dev: 'dev grant',
 }
-const goldWords: Record<string, string> = { drop: 'loot', quest: 'mission reward', dev: 'dev grant' }
+const goldWords: Record<string, string> = {
+  drop: 'loot',
+  quest: 'mission reward',
+  shop: 'shop',
+  reroll: 're-roll',
+  dev: 'dev grant',
+}
 const xpReasons = new Map<string, string>(Object.entries(xpWords))
 const goldReasons = new Map<string, string>(Object.entries(goldWords))
 
@@ -183,8 +203,22 @@ const dropName = (item: Pick<OwnedItem, 'name'> & Parameters<typeof sigilOf>[0])
   return sigil === null ? item.name : `${item.name} ${multiplierText(sigil.multiplier)}`
 }
 
-/** The line one server event puts at the end of the band, if any. */
-export const gainOf = (event: ServerEvent): GainLine | null => {
+/** How many shards, in words: `1 common shard`, `3 rare shards`. */
+const shardsText = (count: number, rarity: string): string => `${count} ${rarity} shard${count === 1 ? '' : 's'}`
+
+/** A pat in words, with what it lifted the mood by when it lifted it at all. */
+const patText = (pet: string, gained: number): string =>
+  Math.round(gained) > 0 ? `${pet} enjoyed the pat · mood +${Math.round(gained)}` : `${pet} enjoyed the pat`
+
+/** A meal in words, with the boost it started. */
+const mealText = (pet: string, food: string, boost: { readonly pct: number; readonly minutes: number } | undefined) =>
+  `${pet} ate ${food}${boost === undefined ? '' : ` · ${boostText(boost)}`}`
+
+/** The pet as the words name it, when the band has not named it yet. */
+const somePet = 'Your pet'
+
+/** The line one server event puts at the end of the band, if any; `pet` names the pet for a meal or a pat. */
+export const gainOf = (event: ServerEvent, pet = somePet): GainLine | null => {
   switch (event.type) {
     case 'xp.granted': {
       const { amount, reason, grade, sigil } = event.data
@@ -204,6 +238,22 @@ export const gainOf = (event: ServerEvent): GainLine | null => {
       return { text: `${signed(event.data.delta)} gold · ${wordsFor(goldReasons, event.data.reason)}`, tone: 'gold' }
     case 'pet.hatched':
       return { text: `${event.data.name} hatched!`, tone: 'loot' }
+    case 'pet.fed':
+      return { text: mealText(pet, event.data.name, event.data.xpBoost), tone: 'pet' }
+    case 'pet.petted':
+      return { text: patText(pet, event.data.gained), tone: 'pet' }
+    case 'shop.bought':
+      return { text: `${dropName(event.data.item)} · bought for ${event.data.price} gold`, tone: 'loot' }
+    case 'item.rerolled': {
+      const { from, item, tier } = event.data
+      return { text: `${from.name} re-rolled into ${dropName(item)} · ${tier}`, tone: 'loot' }
+    }
+    case 'item.salvaged': {
+      const { name, shards, rarity } = event.data
+      return { text: `${name} salvaged · +${shardsText(shards, rarity)}`, tone: 'loot' }
+    }
+    case 'shards.crafted':
+      return { text: `Crafted ${event.data.item.name} · ${event.data.item.rarity}`, tone: 'loot' }
     case 'streak.changed':
       return event.data.days > 1 ? { text: `${event.data.days}-day streak`, tone: 'xp' } : null
     case 'quest.completed':
@@ -240,15 +290,23 @@ export const batchesOf = <E extends { cause: string | null }>(events: ReadonlyAr
   return batches
 }
 
-const toneRank: Record<GainLine['tone'], number> = { level: 5, quest: 4, loot: 3, xp: 2, gold: 1, quiet: 0 }
+const toneRank: Record<GainLine['tone'], number> = {
+  level: 5,
+  quest: 4,
+  loot: 3,
+  pet: 3,
+  xp: 2,
+  gold: 1,
+  quiet: 0,
+}
 
 /**
  * A batch's line names its biggest moment: a level-up, else a mission done, else a drop, else XP, else gold; the
  * latest among equals.
  */
-export const batchGainOf = (events: ReadonlyArray<ServerEvent>): GainLine | null =>
+export const batchGainOf = (events: ReadonlyArray<ServerEvent>, pet = somePet): GainLine | null =>
   events.reduce<GainLine | null>((best, event) => {
-    const gain = gainOf(event)
+    const gain = gainOf(event, pet)
     return gain !== null && (best === null || toneRank[gain.tone] >= toneRank[best.tone]) ? gain : best
   }, null)
 
@@ -263,7 +321,7 @@ const toastItems = 3
  * One toast for everything one cause earned, as `Mission complete: Ship It · +259 XP · Level 2! · Knit Scarf (rare)
  * · +130 gold`; null when it earned nothing.
  */
-export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
+export const toastOf = (events: ReadonlyArray<ServerEvent>, pet = somePet): string | null => {
   let xp = 0
   let gold = 0
   let sigil = 0
@@ -274,7 +332,22 @@ export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
   const hatched: Array<string> = []
   const missions: Array<string> = []
   const boosts: Array<string> = []
+  /** What the player did: a purchase, a trade, a meal or a pat, each in its own words. */
+  const deeds: Array<string> = []
   for (const event of events) {
+    if (event.type === 'shop.bought') deeds.push(`Bought ${dropName(event.data.item)} (${event.data.item.rarity})`)
+    if (event.type === 'item.rerolled') {
+      deeds.push(`Re-rolled ${event.data.from.name} into ${dropName(event.data.item)} (${event.data.tier})`)
+    }
+    if (event.type === 'item.salvaged') {
+      deeds.push(`Salvaged ${event.data.name} · +${shardsText(event.data.shards, event.data.rarity)}`)
+    }
+    if (event.type === 'shards.crafted') {
+      const { item, spent, rarity } = event.data
+      deeds.push(`Crafted ${item.name} (${item.rarity}) · −${shardsText(spent, rarity)}`)
+    }
+    if (event.type === 'pet.fed') deeds.push(mealText(pet, event.data.name, event.data.xpBoost))
+    if (event.type === 'pet.petted') deeds.push(patText(pet, event.data.gained))
     if (event.type === 'quest.completed') missions.push(`Mission complete: ${event.data.title || 'Mission'}`)
     const boost = event.type === 'quest.completed' ? event.data.rewards?.xpBoost : undefined
     if (boost !== undefined) boosts.push(boostText(boost))
@@ -294,6 +367,7 @@ export const toastOf = (events: ReadonlyArray<ServerEvent>): string | null => {
   const more = items.length - toastItems
   const parts = [
     ...missions,
+    ...deeds,
     // Grants run to the thousandth; their sum is rounded back, so float error never shows.
     ...(xp > 0 ? [`+${xp} XP${sigilNote(sigil, multiplied === xp)}`] : []),
     ...levels,

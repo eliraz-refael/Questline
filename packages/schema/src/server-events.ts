@@ -48,7 +48,10 @@ export const LootDropped = serverEvent("loot.dropped", {
   pity: Pity,
   tier,
 })
-/** Updates the gold counter. `reason`: `drop`, `quest` for a quest's reward, or `dev` for gold a dev command set. */
+/**
+ * Updates the gold counter. `reason`: `drop`, `quest` for a quest's reward, `shop` for a purchase, `reroll` for a
+ * duplicate re-rolled, or `dev` for gold a dev command set.
+ */
 export const GoldChanged = serverEvent("gold.changed", { delta: Schema.Int, totalAfter: Count, reason: Schema.String })
 /** A pending, verified, rejected or expired claim, shown in the quest log. */
 export const ClaimUpdated = serverEvent("claim.updated", ClaimState.fields)
@@ -85,6 +88,51 @@ export const PetChanged = serverEvent("pet.changed", {
   mood: Schema.optionalKey(Pet.fields.mood),
   form: Schema.optionalKey(Pet.fields.form),
   equipped: Schema.optionalKey(Pet.fields.equipped),
+})
+/** Food the pet ate: its mood now, and the XP boost the food started, if any. */
+export const PetFed = serverEvent("pet.fed", {
+  entryId: Ulid,
+  itemId: Schema.String,
+  name: Schema.String,
+  mood: Pet.fields.mood,
+  xpBoost: Schema.optionalKey(Schema.Struct({ pct: Count, minutes: Count })),
+})
+/** A pat: the mood it lifted (0 once the hour's pats are spent) and the mood now. */
+export const PetPetted = serverEvent("pet.petted", { mood: Pet.fields.mood, gained: Schema.Finite })
+/** One of today's offers bought: the new entry, its definition and the gold it cost. */
+export const ShopBought = serverEvent("shop.bought", {
+  offerId: Schema.String,
+  entry: InventoryEntry,
+  item: ItemDef,
+  price: Count,
+})
+/**
+ * A duplicate traded in, with gold, for another item of its rarity: what went, what came and the gold. It celebrates as
+ * a drop of its `tier`.
+ */
+export const ItemRerolled = serverEvent("item.rerolled", {
+  from: Schema.Struct({ entryId: Ulid, itemId: Schema.String, name: Schema.String }),
+  entry: InventoryEntry,
+  item: ItemDef,
+  price: Count,
+  tier,
+})
+/** A duplicate broken into shards of its rarity: the shards it gave and how many of that rarity the player now has. */
+export const ItemSalvaged = serverEvent("item.salvaged", {
+  entryId: Ulid,
+  itemId: Schema.String,
+  name: Schema.String,
+  rarity: Rarity,
+  shards: Count,
+  totalAfter: Count,
+})
+/** Shards of a rarity made into a chosen item: the shards spent and left, and the new entry with its definition. */
+export const ShardsCrafted = serverEvent("shards.crafted", {
+  rarity: Rarity,
+  spent: Count,
+  totalAfter: Count,
+  entry: InventoryEntry,
+  item: ItemDef,
 })
 /** An item went into its slot, replacing what was there: a band style redraws its part of the band. */
 export const ItemEquipped = serverEvent("item.equipped", { slot: Slot, entryId: Ulid })
@@ -125,6 +173,12 @@ export const ServerEventDraft = Schema.Union([
   AchievementUnlocked,
   PetHatched,
   PetChanged,
+  PetFed,
+  PetPetted,
+  ShopBought,
+  ItemRerolled,
+  ItemSalvaged,
+  ShardsCrafted,
   ItemEquipped,
   ItemUnequipped,
   StreakChanged,

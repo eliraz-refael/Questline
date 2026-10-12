@@ -4,8 +4,8 @@ import type { BandFrame, BandLook, BandSlot, ItemDef, Rarity, RulesConfig } from
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
 
 export const starterRules: RulesConfig = {
-  version: 7,
-  schemaVersion: 6,
+  version: 8,
+  schemaVersion: 7,
   appliesFrom: null,
   // Steeper than the 1.6 before sigils: a player wearing the sigil typical of their stage reaches each level about
   // when one without sigils did, on the doc's steady day of 400 XP of work and 200 of prompts. Level 1 stays 100 XP.
@@ -57,7 +57,27 @@ export const starterRules: RulesConfig = {
     salvageShards: { common: 1, uncommon: 1, rare: 1, epic: 1, legendary: 1 },
     rerollGold: { common: 20, uncommon: 50, rare: 120, epic: 300, legendary: 800 },
   },
-  pet: { moodDecayPerDay: 10, happyAbove: 70, happyXpBonusPct: 5, evolveAt: [10, 25, 50] },
+  pet: {
+    moodDecayPerDay: 10,
+    happyAbove: 70,
+    happyXpBonusPct: 5,
+    evolveAt: [10, 25, 50],
+    // A meal lifts the mood by three days' drift and a pat by half a day's, three pats an hour at most: a meal every
+    // few days, or a few pats, keeps a pet happy.
+    care: { fed: 30, petted: 5, pettedPerHour: 3 },
+  },
+  // Four band styles a day, common and uncommon, one of each, and the food every day, three of each. A steady day
+  // earns about 250 gold (about 150 from five drops, the rest from missions), so a common style costs half a day's
+  // gold, an uncommon one a day's, and an hour's food boost a tenth. Pet wear, scenes and level-up effects join the
+  // shelf once the band draws them.
+  shop: {
+    offers: 4,
+    rarities: ["common", "uncommon"],
+    categories: ["bandStyle"],
+    stock: 1,
+    prices: { common: 120, uncommon: 250, rare: 600, epic: 1500, legendary: 4000 },
+    food: { stock: 3, prices: { common: 25, uncommon: 60, rare: 150, epic: 400, legendary: 1000 } },
+  },
   streak: { xpPerDay: 10, maxXp: 70, restDaysPerWeek: 1 },
   prompt: {
     rubricVersion: 1,
@@ -81,7 +101,7 @@ export const starterRules: RulesConfig = {
       legendary: [2.3, 2.5],
     },
   },
-  catalogVersion: 4,
+  catalogVersion: 5,
   // Three dailies run each local day; each local week offers five weeklies, of which three can run at once.
   missions: {
     daily: { count: 3, tier: "uncommon" },
@@ -344,7 +364,26 @@ export const starterCatalog: ReadonlyArray<ItemDef> = [
     rarity: "common",
     category: "food",
     slot: null,
+    lore: "Nuts, seeds and the odd chocolate chip.",
     effect: { xpBoostPct: 10, minutes: 60 },
+  }),
+  item({
+    id: "berry-tart",
+    name: "Berry Tart",
+    rarity: "uncommon",
+    category: "food",
+    slot: null,
+    lore: "Still warm, and gone in two bites.",
+    effect: { xpBoostPct: 10, minutes: 120 },
+  }),
+  item({
+    id: "starfruit",
+    name: "Starfruit",
+    rarity: "rare",
+    category: "food",
+    slot: null,
+    lore: "Fell from a branch that grows only over green builds.",
+    effect: { xpBoostPct: 10, minutes: 180 },
   }),
   item({ id: "knit-scarf", name: "Knit Scarf", rarity: "uncommon", category: "wearable", slot: "neck" }),
   item({ id: "confetti-pop", name: "Confetti Pop", rarity: "uncommon", category: "levelUpEffect", slot: "levelUpEffect" }),

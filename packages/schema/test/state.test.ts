@@ -84,7 +84,7 @@ describe("PlayerState", () => {
         gold: 35,
         inventory: [{ id: ulid, itemId: "plain-cap", acquiredAt: at, source: { kind: "drop", ref: "0" }, dye: null }],
         equipped: { head: ulid },
-        pet: { species: "fox", name: "Ember", hatchedAt: at, forms: [0], form: 0, mood: { value: 80, at } },
+        pet: { species: "fox", name: "Ember", hatchedAt: at, forms: [0], form: 0, mood: { value: 80, at }, petted: [] },
         peakLevel: 2,
       },
     }
@@ -98,7 +98,8 @@ describe("PlayerState", () => {
   })
 
   it("refuses a pet showing a form it hasn't unlocked", () => {
-    const pet = { species: "fox", name: "Ember", hatchedAt: at, forms: [0, 1], form: 3, mood: { value: 80, at } }
+    const mood = { value: 80, at }
+    const pet = { species: "fox", name: "Ember", hatchedAt: at, forms: [0, 1], form: 3, mood, petted: [] }
     expect(decodeState({ ...fresh, holdings: { ...fresh.holdings, pet } })._tag).toBe("Failure")
     expect(decodeState({ ...fresh, holdings: { ...fresh.holdings, pet: { ...pet, forms: [] } } })._tag).toBe("Failure")
   })
@@ -106,7 +107,8 @@ describe("PlayerState", () => {
   it("refuses a negative tally and a pet mood out of bounds", () => {
     const tally = { ...fresh.progress, tallies: [{ day: "2026-10-08", counts: { "commit.made": -1 } }] }
     expect(decodeState({ ...fresh, progress: tally })._tag).toBe("Failure")
-    const pet = { species: "fox", name: "Ember", hatchedAt: at, forms: [0], form: 0, mood: { value: 140, at } }
+    const mood = { value: 140, at }
+    const pet = { species: "fox", name: "Ember", hatchedAt: at, forms: [0], form: 0, mood, petted: [] }
     expect(decodeState({ ...fresh, holdings: { ...fresh.holdings, pet } })._tag).toBe("Failure")
   })
 })

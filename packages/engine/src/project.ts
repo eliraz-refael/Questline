@@ -2,6 +2,7 @@ import type { CharacterSlot, Context, PetSlot, Player, PlayerState, Slot, Snapsh
 import { isLater, localDay } from "./days.ts"
 import { glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import { questStatesOf } from "./quests.ts"
+import { craftable, shopOffers } from "./shop.ts"
 import { statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
@@ -45,7 +46,13 @@ export const project = (
   const level = levelOf(state, rules)
   const today = localDay(now, state.timezone)
   const streak = streakAsOf(progress.activeDays, today, rules.streak.restDaysPerWeek)
-  const owned = new Set(holdings.inventory.map((entry) => entry.itemId))
+  const shop = shopOffers(state, context, now)
+  // The definitions the mod draws from: what the player owns, what the shop offers and what the shards can make.
+  const shown = new Set([
+    ...holdings.inventory.map((entry) => entry.itemId),
+    ...shop.map((offer) => offer.itemId),
+    ...craftable(state, context).map((item) => item.id),
+  ])
   return {
     serverId: meta.serverId,
     streamEpoch: meta.streamEpoch,
@@ -86,7 +93,7 @@ export const project = (
             equipped: slotsOf(holdings.equipped, petSlots),
           },
     inventory: holdings.inventory,
-    items: context.catalog.filter((def) => owned.has(def.id)),
+    items: context.catalog.filter((def) => shown.has(def.id)),
     // A mission whose pack quest is gone has nothing to show; it idles until its window ends.
     quests: questStatesOf(context.questPacks, progress.quests, state.timezone, now),
     claims: progress.claims.map((claim) => ({
@@ -95,7 +102,7 @@ export const project = (
       subject: `${claim.work.repo}#${claim.work.number}`,
       status: claim.status,
     })),
-    shop: [],
+    shop,
     boosts: progress.boosts.filter((boost) => isLater(boost.endsAt, now)),
     pity: holdings.loot.pity,
     achievements: holdings.achievements,

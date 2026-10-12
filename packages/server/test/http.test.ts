@@ -30,7 +30,7 @@ describe("POST /v1/sessions", () => {
         expect(opened.snapshot.character).toMatchObject({ name: "Player", level: 0, gold: 0 })
         expect(opened.snapshot.pet).toBeNull()
         expect(opened.snapshot.serverId).toBe(`local-${opened.snapshot.player.id}`)
-        expect(opened.rules.version).toBe(7)
+        expect(opened.rules.version).toBe(8)
         expect(opened.acceptedEventTypes).toEqual(clientEventTypes)
       }),
     ),
@@ -131,7 +131,8 @@ describe("POST /v1/commands: band styles", () => {
         expect(shown).toEqual([["item.equipped", { slot: "topEdge", entryId }]])
         const opened = yield* api.openSession({ payload: { sessionId: session } })
         expect(opened.snapshot.character.equipped).toEqual({ topEdge: entryId })
-        expect(opened.snapshot.items.map((item) => [item.id, item.look?.fps])).toEqual([["starlit-edge", 5]])
+        const owned = opened.snapshot.items.filter((item) => item.id === "starlit-edge")
+        expect(owned.map((item) => [item.id, item.look?.fps])).toEqual([["starlit-edge", 5]])
         const stream = yield* api.stream({ query: { after: 0 } })
         expect(withoutQuests(stream.events).map((event) => event.type)).toEqual(["item.equipped"])
         const unequipped = yield* api.runCommand({ payload: { id: nextId(), type: "item.unequip", data: { slot: "topEdge" } } })

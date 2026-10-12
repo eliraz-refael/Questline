@@ -1,7 +1,8 @@
 import type { ClientEvent, Command, ServerEvent, Slot } from '@questline/schema'
 import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface, Register, TextProps, Timer } from 'claude-code'
-import type { BandSlot, BandView, Celebration, Gain, Link, Motion, PaneTab, Stage } from '../types'
+import type { BandLook, BandSlot, BandView, Celebration, Gain, Link, Loop, Motion, PaneTab, Stage } from '../types'
+import { happyLine } from './care'
 import { goldRow, labelRun, edgeRow, levelRow } from './band'
 import { celebrationOf, chimeOf, chimeWav, gapMs, idleMs, joinQueue, motionOf, queueOf, scriptOf } from './celebrate'
 import type { Row } from './cells'
@@ -46,11 +47,13 @@ import {
   streamPathOf,
   urlOf,
 } from './server'
-import { ownedLooks, ratesOf, wornLooks } from './looks'
+import { loops as isLooping, ownedLooks, ratesOf, wornLooks } from './looks'
 import type { MissionEntry } from './missions'
 import { knowsTogether, missionChip, missionsLayout, missionsViewOf, roomBeside } from './missions'
 import type { Choice } from './pane'
 import { brand, headerGap, headerOf, lookSections, otherItems, paneId, tabBarOf, tabOf } from './pane'
+import type { ShopAction, ShopEntry } from './shop'
+import { careViewOf, eggCardLayout, petCardLayout, shopLayout, shopViewOf } from './shop'
 import type { SigilChoice } from './sigils'
 import { multiplierText, sigilChoices, wornSigil } from './sigils'
 import { statsLayout, titleRow } from './stats'
@@ -84,6 +87,8 @@ const tab = atom({ plugin: 'questline', key: 'tab' }, 'inventory')
 const missions = atom({ plugin: 'questline', key: 'missions' }, null)
 const abandoning = atom({ plugin: 'questline', key: 'abandoning' }, null)
 const session = atom({ plugin: 'questline', key: 'session' }, null)
+const shop = atom({ plugin: 'questline', key: 'shop' }, null)
+const care = atom({ plugin: 'questline', key: 'care' }, null)
 
 /** This copy of the mod: a reload makes a new one, and a frame the old one left behind is never drawn. */
 const load = Math.random()
@@ -92,12 +97,13 @@ const load = Math.random()
 const inset = 2
 const ownRows = 4
 
-const toneColor: Record<Gain['tone'], 'text' | 'suggestion' | 'claude' | 'warning' | 'success'> = {
+const toneColor: Record<Gain['tone'], 'text' | 'suggestion' | 'claude' | 'warning' | 'success' | 'error'> = {
   xp: 'text',
   level: 'claude',
   loot: 'suggestion',
   gold: 'warning',
   quest: 'success',
+  pet: 'error',
   quiet: 'text',
 }
 
@@ -241,15 +247,18 @@ const flush = async ($: EngineInterface): Promise<void> => {
  * (its biggest moment, for a minute) and one toast for the lot.
  */
 const showBatch = async ($: EngineInterface, events: ReadonlyArray<ServerEvent>) => {
-  const line = batchGainOf(events)
+  const shown = await read($, view)
+  // A meal or a pat names the pet, as the band does.
+  const petName = shown?.pet?.name ?? 'Your pet'
+  const line = batchGainOf(events, petName)
   if (line !== null) {
     const until = (await $.clock.now()) + fadeMs
     await update($, gain, () => ({ ...line, until }))
     fadeAt($, fadeMs, until)
   }
-  const toast = toasts ? toastOf(events) : null
+  const toast = toasts ? toastOf(events, petName) : null
   if (toast !== null) $.ui.toast(toast)
-  const glyph = (await read($, view))?.glyph ?? ''
+  const glyph = shown?.glyph ?? ''
   const celebrations = motion === 'off' ? [] : events.flatMap((event) => celebrationOf(event, glyph) ?? [])
   if (celebrations.length === 0) return
   lineup = celebrations.reduce(joinQueue, lineup)
@@ -373,7 +382,9 @@ const resumeCelebrations = async ($: EngineInterface) => {
 /** Starts, re-rates or stops the looks' loops, as what is drawn and the moment ask. */
 const syncLoop = async ($: EngineInterface) => {
   const owned = await read($, wardrobe)
-  const looks = [...Object.values(wornLooks(owned)), ...(isPaneOpen ? ownedLooks(owned) : [])]
+  // The pane's previews loop while it is open: the owned looks, and the ones on the shop's shelf.
+  const offered = isPaneOpen ? offerLooks(await read($, shop)) : []
+  const looks = [...Object.values(wornLooks(owned)), ...(isPaneOpen ? ownedLooks(owned) : []), ...offered]
   const rates = motion === 'full' && !isTurnRunning && playing === null ? ratesOf(looks) : []
   if (rates.length === loopTimers.size && rates.every((rate) => loopTimers.has(rate))) return
   // The clocks are swapped before any await, so two syncs that overlap never leave two clocks at one rate; the atom
@@ -389,6 +400,10 @@ const syncLoop = async ($: EngineInterface) => {
   }
   await update($, loops, loopsNow)
 }
+
+/** The looks of the band styles on the shop's shelf, which the Shop tab previews. */
+const offerLooks = (shown: { offers: ReadonlyArray<{ look: BandLook | null }> } | null): Array<BandLook> =>
+  (shown?.offers ?? []).flatMap((offer) => (offer.look === null ? [] : [offer.look]))
 
 /** The loops' frames as the clocks in force have counted them; null when none runs, which draws still looks. */
 const loopsNow = () =>
@@ -419,10 +434,15 @@ const refresh = async ($: EngineInterface, fromScratch: boolean) => {
   const counted = statsViewOf(opened.snapshot, opened.rules ?? {}, owned)
   // An older server's answer carries no rules: the missions then read with no number of picks.
   const quests = missionsViewOf(opened.snapshot, opened.rules ?? {})
+  // And no shop or pet care: the Shop tab and the pet's card say to restart it.
+  const sold = shopViewOf(opened.snapshot, opened.rules ?? {})
+  const cared = careViewOf(opened.snapshot, opened.rules ?? {}, await $.clock.now())
   await update($, view, () => next)
   await update($, wardrobe, () => owned)
   await update($, stats, () => counted)
   await update($, missions, () => quests)
+  await update($, shop, () => sold)
+  await update($, care, () => cared)
   // Again here, as a /clear empties the session's state after its end hook has written the new id.
   await update($, session, () => sessionId)
   await update($, link, () => 'online')
@@ -545,43 +565,81 @@ const commandFailed = async ($: EngineInterface, error: unknown) => {
  * Puts an owned band style or sigil in its slot, or with no entry empties it (the band's own look back); the band
  * redraws at once.
  */
-const wear = async ($: EngineInterface, slot: Slot, entryId: string | null) => {
-  try {
-    const { id } = await stamp($)
-    const command: Command =
-      entryId === null
-        ? { id, type: 'item.unequip', data: { slot } }
-        : { id, type: 'item.equip', data: { entryId, slot } }
-    const answer = await runCommand($, command)
-    if (answer.status === 'refused') {
-      $.ui.toast(answer.message)
-      return
-    }
-    await refresh($, false)
-  } catch (error) {
-    await commandFailed($, error)
-  }
-}
+const wear = ($: EngineInterface, slot: Slot, entryId: string | null) =>
+  act($, (id) =>
+    entryId === null
+      ? { id, type: 'item.unequip', data: { slot } }
+      : { id, type: 'item.equip', data: { entryId, slot } },
+  )
 
 /** Picks an offered weekly, or gives up a running one; a refusal says why, and the pane redraws from the server. */
 const takeMission = async ($: EngineInterface, type: 'quest.accept' | 'quest.abandon', questId: string) => {
   await update($, abandoning, () => null)
-  try {
-    const { id } = await stamp($)
-    const answer = await runCommand($, { id, type, data: { questId } })
-    if (answer.status === 'refused') {
-      $.ui.toast(answer.message)
-      return
-    }
-    await refresh($, false)
-  } catch (error) {
-    await commandFailed($, error)
-  }
+  await act($, (id) => ({ id, type, data: { questId } }))
 }
 
 /** The first press of a running weekly's Abandon asks again, as its progress would go; null takes the ask back. */
 const askAbandon = async ($: EngineInterface, questId: string | null) => {
   await update($, abandoning, () => questId)
+}
+
+/**
+ * A choice in the pane or the band: a look worn, a mission taken, a purchase, a meal, a pat or a trade. A refusal says
+ * why; otherwise the pane redraws from the server, and what it did arrives on the stream, worded on the band and in a
+ * toast.
+ */
+const act = async ($: EngineInterface, made: (id: string) => Command) => {
+  try {
+    const { id } = await stamp($)
+    const answer = await runCommand($, made(id))
+    if (answer.status === 'refused') {
+      $.ui.toast(answer.message)
+      return
+    }
+    await refresh($, false)
+  } catch (error) {
+    await commandFailed($, error)
+  }
+}
+
+const pat = (id: string): Command => ({ id, type: 'pet.pet', data: {} })
+
+/** The command a Shop tab button sends. */
+const shopCommand = (action: Exclude<ShopAction, { kind: 'note' }>, id: string): Command => {
+  switch (action.kind) {
+    case 'buy':
+      return { id, type: 'shop.buy', data: { offerId: action.offerId } }
+    case 'reroll':
+      return { id, type: 'item.reroll', data: { entryId: action.entryId } }
+    case 'salvage':
+      return { id, type: 'item.salvage', data: { entryId: action.entryId } }
+    case 'craft':
+      return { id, type: 'shards.craft', data: { rarity: action.rarity, itemId: action.itemId } }
+  }
+}
+
+/** `/pet`: a pat, from the prompt. What it lifted arrives on the stream; the answer says it was given, or why not. */
+const patFromPrompt = async ($: EngineInterface): Promise<string> => {
+  const current = await read($, view)
+  if (current === null) return 'Connecting to the Questline server…'
+  if (current.pet === null) {
+    return canHatch(current) ? 'Your egg is ready: hatch it from the band first.' : 'Your egg hatches at level 1.'
+  }
+  if ((await read($, care))?.isKnown !== true) {
+    return `The server predates pet care: restart it with ${startHint(server)}`
+  }
+  try {
+    const { id } = await stamp($)
+    const answer = await runCommand($, pat(id))
+    if (answer.status === 'refused') return answer.message
+    // The pat has landed: a snapshot that can't be fetched now changes nothing about it.
+    await refresh($, false).catch(() => undefined)
+    return `You pet ${current.pet.name}.`
+  } catch (error) {
+    if (!(error instanceof ServerDown)) return 'The server answered something unexpected.'
+    await update($, link, () => 'offline')
+    return 'The Questline server is not answering.'
+  }
 }
 
 /**
@@ -600,6 +658,10 @@ const runDev = async ($: EngineInterface, ask: DevAsk): Promise<{ text: string; 
   // Only a server that names each mission's goal knows parallel missions and stand-in sessions.
   if (ask.kind === 'session' && !knowsTogether(shown))
     return { text: `The dev server predates parallel missions: restart it with ${startHint('dev')}`, isDone: false }
+  if ((ask.kind === 'restock' || ask.kind === 'shards') && (await read($, shop))?.isKnown !== true)
+    return { text: `The dev server predates the shop: restart it with ${startHint('dev')}`, isDone: false }
+  if (ask.kind === 'mood' && (await read($, care))?.isKnown !== true)
+    return { text: `The dev server predates pet care: restart it with ${startHint('dev')}`, isDone: false }
   const { id, occurredAt } = await stamp($)
   const command = devCommandOf(ask, id)
   if (command === null) {
@@ -646,11 +708,19 @@ const syncPaneClock = ($: EngineInterface) => {
     paneClock = null
     return
   }
-  // Only the Missions tab tells time: any other leaves the band and the pane undrawn.
+  // Only a tab that tells time redraws: the Missions tab, the Shop's restock, and the pet's meal running out on the
+  // Inventory tab. Any other leaves the band and the pane undrawn.
   paneClock ??= $.clock.every(60_000, () => {
-    void read($, tab).then((shown) => {
-      if (tabOf(shown) === 'missions') $.ui.invalidate('ui.render')
-    })
+    void (async () => {
+      const [shown, cared, sold, now] = await Promise.all([read($, tab), read($, care), read($, shop), $.clock.now()])
+      const at = tabOf(shown)
+      // Past the restock the shelf on show has ended: the next snapshot brings the new day's, which no stream event
+      // may bring while the player browses.
+      if (at === 'shop' && (sold?.offers ?? []).some((offer) => offer.endsAt !== null && offer.endsAt <= now))
+        await refresh($, false).catch(() => undefined)
+      if (at === 'missions' || at === 'shop' || (at === 'inventory' && (cared?.boost ?? null) !== null))
+        $.ui.invalidate('ui.render')
+    })()
   })
 }
 
@@ -746,11 +816,16 @@ export const register: Register = (on, options) => {
       .register({
         name: 'questline',
         description:
-          'Open the Questline pane: your inventory, band styles, stats and missions (`dev …` on the dev server)',
+          'Open the Questline pane: your inventory, the shop, stats and missions (`dev …` on the dev server)',
       })
+      .catch(() => undefined)
+    await $.command
+      .register({ name: 'pet', description: 'Pet your Questline companion: a pat lifts its mood a little' })
       .catch(() => undefined)
     return result
   })
+
+  on('command.run', { command: 'pet' }, async ($) => ({ text: await patFromPrompt($) }))
 
   on('command.run', { command: 'questline' }, async ($, e) => {
     const ask = devAskOf(e.args)
@@ -936,10 +1011,13 @@ export const register: Register = (on, options) => {
     const bar = [...barRow(current, columns, shown, barLook, moving), labelRun(current, barLook)]
     const level = levelRow(current, looks.levelDisplay ?? null, moving)
     const gold = goldRow(current, looks.goldDisplay ?? null, moving)
+    // The hearts follow the rules' happy line; a pet the server cares for takes a pat from a click.
+    const cared = await read($, care)
+    const petHearts = pet === null ? '' : hearts(pet.mood, happyLine(cared))
     // The mission on row 2 takes what the row's other pieces leave, so the row never wraps for it.
     const petCells =
       pet !== null
-        ? cellsOf(`${sprite(pet)} ${pet.name} ${hearts(pet.mood)}`)
+        ? cellsOf(`${sprite(pet)} ${pet.name} ${petHearts}`)
         : canHatch(current)
           ? cellsOf(hatchLabel) + 4
           : cellsOf(eggHint)
@@ -956,9 +1034,13 @@ export const register: Register = (on, options) => {
           <Box flexWrap="wrap" columnGap={2}>
             {draw(Text, level, 'level')}
             {draw(Text, gold, 'gold')}
-            {pet !== null ? (
+            {pet !== null && cared?.isKnown === true ? (
+              <Button key="band:pet" plain onPress={() => void act($, pat)}>
+                {sprite(pet)} {pet.name} <Text color="error">{petHearts}</Text>
+              </Button>
+            ) : pet !== null ? (
               <Text>
-                {sprite(pet)} {pet.name} <Text color="error">{hearts(pet.mood)}</Text>
+                {sprite(pet)} {pet.name} <Text color="error">{petHearts}</Text>
               </Text>
             ) : canHatch(current) ? (
               <Button key="hatch" label={hatchLabel} variant="primary" onPress={() => void hatch($)} />
@@ -1163,6 +1245,115 @@ export const register: Register = (on, options) => {
       )
     }
 
+    if (shownTab === 'shop') {
+      const sold = await read($, shop)
+      if (sold === null) {
+        return (
+          <Box flexDirection="column" paddingX={1}>
+            {header}
+            <Text dimColor>Opening the shop…</Text>
+          </Box>
+        )
+      }
+      const layout = shopLayout(sold, await read($, care), current.pet?.name ?? null, columns, await $.clock.now())
+      // A row's button, or the dim note that stands in its place: sold out, or the gold still to find.
+      const actionOf = (entry: ShopEntry, action: ShopAction, i: number) => {
+        if (action.kind === 'note') return draw(Text, action.row, `shop:${entry.key}:note:${i}`)
+        const key =
+          action.kind === 'buy'
+            ? `buy:${action.offerId}`
+            : action.kind === 'craft'
+              ? `craft:${action.rarity}:${action.itemId}`
+              : `${action.kind}:${entry.key}`
+        return (
+          <Button
+            key={key}
+            label={action.label}
+            {...(action.kind === 'buy' || action.kind === 'craft' ? { variant: 'primary' } : {})}
+            {...(action.kind === 'salvage' ? { dimColor: true } : {})}
+            onPress={() => void act($, (id) => shopCommand(action, id))}
+          />
+        )
+      }
+      // A row with a preview or lore stands apart from the next; the section's own gap follows its last.
+      const entryRow = (section: string, entry: ShopEntry, isLast: boolean) => (
+        <Box
+          key={`shop:${section}:${entry.key}`}
+          flexDirection="column"
+          marginLeft={2}
+          {...(!isLast && (entry.preview !== null || entry.lore !== null) ? { marginBottom: 1 } : {})}
+        >
+          <Box flexWrap="wrap" columnGap={2}>
+            {draw(Text, entry.head, `shop:${entry.key}:head`)}
+            {entry.actions.map((action, i) => actionOf(entry, action, i))}
+          </Box>
+          <Box marginLeft={2} flexDirection="column">
+            {entry.details.map((row, i) => draw(Text, row, `shop:${entry.key}:detail:${i}`))}
+            {entry.preview === null
+              ? null
+              : draw(
+                  Text,
+                  previewRow(
+                    current,
+                    entry.preview.slot,
+                    entry.preview.look,
+                    isLooping(entry.preview.look) ? moving : null,
+                    preview,
+                  ),
+                  `shop:${entry.key}:preview`,
+                )}
+            {entry.lore === null ? null : (
+              <Text dimColor italic>
+                {entry.lore}
+              </Text>
+            )}
+          </Box>
+        </Box>
+      )
+      return (
+        <Box flexDirection="column" paddingX={1}>
+          {header}
+          {draw(Text, layout.intro, 'shop:intro')}
+          {layout.note === null ? null : draw(Text, layout.note, 'shop:note')}
+          <Text> </Text>
+          {layout.sections.map((section) => (
+            <Box key={`shop:${section.key}`} flexDirection="column" width={layout.width} marginBottom={1}>
+              {draw(Text, section.title, `shop:${section.key}:title`)}
+              {section.rows.map((row, i) => draw(Text, row, `shop:${section.key}:row:${i}`))}
+              {section.empty === null ? null : (
+                <Box marginLeft={2}>{draw(Text, section.empty, `shop:${section.key}:empty`)}</Box>
+              )}
+              {section.entries.map((entry, i) => entryRow(section.key, entry, i === section.entries.length - 1))}
+            </Box>
+          ))}
+          {/* A server older than the shop would refuse these: no buttons for them. */}
+          {current.isDev && sold.isKnown ? (
+            <Box key="dev" flexDirection="column">
+              <Text>
+                <Text bold color="warning">
+                  Dev
+                </Text>
+                <Text dimColor> the sandbox save: restock the shelf, and gold and shards to spend</Text>
+              </Text>
+              <Box flexWrap="wrap" columnGap={2} marginLeft={2}>
+                <Button key="dev:restock" label="Restock" onPress={() => void pressDev($, { kind: 'restock' })} />
+                <Button
+                  key="dev:shop-gold"
+                  label="Gold 10000"
+                  onPress={() => void pressDev($, { kind: 'gold', gold: 10_000 })}
+                />
+                <Button
+                  key="dev:shards"
+                  label="10 shards each"
+                  onPress={() => void pressDev($, { kind: 'shards', count: 10 })}
+                />
+              </Box>
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+
     if (shownTab === 'stats') {
       const counted = await read($, stats)
       if (counted === null) {
@@ -1200,19 +1391,8 @@ export const register: Register = (on, options) => {
     const sections = lookSections(owned)
     const styles = sections.reduce((count, section) => count + section.choices.length - 1, 0)
     const others = otherItems(owned)
-    const previewOf = (slot: BandSlot, choice: Choice): Row => {
-      const motion = choice.isLooping ? moving : null
-      switch (slot) {
-        case 'xpBar':
-          return [...barRow(current, preview, null, choice.look, motion), labelRun(current, choice.look)]
-        case 'levelDisplay':
-          return levelRow(current, choice.look, motion)
-        case 'topEdge':
-          return edgeRow(preview, choice.look, motion)
-        case 'goldDisplay':
-          return goldRow(current, choice.look, motion)
-      }
-    }
+    const previewOf = (slot: BandSlot, choice: Choice): Row =>
+      previewRow(current, slot, choice.look, choice.isLooping ? moving : null, preview)
     const choiceRow = (slot: BandSlot, choice: Choice) => {
       const color = choice.rarity === null ? undefined : rarityColors[choice.rarity]
       const notes = [
@@ -1328,9 +1508,73 @@ export const register: Register = (on, options) => {
         </Box>
       )
 
+    // The pet's card, first: how it feels, a pat, and the food it can eat. Before the hatch, the egg.
+    const cared = await read($, care)
+    const pet = current.pet
+    let petSection
+    if (pet === null) {
+      const egg = eggCardLayout(canHatch(current), columns)
+      petSection = (
+        <Box key="pet" flexDirection="column" marginBottom={1}>
+          {draw(Text, egg.title, 'pet:title')}
+          <Box flexWrap="wrap" columnGap={2}>
+            {draw(Text, egg.row, 'pet:egg')}
+            {canHatch(current) ? (
+              <Button key="pet:hatch" label="Hatch" variant="primary" onPress={() => void hatch($)} />
+            ) : null}
+          </Box>
+        </Box>
+      )
+    } else {
+      const shownPet = { face: sprite(pet), name: pet.name, mood: pet.mood }
+      const card = petCardLayout(cared, shownPet, columns, await $.clock.now())
+      petSection = (
+        <Box key="pet" flexDirection="column" marginBottom={1}>
+          {draw(Text, card.title, 'pet:title')}
+          {card.rows.map((row, i) => draw(Text, row, `pet:row:${i}`))}
+          {card.note === null ? null : <Box marginLeft={2}>{draw(Text, card.note, 'pet:note')}</Box>}
+          {card.canPet ? (
+            <Box flexWrap="wrap" columnGap={2} marginLeft={2}>
+              <Button key="pet:pat" label="Pet" variant="primary" onPress={() => void act($, pat)} />
+              {card.petHint === null ? null : draw(Text, card.petHint, 'pet:hint')}
+            </Box>
+          ) : null}
+          {card.boost === null ? null : draw(Text, card.boost, 'pet:boost')}
+          {card.canPet ? (
+            <Box flexDirection="column" marginLeft={2}>
+              {card.food === null ? null : draw(Text, card.food, 'pet:food')}
+              {card.empty === null ? null : <Box marginLeft={2}>{draw(Text, card.empty, 'pet:empty')}</Box>}
+              {card.meals.map((meal) => (
+                <Box key={`meal:${meal.key}`} flexDirection="column" marginLeft={2}>
+                  <Box flexWrap="wrap" columnGap={2}>
+                    {draw(Text, meal.head, `meal:${meal.key}:head`)}
+                    <Button
+                      key={`feed:${meal.key}`}
+                      label="Feed"
+                      onPress={() =>
+                        void act($, (id) => ({ id, type: 'pet.feed', data: { entryId: meal.entryId } }))
+                      }
+                    />
+                  </Box>
+                  {meal.lore === null ? null : (
+                    <Box marginLeft={2}>
+                      <Text dimColor italic>
+                        {meal.lore}
+                      </Text>
+                    </Box>
+                  )}
+                </Box>
+              ))}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+
     return (
       <Box flexDirection="column" paddingX={1}>
         {header}
+        {petSection}
         {sigilSection}
         <Text>
           <Text bold>Band styles</Text>
@@ -1394,6 +1638,20 @@ export const register: Register = (on, options) => {
                 onPress={() => void pressDev($, { kind: 'gold', gold: 10_000 })}
               />
               <Button key="dev:gold-0" label="Gold 0" onPress={() => void pressDev($, { kind: 'gold', gold: 0 })} />
+              {current.pet !== null && cared?.isKnown === true ? (
+                <Button
+                  key="dev:mood-20"
+                  label="Mood 20"
+                  onPress={() => void pressDev($, { kind: 'mood', mood: 20 })}
+                />
+              ) : null}
+              {current.pet !== null && cared?.isKnown === true ? (
+                <Button
+                  key="dev:mood-100"
+                  label="Mood 100"
+                  onPress={() => void pressDev($, { kind: 'mood', mood: 100 })}
+                />
+              ) : null}
             </Box>
             <Box flexWrap="wrap" columnGap={2} marginLeft={2}>
               <Text dimColor>Celebrate</Text>
@@ -1411,6 +1669,26 @@ export const register: Register = (on, options) => {
       </Box>
     )
   })
+}
+
+/** A band style's live preview, drawn by the band's own functions with the player's real XP, level and gold. */
+const previewRow = (
+  current: BandView,
+  slot: BandSlot,
+  look: BandLook | null,
+  motion: Loop | null,
+  width: number,
+): Row => {
+  switch (slot) {
+    case 'xpBar':
+      return [...barRow(current, width, null, look, motion), labelRun(current, look)]
+    case 'levelDisplay':
+      return levelRow(current, look, motion)
+    case 'topEdge':
+      return edgeRow(width, look, motion)
+    case 'goldDisplay':
+      return goldRow(current, look, motion)
+  }
 }
 
 /** Shows a tab of the pane. */

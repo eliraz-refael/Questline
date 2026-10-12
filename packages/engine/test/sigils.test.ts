@@ -18,7 +18,9 @@ import type {
 } from "@questline/schema"
 import {
   catalogIssue,
+  ItemCategory,
   ItemDef as ItemDefSchema,
+  Rarity as RaritySchema,
   RulesConfig as RulesSchema,
   Step as StepSchema,
 } from "@questline/schema"
@@ -35,6 +37,7 @@ import {
   starterQuestPack,
   starterRules,
   step,
+  waresOf,
   xpForLevel,
 } from "../src/index.ts"
 
@@ -86,6 +89,7 @@ const command = (cmd: Command): Input => ({ kind: "command", command: cmd })
 const equip = (entryId: string): Input =>
   command({ id: nextId(), type: "item.equip", data: { entryId, slot: "sigil" } })
 const unequip = (): Input => command({ id: nextId(), type: "item.unequip", data: { slot: "sigil" } })
+const rerollOf = (entryId: string): Input => command({ id: nextId(), type: "item.reroll", data: { entryId } })
 
 const contextAt = (
   logSeq: number,
@@ -165,6 +169,7 @@ const happyPet: OwnedPet = {
   forms: [0],
   form: 0,
   mood: { value: 100, at: start },
+  petted: [],
 }
 
 const boosted = (state: PlayerState, ...boosts: ReadonlyArray<Boost>): PlayerState => ({
@@ -397,18 +402,41 @@ describe("sigils: drops only", () => {
     expect(rewarded({ rarity: "common", item: "wizard-hat" }).map((item) => item?.id)).toEqual(["wizard-hat"])
   })
 
-  it("is never made by a shard craft, a re-roll or the shop, which are not built yet and refuse all", () => {
+  it("is never made by a shard craft, a re-roll or the shop", () => {
+    // Shards craft anything of their rarity but a sigil.
     const craft = (itemId: string) => command({ id: nextId(), type: "shards.craft", data: { rarity: "epic", itemId } })
-    const reroll = command({ id: nextId(), type: "item.reroll", data: { entryId: entryIds[0] ?? "" } })
-    const buy = command({ id: nextId(), type: "shop.buy", data: { offerId: "arcane-sigil" } })
-    const { steps, state } = play([craft("arcane-sigil"), craft("pixel-dragon"), reroll, buy], wearing("arcane-sigil"))
-    expect(steps.map((s) => [s.refusal?.code, s.refusal?.message])).toEqual([
-      ["not_allowed", "Not available in this version yet"],
-      ["not_allowed", "Not available in this version yet"],
-      ["not_allowed", "Not available in this version yet"],
-      ["not_allowed", "Not available in this version yet"],
+    const crafting = { ...fresh(), holdings: { ...fresh().holdings, shards: { ...fresh().holdings.shards, epic: 10 } } }
+    const crafted = play([craft("arcane-sigil"), craft("pixel-dragon")], crafting)
+    expect(crafted.steps.map((s) => s.refusal)).toEqual([
+      { code: "not_allowed", message: "Shards never make a sigil" },
+      null,
     ])
-    expect(state).toEqual(wearing("arcane-sigil"))
+    expect(crafted.state.holdings.inventory.map((entry) => entry.itemId)).toEqual(["pixel-dragon"])
+    // A re-roll of a duplicate draws from its rarity without the sigils, whatever the roll.
+    const dupes = owning("pixel-dragon", "pixel-dragon")
+    const made = Array.from({ length: 200 }, (_, n) => {
+      const holdings = { ...dupes.holdings, gold: 1000, loot: { ...dupes.holdings.loot, nextRoll: n } }
+      const rerolled = step({ ...dupes, holdings }, rerollOf(entryIds[1] ?? ""), contextAt(1, start))
+      return rerolled.state.holdings.inventory.at(-1)?.itemId ?? ""
+    })
+    expect(made.some((itemId) => itemId === "")).toBe(false)
+    expect(made.filter((itemId) => starterCatalog.find((item) => item.id === itemId)?.sigil !== undefined)).toEqual([])
+    expect(new Set(made)).toEqual(new Set(["arcane-current", "starlit-edge"]))
+    // The shop sells none on any day of a year, even under rules that would sell everything.
+    const everything: RulesConfig = {
+      ...starterRules,
+      shop: {
+        ...starterRules.shop,
+        offers: 100,
+        rarities: [...RaritySchema.literals],
+        categories: [...ItemCategory.literals],
+      },
+    }
+    for (let day = 0; day < 365; day++) {
+      const at = new Date(Date.parse(start) + day * 86_400_000).toISOString().slice(0, 10)
+      const wares = waresOf(at, { rules: everything, catalog: starterCatalog })
+      expect(wares.filter((ware) => isSigil(ware.item))).toEqual([])
+    }
   })
 
   it("can be granted by the dev command, marked dev", () => {

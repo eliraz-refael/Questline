@@ -353,6 +353,19 @@ const sigils = Effect.gen(function* () {
   `
 })
 
+// The shop and pet care (engine 11, rules 8): a pet now keeps the pats of the last hour, as only so many an hour lift
+// its mood. A pet saved before it has had none, since every pet.pet the log holds was refused, so a replay of the log
+// keeps the pet just as this leaves it. The rows then read as engine 11 and rules 8, which their state now is.
+const shopPetCare = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    UPDATE player_state
+    SET state = jsonb_set(state, '{holdings,pet,petted}', '[]'::jsonb)
+    WHERE jsonb_typeof(state -> 'holdings' -> 'pet') = 'object' AND state -> 'holdings' -> 'pet' -> 'petted' IS NULL
+  `
+  yield* sql`UPDATE player_state SET engine_version = 11, rules_version = 8 WHERE engine_version < 11`
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
@@ -364,6 +377,7 @@ export const migrations = {
   "0007_missions": missions,
   "0008_presence": presence,
   "0009_sigils": sigils,
+  "0010_shop_pet_care": shopPetCare,
 }
 
 /** Runs the migrations not applied yet, in order. */

@@ -1,6 +1,6 @@
 import type { PluginOptions } from 'claude-code'
 import type { QuestRewards, ServerEvent } from '@questline/schema'
-import type { Celebration, Motion, Tier } from '../types'
+import type { Celebration, FoodView, Motion, Tier } from '../types'
 
 // What the band celebrates and when: the server's events as celebrations, the queue they wait in, and how long each
 // plays. The server names every tier; nothing here decides how big a moment is, only how a tier is staged.
@@ -17,6 +17,18 @@ const lengthText = (minutes: number): string => (minutes % 60 === 0 ? `${minutes
 export const boostText = (boost: { readonly pct: number; readonly minutes: number }): string =>
   `+${boost.pct}% XP for ${lengthText(boost.minutes)}`
 
+/**
+ * What a definition says food does, read with care: its boost, null for food that only feeds, and undefined for an
+ * item that isn't food.
+ */
+export const foodOf = (def: { readonly category: string; readonly effect?: unknown }): FoodView | undefined => {
+  if (def.category !== 'food') return undefined
+  const effect = def.effect
+  if (typeof effect !== 'object' || effect === null || !('xpBoostPct' in effect) || !('minutes' in effect)) return null
+  const { xpBoostPct: pct, minutes } = effect
+  return typeof pct === 'number' && typeof minutes === 'number' && pct > 0 && minutes > 0 ? { pct, minutes } : null
+}
+
 /** A tier from the wire; one this mod doesn't know yet plays as the smallest. */
 export const tierOf = (value: string): Tier => tiers.find((tier) => tier === value) ?? 'common'
 
@@ -27,6 +39,10 @@ export const celebrationOf = (event: ServerEvent, glyph: string): Celebration | 
       return event.data.amount > 0 ? { kind: 'xp', amount: event.data.amount } : null
     case 'loot.dropped':
       return { kind: 'loot', tier: tierOf(event.data.tier), name: event.data.item.name, gold: event.data.gold, more: 0 }
+    // A re-roll is a roll: what it made is revealed as a drop of its rarity. A purchase, a craft or a meal was chosen,
+    // so it has nothing to reveal and plays nothing.
+    case 'item.rerolled':
+      return { kind: 'loot', tier: tierOf(event.data.tier), name: event.data.item.name, gold: 0, more: 0 }
     case 'level.up': {
       const { from, to, tier, title, evolution } = event.data
       const named = typeof event.data.glyph === 'string' && event.data.glyph !== '' ? event.data.glyph : glyph
