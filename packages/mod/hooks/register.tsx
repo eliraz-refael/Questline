@@ -871,6 +871,7 @@ const nextStep = async ($: EngineInterface, typed?: string) => {
     await leaveWelcome($)
     return
   }
+  if (await moved()) return
   await update($, wizard, () => ({ ...draft, step: stepAfter(draft.step), error: null }))
 }
 
