@@ -215,7 +215,7 @@ export const xpText = (maxXp: number | null): string =>
   maxXp === null
     ? 'The better the grade, the more XP the prompt earns.'
     : // As the engine rounds a grant: to the thousandth.
-      `A 10 earns ${maxXp} XP and a 7 earns ${Math.round(maxXp * 700) / 1000}, before your sigil and boosts.`
+      `A 10 earns ${maxXp} XP and a 7 earns ${Math.floor((maxXp * 7) / 10)}, before your sigil and boosts.`
 
 /** The loot a grade rolls for, in a sentence, from the rules' chance at a 10 and the great grade's lift. */
 export const lootText = (grading: Pick<GradingView, 'lootAtTen' | 'greatAt' | 'greatFactor'>): string => {
@@ -325,7 +325,7 @@ export type WelcomeInput = {
 
 /** How to work the pane; `eggs` is how many egg cards carry a hotkey, on the pet step. */
 const keysHint = (isFocused: boolean, step: WelcomeStep, eggs: number): Row => {
-  const picks = step !== 'pet' || eggs === 0 ? '' : eggs === 1 ? ' · 1 picks the egg' : ` · 1-${eggs} picks an egg`
+  const picks = step === 'pet' ? ' · 1-4 picks an egg' : ''
   return isFocused
     ? [dim(`tab moves · enter presses${picks} · esc hands the keys back`)]
     : [dim('ctrl+x tab, or a click, hands this pane the keys')]
