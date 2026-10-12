@@ -1,5 +1,5 @@
-import { ulids } from "@questline/engine"
-import type { SystemEvent } from "@questline/schema"
+import { ulids } from "@pathofdev/engine"
+import type { SystemEvent } from "@pathofdev/schema"
 import { Context, Duration, Effect, Layer, Option, Schema, Semaphore } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
@@ -196,7 +196,7 @@ export class Presence extends Context.Service<
     /** Closes every session unheard for `lapseAfter` as `lapsed`, at its last-heard time; answers how many. */
     readonly sweep: Effect.Effect<number, Failure>
   }
->()("questline/Presence") {
+>()("pathofdev/Presence") {
   static readonly layer = Layer.effect(Presence, make)
 
   /**

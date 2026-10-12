@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest"
-import { clientEventTypes } from "@questline/schema"
+import { clientEventTypes } from "@pathofdev/schema"
 import { Effect, Fiber } from "effect"
 import { SqlClient } from "effect/sql"
 import { TestClock } from "effect/testing"

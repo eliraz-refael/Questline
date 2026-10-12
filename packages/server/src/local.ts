@@ -1,5 +1,5 @@
 import { NodeHttpServer } from "@effect/platform-node"
-import { step } from "@questline/engine"
+import { step } from "@pathofdev/engine"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Data, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/http"
@@ -12,6 +12,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
   writeSync,
@@ -30,9 +31,10 @@ import { Presence } from "./presence.ts"
 import type { Stepper } from "./writer.ts"
 import { PlayerWriter } from "./writer.ts"
 
-// The local server: one player, PGlite in ~/.questline/data, HTTP on a Unix socket in a 0700 directory, so only the
+// The local server: one player, PGlite in ~/.pathofdev/data, HTTP on a Unix socket in a 0700 directory, so only the
 // player's own user can connect. Exactly one runs per user: two processes on one PGlite folder corrupt it. Dev mode
-// runs a second one, a sandbox in ~/.questline-dev that takes the dev commands.
+// runs a second one, a sandbox in ~/.pathofdev-dev that takes the dev commands. The game was Questline before it was
+// Path of Dev: a save still in ~/.questline (or ~/.questline-dev) moves to its new home on the first start.
 
 export interface LocalPaths {
   readonly home: string
@@ -43,18 +45,42 @@ export interface LocalPaths {
   readonly profile: string
   /** Dev mode: a sandbox save that takes the dev commands. */
   readonly dev: boolean
+  /**
+   * The home from before Path of Dev, `~/.questline` or `~/.questline-dev`, whose save moves to `home` on start; null
+   * when a home was named.
+   */
+  readonly legacy: string | null
 }
 
-/** `QUESTLINE_DEV=1` starts the dev sandbox. */
-export const isDevMode = (value = process.env["QUESTLINE_DEV"]): boolean => value === "1"
+/** The env vars the game reads, each under its name from before Path of Dev too. */
+export type RenamedVar = "PATHOFDEV_DEV" | "PATHOFDEV_HOME"
+
+const legacyNames: Readonly<Record<RenamedVar, string>> = {
+  PATHOFDEV_DEV: "QUESTLINE_DEV",
+  PATHOFDEV_HOME: "QUESTLINE_HOME",
+}
+
+/** An env var, or its name from before Path of Dev while the new name is unset or empty. */
+export const envOf = (name: RenamedVar, env: NodeJS.ProcessEnv = process.env): string | undefined =>
+  env[name] || env[legacyNames[name]]
+
+/** A note for each env var set only under its name from before Path of Dev, which still works for now. */
+export const legacyVarNotes = (env: NodeJS.ProcessEnv = process.env): ReadonlyArray<string> =>
+  Object.entries(legacyNames)
+    .filter(([name, old]) => !env[name] && env[old])
+    .map(([name, old]) => `${old} is now ${name}: the old name still works for now, but goes away later`)
+
+/** `PATHOFDEV_DEV=1` starts the dev sandbox; so does `QUESTLINE_DEV=1`, its name from before Path of Dev. */
+export const isDevMode = (value = envOf("PATHOFDEV_DEV")): boolean => value === "1"
 
 /**
- * `~/.questline`, or `~/.questline-dev` in dev mode, or `QUESTLINE_HOME` (when set and not empty) in place of
- * either. A home holds one kind of save, which `claimHome` checks, so even a shared `QUESTLINE_HOME` never turns the
- * player's real save into a dev one.
+ * `~/.pathofdev`, or `~/.pathofdev-dev` in dev mode, or `PATHOFDEV_HOME` (or `QUESTLINE_HOME`), when set and not
+ * empty, in place of either. A home holds one kind of save, which `claimHome` checks, so even a shared
+ * `PATHOFDEV_HOME` never turns the player's real save into a dev one.
  */
 export const localPaths = (home?: string, dev = isDevMode()): LocalPaths => {
-  const root = home || process.env["QUESTLINE_HOME"] || join(homedir(), dev ? ".questline-dev" : ".questline")
+  const named = home || envOf("PATHOFDEV_HOME")
+  const root = named || join(homedir(), dev ? ".pathofdev-dev" : ".pathofdev")
   return {
     home: root,
     socket: join(root, "server.sock"),
@@ -62,12 +88,13 @@ export const localPaths = (home?: string, dev = isDevMode()): LocalPaths => {
     data: join(root, "data"),
     profile: join(root, "profile"),
     dev,
+    legacy: named ? null : join(homedir(), dev ? ".questline-dev" : ".questline"),
   }
 }
 
 export class WrongHome extends Data.TaggedError("WrongHome")<{ readonly home: string; readonly holds: string }> {
   override get message() {
-    const other = this.holds === "dev" ? "with QUESTLINE_DEV=1" : "without QUESTLINE_DEV=1"
+    const other = this.holds === "dev" ? "with PATHOFDEV_DEV=1" : "without PATHOFDEV_DEV=1"
     return `${this.home} holds a ${this.holds} save, which only a server started ${other} opens`
   }
 }
@@ -89,7 +116,30 @@ export const claimHome = (paths: LocalPaths) =>
 
 export class ServerRunning extends Data.TaggedError("ServerRunning")<{ readonly pid: number }> {
   override get message() {
-    return `A Questline server is already running (pid ${this.pid})`
+    return `A Path of Dev server is already running (pid ${this.pid})`
+  }
+}
+
+export class LegacyServerRunning extends Data.TaggedError("LegacyServerRunning")<{
+  readonly legacy: string
+  readonly pid: number
+}> {
+  override get message() {
+    return (
+      `A server from before Path of Dev is still running in ${this.legacy} (pid ${this.pid}): ` +
+      "stop it, then start this one, which moves its save to the new home"
+    )
+  }
+}
+
+export class HomeNotMoved extends Data.TaggedError("HomeNotMoved")<{
+  readonly legacy: string
+  readonly home: string
+  readonly cause: unknown
+}> {
+  override get message() {
+    const reason = this.cause instanceof Error ? this.cause.message : String(this.cause)
+    return `Could not move ${this.legacy} to ${this.home} (${reason}); nothing was deleted, so it can be moved by hand`
   }
 }
 
@@ -124,6 +174,46 @@ const isAlive = (pid: number): boolean => {
     return hasCode(error, "EPERM")
   }
 }
+
+/** The pid of the live process that holds the lock at `path`, or null when none does. */
+const liveHolder = (path: string): number | null => {
+  const holder = Number.parseInt(readIfExists(path) ?? "", 10)
+  return Number.isInteger(holder) && isAlive(holder) ? holder : null
+}
+
+/**
+ * Moves the save from before Path of Dev (`paths.legacy`) to `paths.home`, when only the old home exists: one rename
+ * on the same filesystem, so nothing is copied or deleted. Two homes are never merged: when both exist, the new one is
+ * played and the old one is left as it is. A server still running in the old home keeps it, and this one does not
+ * start.
+ */
+export const moveLegacyHome = (paths: LocalPaths) =>
+  Effect.gen(function* () {
+    const legacy = paths.legacy
+    if (legacy === null || !existsSync(legacy)) return
+    if (existsSync(paths.home)) {
+      return yield* Effect.logWarning(
+        `Both ${paths.home} and ${legacy} exist: ` +
+          `playing on ${paths.home}, and leaving ${legacy} as it is (nothing merged)`,
+      )
+    }
+    const holder = liveHolder(join(legacy, "server.lock"))
+    if (holder !== null) return yield* new LegacyServerRunning({ legacy, pid: holder })
+    const isMoved = yield* Effect.try({
+      try: () => {
+        try {
+          renameSync(legacy, paths.home)
+          return true
+        } catch (error) {
+          // Another server starting at the same moment moved it first.
+          if (hasCode(error, "ENOENT") && existsSync(paths.home)) return false
+          throw error
+        }
+      },
+      catch: (cause) => new HomeNotMoved({ legacy, home: paths.home, cause }),
+    })
+    if (isMoved) yield* Effect.logInfo(`Questline is now Path of Dev: moved its save from ${legacy} to ${paths.home}`)
+  })
 
 /**
  * Takes `server.lock` for this process, writing its pid, or fails with the pid of the server that holds it. A lock
@@ -210,6 +300,8 @@ export const localServer = (paths: LocalPaths = localPaths(), profile: LocalProf
   const Prepare = Layer.effectDiscard(
     Effect.gen(function* () {
       if (Buffer.byteLength(paths.socket) > maxSocketPath) return yield* new SocketPathTooLong({ path: paths.socket })
+      for (const note of legacyVarNotes()) yield* Effect.logWarning(note)
+      yield* moveLegacyHome(paths)
       yield* Effect.sync(() => {
         mkdirSync(paths.home, { recursive: true, mode: 0o700 })
         // mkdir leaves an existing directory's mode alone.

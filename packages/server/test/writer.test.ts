@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest"
-import { step } from "@questline/engine"
-import { Input as InputSchema } from "@questline/schema"
+import { step } from "@pathofdev/engine"
+import { Input as InputSchema } from "@pathofdev/schema"
 import { Effect, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"

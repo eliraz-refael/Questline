@@ -1,4 +1,4 @@
-import type { BandFrame, BandLook, BandSlot, ItemDef, Rarity, RulesConfig } from "@questline/schema"
+import type { BandFrame, BandLook, BandSlot, ItemDef, Rarity, RulesConfig } from "@pathofdev/schema"
 
 // The starter config and catalogue a fresh local server begins with: the design doc's numbers. One deviation for
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.

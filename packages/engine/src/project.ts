@@ -1,4 +1,4 @@
-import type { CharacterSlot, Context, PetSlot, Player, PlayerState, Slot, Snapshot } from "@questline/schema"
+import type { CharacterSlot, Context, PetSlot, Player, PlayerState, Slot, Snapshot } from "@pathofdev/schema"
 import { isLater, localDay } from "./days.ts"
 import { glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import { questStatesOf } from "./quests.ts"

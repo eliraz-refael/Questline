@@ -1,11 +1,11 @@
 {
-  "name": "@questline/server",
+  "name": "@pathofdev/server",
   "version": "0.0.0",
-  "description": "Questline game server: the HTTP API, the write path and storage around the rules engine",
+  "description": "Path of Dev game server: the HTTP API, the write path and storage around the rules engine",
   "type": "module",
   "exports": {
     ".": {
-      "@questline/source": "./src/index.ts",
+      "@pathofdev/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
@@ -21,14 +21,14 @@
   },
   "license": "MIT",
   "scripts": {
-    "start": "node --conditions=@questline/source src/main.ts"
+    "start": "node --conditions=@pathofdev/source src/main.ts"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.0",
     "@effect/sql-pglite": "4.0.0",
     "@electric-sql/pglite": "0.5.8",
-    "@questline/engine": "workspace:*",
-    "@questline/schema": "workspace:*",
+    "@pathofdev/engine": "workspace:*",
+    "@pathofdev/schema": "workspace:*",
     "effect": "4.0.0"
   }
 }

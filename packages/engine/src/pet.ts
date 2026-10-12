@@ -1,4 +1,4 @@
-import type { OwnedPet, RulesConfig } from "@questline/schema"
+import type { OwnedPet, RulesConfig } from "@pathofdev/schema"
 import { moodNow } from "./derive.ts"
 
 // Caring for the pet: food, a pat, and the player's wins lift its mood, which drifts down slowly on its own. A happy

@@ -113,7 +113,7 @@ export const bandParts: Readonly<Record<BandSlot, BandParts>> = {
     accents: ["glyph", "left", "right"],
     track: false,
   },
-  /** `line line left`, `star QUESTLINE star` (`title`), `right`, then the line with a `dot knot dot` every so often. */
+  /** `line line left`, `star PATH OF DEV star` (`title`), `right`, then the line with a `dot knot dot` now and then. */
   topEdge: {
     glyphs: ["line", "left", "right", "star", "knot", "dot"],
     colors: ["line", "left", "right", "star", "title", "knot", "dot"],

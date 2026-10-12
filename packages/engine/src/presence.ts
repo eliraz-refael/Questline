@@ -1,4 +1,4 @@
-import type { SessionSpan } from "@questline/schema"
+import type { SessionSpan } from "@pathofdev/schema"
 import { isLater } from "./days.ts"
 
 // Presence: which sessions were open, and when, as the server's `session.opened` and `session.closed` inputs say. The

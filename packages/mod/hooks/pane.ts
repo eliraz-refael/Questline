@@ -3,11 +3,17 @@ import { tierRank } from './celebrate'
 import { cellsOf } from './cells'
 import { bandSlots, equippedIn, loops } from './looks'
 
-// The `/questline` pane: a hub of tabs, each a view of the game. This file says what the tabs are and what the
+// The `/pathofdev` pane: a hub of tabs, each a view of the game. This file says what the tabs are and what the
 // inventory lists; register.tsx draws them. A later tab is one more entry here and one more body there.
 
-/** The pane's id, which `$.ui.open` and the `ui.render` matcher share. */
+/**
+ * The pane's id, which `$.ui.open` and the `ui.render` matcher share. It keeps the game's name from before Path of Dev:
+ * the engine keeps an open pane's record under its id across a reload of the mod.
+ */
 export const paneId = 'questline'
+
+/** What `/questline`, the command's name from before Path of Dev, says the first time it runs. */
+export const renamedNote = 'Questline is now Path of Dev: /questline is /pathofdev, and the old name goes away later.'
 
 /**
  * The tabs in order, each with a shorter name for a narrow pane and a shortest for the narrowest; one not ready yet
@@ -21,7 +27,7 @@ export const tabs: ReadonlyArray<{ id: PaneTab; label: string; short: string; ti
 ]
 
 /** The pane's title, which opens its header. */
-export const brand = '✦ QUESTLINE ✦'
+export const brand = '✦ PATH OF DEV ✦'
 
 /** Cells between the title and the character beside it. */
 export const headerGap = 2

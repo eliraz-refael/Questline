@@ -6,9 +6,9 @@ import type {
   PetHatch,
   PromptGraded,
   TurnCompleted,
-} from "@questline/schema"
-import type { ServerEvent } from "@questline/schema"
-import { QuestlineApi } from "@questline/schema"
+} from "@pathofdev/schema"
+import type { ServerEvent } from "@pathofdev/schema"
+import { PathOfDevApi } from "@pathofdev/schema"
 import { Effect, Layer } from "effect"
 import { HttpServer } from "effect/http"
 import { HttpApiTest } from "effect/http-api"
@@ -109,7 +109,7 @@ export const testServices = (stepper?: Stepper, dev = false) =>
   )
 
 /** A typed client wired straight to the handlers, with no socket in between. */
-export const client = HttpApiTest.groups(QuestlineApi, ["mod"])
+export const client = HttpApiTest.groups(PathOfDevApi, ["mod"])
 
 /** Runs a test against a fresh server: the handlers and the services behind them, over one database. */
 export const withServer = <A, E, R>(effect: Effect.Effect<A, E, R>, stepper?: Stepper, dev = false) =>

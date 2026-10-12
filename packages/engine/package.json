@@ -1,11 +1,11 @@
 {
-  "name": "@questline/engine",
+  "name": "@pathofdev/engine",
   "version": "0.0.0",
-  "description": "Questline rules engine: the pure step(state, input, context) function",
+  "description": "Path of Dev rules engine: the pure step(state, input, context) function",
   "type": "module",
   "exports": {
     ".": {
-      "@questline/source": "./src/index.ts",
+      "@pathofdev/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
@@ -16,7 +16,7 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@questline/schema": "workspace:*"
+    "@pathofdev/schema": "workspace:*"
   },
   "repository": {
     "type": "git",

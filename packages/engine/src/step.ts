@@ -26,7 +26,7 @@ import type {
   Step,
   SystemEvent,
   XpRule,
-} from "@questline/schema"
+} from "@pathofdev/schema"
 import { addDays, isLater, localDay } from "./days.ts"
 import { formFor, formsFor, glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import type { RarityWeights } from "./loot.ts"

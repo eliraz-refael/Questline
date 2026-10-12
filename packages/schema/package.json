@@ -1,11 +1,11 @@
 {
-  "name": "@questline/schema",
+  "name": "@pathofdev/schema",
   "version": "0.0.0",
-  "description": "Questline wire format: Effect Schemas for the API objects, events and commands",
+  "description": "Path of Dev wire format: Effect Schemas for the API objects, events and commands",
   "type": "module",
   "exports": {
     ".": {
-      "@questline/source": "./src/index.ts",
+      "@pathofdev/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }

@@ -1,4 +1,4 @@
-import type { QuestPack } from "@questline/schema"
+import type { QuestPack } from "@pathofdev/schema"
 
 // The missions a fresh local server offers: small dailies over graded prompts and reported work, and bigger weeklies
 // over a week's work, the player stats and sessions run together. All of it is reported-tier, so none waits for the

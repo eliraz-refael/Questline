@@ -1,5 +1,5 @@
 import type { PluginOptions } from 'claude-code'
-import type { QuestRewards, ServerEvent } from '@questline/schema'
+import type { QuestRewards, ServerEvent } from '@pathofdev/schema'
 import type { Celebration, FoodView, Motion, Tier } from '../types'
 
 // What the band celebrates and when: the server's events as celebrations, the queue they wait in, and how long each

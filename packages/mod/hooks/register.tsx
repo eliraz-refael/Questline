@@ -1,4 +1,4 @@
-import type { ClientEvent, Command, ServerEvent, Slot } from '@questline/schema'
+import type { ClientEvent, Command, ServerEvent, Slot } from '@pathofdev/schema'
 import { atom, read, update } from 'claude-code'
 import type { ElementConstructor, EngineInterface, Register, TextProps, Timer } from 'claude-code'
 import type { BandLook, BandSlot, BandView, Celebration, Gain, Link, Loop, Motion, PaneTab, Stage } from '../types'
@@ -43,7 +43,7 @@ import {
   isSession,
   isStream,
   ServerDown,
-  socketPathOf,
+  socketPathsOf,
   streamPathOf,
   urlOf,
 } from './server'
@@ -51,7 +51,7 @@ import { loops as isLooping, ownedLooks, ratesOf, wornLooks } from './looks'
 import type { MissionEntry } from './missions'
 import { knowsTogether, missionChip, missionsLayout, missionsViewOf, roomBeside } from './missions'
 import type { Choice } from './pane'
-import { brand, headerGap, headerOf, lookSections, otherItems, paneId, tabBarOf, tabOf } from './pane'
+import { brand, headerGap, headerOf, lookSections, otherItems, paneId, renamedNote, tabBarOf, tabOf } from './pane'
 import type { ShopAction, ShopEntry } from './shop'
 import { careViewOf, eggCardLayout, petCardLayout, shopLayout, shopViewOf } from './shop'
 import type { SigilChoice } from './sigils'
@@ -71,9 +71,9 @@ import {
   wardrobeOf,
 } from './view'
 
-// Questline's mod: it reports what happens in the session to the local game server, keeps one long-poll open for
+// Path of Dev's mod: it reports what happens in the session to the local game server, keeps one long-poll open for
 // what the server decides, draws the character in a band above the prompt in the looks the player equipped, and
-// opens the `/questline` pane. The server computes every number and sends every look but the band's own.
+// opens the `/pathofdev` pane. The server computes every number and sends every look but the band's own.
 
 const view = atom({ plugin: 'questline', key: 'view' }, null)
 const link = atom({ plugin: 'questline', key: 'link' }, 'connecting')
@@ -125,7 +125,9 @@ let server: ServerKind = 'default'
 /** Takes the gain's line down once it has stood a minute. */
 let fadeTimer: Timer | null = null
 let sessionId = ''
+/** The socket the server last answered on, then the other places it may listen: see `socketPathsOf`. */
 let socket = ''
+let sockets: ReadonlyArray<string> = []
 let secret = ''
 let repo: Repo | null = null
 let branch: string | null = null
@@ -158,7 +160,10 @@ let isPaneOpen = false
 /** Redraws the open pane each minute while it shows the Missions tab, so their time left keeps up. */
 let paneClock: Timer | null = null
 
-/** One request to the local server. A failure to reach it at all is `ServerDown`. */
+/**
+ * One request to the local server, on the socket it last answered on, else on the others it may listen on. A failure
+ * to reach it at all is `ServerDown`.
+ */
 async function call<A>(
   $: EngineInterface,
   path: string,
@@ -166,15 +171,19 @@ async function call<A>(
   body?: unknown,
   method?: 'DELETE',
 ): Promise<A> {
-  let response
-  try {
-    response = await $.http.fetch(urlOf(path), initOf(socket, body, method))
-  } catch (cause) {
-    throw new ServerDown(`The Questline server does not answer on ${socket}`, {
-      cause,
-    })
+  let failure: unknown = null
+  for (const at of [socket, ...sockets.filter((other) => other !== socket)]) {
+    let response
+    try {
+      response = await $.http.fetch(urlOf(path), initOf(at, body, method))
+    } catch (cause) {
+      failure ??= cause
+      continue
+    }
+    socket = at
+    return answerOf(path, response, is)
   }
-  return answerOf(path, response, is)
+  throw new ServerDown(`The Path of Dev server does not answer on ${socket}`, { cause: failure })
 }
 
 /** Opens the session, or says it is still here; `presence` asks the server to count it live while this mod polls. */
@@ -621,7 +630,7 @@ const shopCommand = (action: Exclude<ShopAction, { kind: 'note' }>, id: string):
 /** `/pet`: a pat, from the prompt. What it lifted arrives on the stream; the answer says it was given, or why not. */
 const patFromPrompt = async ($: EngineInterface): Promise<string> => {
   const current = await read($, view)
-  if (current === null) return 'Connecting to the Questline server…'
+  if (current === null) return 'Connecting to the Path of Dev server…'
   if (current.pet === null) {
     return canHatch(current) ? 'Your egg is ready: hatch it from the band first.' : 'Your egg hatches at level 1.'
   }
@@ -638,7 +647,7 @@ const patFromPrompt = async ($: EngineInterface): Promise<string> => {
   } catch (error) {
     if (!(error instanceof ServerDown)) return 'The server answered something unexpected.'
     await update($, link, () => 'offline')
-    return 'The Questline server is not answering.'
+    return 'The Path of Dev server is not answering.'
   }
 }
 
@@ -695,10 +704,20 @@ const pressDev = async ($: EngineInterface, ask: DevAsk) => {
 
 /** Opens the pane, and its previews loop while it stays open. */
 const openPane = async ($: EngineInterface) => {
-  await $.ui.open({ id: paneId, title: 'Questline' })
+  await $.ui.open({ id: paneId, title: 'Path of Dev' })
   isPaneOpen = true
   syncPaneClock($)
   await syncLoop($)
+}
+
+/** What `/pathofdev <args>` answers: the pane opened, or dev mode's answer to `dev …`. */
+const runCommandLine = async ($: EngineInterface, args: string): Promise<string> => {
+  const ask = devAskOf(args)
+  if (ask === null) {
+    await openPane($)
+    return 'Path of Dev pane opened.'
+  }
+  return typeof ask === 'string' ? ask : (await runDev($, ask)).text
 }
 
 /** A minute's redraw runs while the pane is open, and stops with it. */
@@ -779,7 +798,9 @@ const begin = async ($: EngineInterface, cwd: string, kept: string | null) => {
   turnPeak = null
   sessionId = kept ?? ulid(await $.clock.now())
   await update($, session, () => sessionId)
-  socket = socketPathOf(await $.env.get('QUESTLINE_HOME'), await $.env.get('HOME'), server === 'dev')
+  const named = (await $.env.get('PATHOFDEV_HOME')) || (await $.env.get('QUESTLINE_HOME'))
+  sockets = socketPathsOf(named, await $.env.get('HOME'), server === 'dev')
+  socket = sockets[0] ?? ''
   secret = await machineSecret($)
   $.clock.after(0, async () => {
     await findRepo($, cwd)
@@ -814,26 +835,30 @@ export const register: Register = (on, options) => {
     await syncLoop($)
     await $.command
       .register({
-        name: 'questline',
+        name: 'pathofdev',
         description:
-          'Open the Questline pane: your inventory, the shop, stats and missions (`dev …` on the dev server)',
+          'Open the Path of Dev pane: your inventory, the shop, stats and missions (`dev …` on the dev server)',
       })
       .catch(() => undefined)
     await $.command
-      .register({ name: 'pet', description: 'Pet your Questline companion: a pat lifts its mood a little' })
+      .register({ name: 'questline', description: 'Questline is now Path of Dev: the same as /pathofdev' })
+      .catch(() => undefined)
+    await $.command
+      .register({ name: 'pet', description: 'Pet your Path of Dev companion: a pat lifts its mood a little' })
       .catch(() => undefined)
     return result
   })
 
   on('command.run', { command: 'pet' }, async ($) => ({ text: await patFromPrompt($) }))
 
+  on('command.run', { command: 'pathofdev' }, async ($, e) => ({ text: await runCommandLine($, e.args) }))
+
+  // The command's name from before Path of Dev: it does what /pathofdev does, and says it was renamed the first time.
   on('command.run', { command: 'questline' }, async ($, e) => {
-    const ask = devAskOf(e.args)
-    if (ask === null) {
-      await openPane($)
-      return { text: 'Questline pane opened.' }
-    }
-    return { text: typeof ask === 'string' ? ask : (await runDev($, ask)).text }
+    const text = await runCommandLine($, e.args)
+    if ((await $.store.get('renameNoted')) === true) return { text }
+    await $.store.set('renameNoted', true)
+    return { text: `${text}\n${renamedNote}` }
   })
 
   on('ui.close', { id: paneId }, async ($, e, next) => {
@@ -990,7 +1015,7 @@ export const register: Register = (on, options) => {
           {rule}
           <Box flexWrap="wrap">
             <Text color="claude" bold>
-              ⚔ Questline{' '}
+              ⚔ Path of Dev{' '}
             </Text>
             <Text dimColor>offline · start the server: {startHint(server)}</Text>
           </Box>
@@ -1123,8 +1148,8 @@ export const register: Register = (on, options) => {
     if (current === null || owned === null) {
       const why =
         status === 'offline'
-          ? `The Questline server is not answering. Start it: ${startHint(server)}`
-          : 'Connecting to the Questline server…'
+          ? `The Path of Dev server is not answering. Start it: ${startHint(server)}`
+          : 'Connecting to the Path of Dev server…'
       return (
         <Box flexDirection="column" paddingX={1}>
           {header}

@@ -1,5 +1,5 @@
-import type { Context, Input } from "@questline/schema"
-import { Snapshot } from "@questline/schema"
+import type { Context, Input } from "@pathofdev/schema"
+import { Snapshot } from "@pathofdev/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { initialState, project, starterCatalog, starterRules, step, streakAsOf } from "../src/index.ts"

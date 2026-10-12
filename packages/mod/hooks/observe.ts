@@ -1,4 +1,4 @@
-import type { CheckoutRef, ClientEvent, CommitRef, RepoRef, WorkRef } from '@questline/schema'
+import type { CheckoutRef, ClientEvent, CommitRef, RepoRef, WorkRef } from '@pathofdev/schema'
 import type { CommandSource, SessionCompactTrigger } from 'claude-code'
 import { hmac } from './ids'
 

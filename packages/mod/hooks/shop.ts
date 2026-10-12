@@ -1,4 +1,4 @@
-import type { RulesConfig, Snapshot } from '@questline/schema'
+import type { RulesConfig, Snapshot } from '@pathofdev/schema'
 import type {
   BandLook,
   BandSlot,

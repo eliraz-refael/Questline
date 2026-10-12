@@ -1,4 +1,4 @@
-import type { ClientEvent } from "@questline/schema"
+import type { ClientEvent } from "@pathofdev/schema"
 import { describe, expect, it } from "vitest"
 import { admit, naturalKey } from "../src/index.ts"
 import { commit, merged, minutesLater, start, turn } from "./fixtures.ts"

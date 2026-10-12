@@ -6,7 +6,7 @@ import { Count, Ulid } from "./primitives.ts"
 import { RulesConfig } from "./rules.ts"
 import { ServerEvent } from "./server-events.ts"
 
-// Request and response bodies of the /v1 routes the mod uses. The mod sends `Questline-Client: <version>` on
+// Request and response bodies of the /v1 routes the mod uses. The mod sends `PathOfDev-Client: <version>` on
 // every request.
 
 /** `POST /v1/sessions` */

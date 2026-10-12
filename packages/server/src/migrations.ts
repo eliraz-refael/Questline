@@ -1,4 +1,4 @@
-import { levelForXp, ulids, xpForLevel } from "@questline/engine"
+import { levelForXp, ulids, xpForLevel } from "@pathofdev/engine"
 import { Clock, Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
 import { randomBytes } from "node:crypto"

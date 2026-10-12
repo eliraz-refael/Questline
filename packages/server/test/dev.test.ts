@@ -1,17 +1,17 @@
 import { it } from "@effect/vitest"
-import type { DevGrantXp } from "@questline/schema"
+import type { DevGrantXp } from "@pathofdev/schema"
 import { Effect, Exit, Layer } from "effect"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it as test } from "vitest"
-import { starterCatalog, starterRules } from "@questline/engine"
+import { starterCatalog, starterRules } from "@pathofdev/engine"
 import { catalog, checkedCatalog, claimHome, isDevMode, localPaths, localServer, WrongHome } from "../src/index.ts"
 import { client, nextId, profile, prompt, session, withoutQuests, withServer } from "./fixtures.ts"
 
 // Dev mode: a sandbox save in a home of its own, the only place the dev commands run.
 
-const scratch = () => mkdtempSync(join(tmpdir(), "ql-dev-"))
+const scratch = () => mkdtempSync(join(tmpdir(), "pod-dev-"))
 
 const withEnv = (vars: Record<string, string | undefined>, body: () => void) => {
   const saved = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]))
@@ -30,17 +30,17 @@ const withEnv = (vars: Record<string, string | undefined>, body: () => void) => 
 }
 
 describe("the dev home", () => {
-  test("is ~/.questline-dev under QUESTLINE_DEV=1, apart from the real save, unless QUESTLINE_HOME names one", () => {
-    withEnv({ QUESTLINE_DEV: "1", QUESTLINE_HOME: undefined }, () => {
+  test("is ~/.pathofdev-dev under PATHOFDEV_DEV=1, apart from the real save, unless PATHOFDEV_HOME names one", () => {
+    withEnv({ PATHOFDEV_DEV: "1", PATHOFDEV_HOME: undefined }, () => {
       expect(isDevMode()).toBe(true)
       const dev = localPaths()
-      expect(dev).toMatchObject({ home: join(homedir(), ".questline-dev"), dev: true })
-      expect(dev.socket).toBe(join(homedir(), ".questline-dev", "server.sock"))
+      expect(dev).toMatchObject({ home: join(homedir(), ".pathofdev-dev"), dev: true })
+      expect(dev.socket).toBe(join(homedir(), ".pathofdev-dev", "server.sock"))
     })
-    withEnv({ QUESTLINE_DEV: undefined, QUESTLINE_HOME: undefined }, () => {
-      expect(localPaths()).toMatchObject({ home: join(homedir(), ".questline"), dev: false })
+    withEnv({ PATHOFDEV_DEV: undefined, PATHOFDEV_HOME: undefined }, () => {
+      expect(localPaths()).toMatchObject({ home: join(homedir(), ".pathofdev"), dev: false })
     })
-    withEnv({ QUESTLINE_DEV: "1", QUESTLINE_HOME: "/tmp/sandbox" }, () => {
+    withEnv({ PATHOFDEV_DEV: "1", PATHOFDEV_HOME: "/tmp/sandbox" }, () => {
       expect(localPaths()).toMatchObject({ home: "/tmp/sandbox", dev: true })
     })
     expect(isDevMode("true")).toBe(false)
@@ -57,8 +57,8 @@ describe("the dev home", () => {
       const real = scratch()
       yield* claimHome(localPaths(real, false))
       expect(yield* Effect.exit(claimHome(localPaths(real, true)))).toEqual(Exit.fail(new WrongHome({ home: real, holds: "play" })))
-      expect(new WrongHome({ home, holds: "dev" }).message).toContain("only a server started with QUESTLINE_DEV=1")
-      expect(new WrongHome({ home, holds: "play" }).message).toContain("only a server started without QUESTLINE_DEV=1")
+      expect(new WrongHome({ home, holds: "dev" }).message).toContain("only a server started with PATHOFDEV_DEV=1")
+      expect(new WrongHome({ home, holds: "play" }).message).toContain("only a server started without PATHOFDEV_DEV=1")
 
       const cut = scratch()
       writeFileSync(join(cut, "profile"), "")

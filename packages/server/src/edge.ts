@@ -1,5 +1,5 @@
-import type { ClientEvent, EventResult, Input, WorkRef } from "@questline/schema"
-import { ClientEvent as ClientEventSchema, clientEventTypes } from "@questline/schema"
+import type { ClientEvent, EventResult, Input, WorkRef } from "@pathofdev/schema"
+import { ClientEvent as ClientEventSchema, clientEventTypes } from "@pathofdev/schema"
 import { Predicate, Result, Schema } from "effect"
 
 // What the edge does to each client event before the write path sees it: decode it on its own, so one bad event

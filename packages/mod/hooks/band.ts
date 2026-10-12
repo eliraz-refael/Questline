@@ -101,7 +101,7 @@ export const goldRow = (view: BandView, look: BandLook | null, loop: Loop | null
   return runs
 }
 
-const title = 'QUESTLINE'
+const title = 'PATH OF DEV'
 
 /**
  * The band's top edge, `columns` cells wide: a title tab, then a run of line with a knot every so often, the look's

@@ -1,4 +1,4 @@
-import type { CommandResponse, EventsResponse, SessionClosed, SessionResponse, StreamResponse } from '@questline/schema'
+import type { CommandResponse, EventsResponse, SessionClosed, SessionResponse, StreamResponse } from '@pathofdev/schema'
 import type { HttpInit, HttpResponse } from 'claude-code'
 
 // The mod's one way to the game is HTTP over the local server's Unix socket, through the host's fetch: this file
@@ -27,13 +27,13 @@ export const streamPathOf = (after: number, sessionId: string): string =>
   `/v1/stream?after=${after}&session=${encodeURIComponent(sessionId)}`
 
 /** The URL a route is fetched at: the host name is a placeholder, since the socket picks the server. */
-export const urlOf = (path: string): string => `http://questline${path}`
+export const urlOf = (path: string): string => `http://pathofdev${path}`
 
 /** A request to the server: a POST with a JSON body, or a GET without one, unless `method` says otherwise. */
 export const initOf = (socketPath: string, body?: unknown, method?: 'DELETE'): HttpInit => ({
   method: method ?? (body === undefined ? 'GET' : 'POST'),
   socketPath,
-  headers: { 'content-type': 'application/json', 'questline-client': clientVersion },
+  headers: { 'content-type': 'application/json', 'pathofdev-client': clientVersion },
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 })
 
@@ -46,8 +46,14 @@ export const answerOf = <A>(path: string, response: HttpResponse, is: (value: un
 }
 
 /**
- * The socket's path under the Questline home: `QUESTLINE_HOME` when set, else `~/.questline`, or `~/.questline-dev`
- * for the dev server, as the server picks its own.
+ * Where the server's socket may be, as the server picks its home: under `named` (`PATHOFDEV_HOME`, or
+ * `QUESTLINE_HOME` from before Path of Dev) when set, else `~/.pathofdev` (`~/.pathofdev-dev` for the dev server),
+ * then `~/.questline` (`~/.questline-dev`), where a server from before Path of Dev listens until it restarts and moves
+ * its save.
  */
-export const socketPathOf = (questlineHome: string | undefined, home: string | undefined, isDev = false): string =>
-  `${questlineHome || `${home ?? ''}/${isDev ? '.questline-dev' : '.questline'}`}/server.sock`
+export const socketPathsOf = (named: string | undefined, home: string | undefined, isDev = false): Array<string> =>
+  named
+    ? [`${named}/server.sock`]
+    : [isDev ? '.pathofdev-dev' : '.pathofdev', isDev ? '.questline-dev' : '.questline'].map(
+        (folder) => `${home ?? ''}/${folder}/server.sock`,
+      )

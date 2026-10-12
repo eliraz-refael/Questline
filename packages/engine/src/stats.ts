@@ -1,4 +1,4 @@
-import type { GradeDimension, PlayerState, PlayerStats, PromptRules, QualityDimension, StatCounters } from "@questline/schema"
+import type { GradeDimension, PlayerState, PlayerStats, PromptRules, QualityDimension, StatCounters } from "@pathofdev/schema"
 import { localDay } from "./days.ts"
 
 // Graded prompts are priced from their scores; the player stats are counted from stats events and graded prompts,

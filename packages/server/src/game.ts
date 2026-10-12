@@ -1,6 +1,6 @@
-import { starterCatalog, starterRules } from "@questline/engine"
-import type { ItemDef, RulesConfig } from "@questline/schema"
-import { catalogIssue } from "@questline/schema"
+import { starterCatalog, starterRules } from "@pathofdev/engine"
+import type { ItemDef, RulesConfig } from "@pathofdev/schema"
+import { catalogIssue } from "@pathofdev/schema"
 import { Clock, Context, Effect, Layer } from "effect"
 
 // The rules the proof of concept runs under. Publishing rules versions (rules_versions, rules_head) comes later; for
@@ -24,10 +24,10 @@ export const minClientVersion = "0.0.0"
 export const inputSchemaVersion = 1
 
 /**
- * Dev mode: the sandbox that takes the dev commands. Only the local server turns it on, from `QUESTLINE_DEV=1`, and
+ * Dev mode: the sandbox that takes the dev commands. Only the local server turns it on, from `PATHOFDEV_DEV=1`, and
  * only over a home of its own; any other server leaves it off, so the engine refuses them there.
  */
-export class DevMode extends Context.Service<DevMode, { readonly isOn: boolean }>()("questline/DevMode") {
+export class DevMode extends Context.Service<DevMode, { readonly isOn: boolean }>()("pathofdev/DevMode") {
   static readonly layer = (isOn: boolean) => Layer.succeed(DevMode, { isOn })
 }
 

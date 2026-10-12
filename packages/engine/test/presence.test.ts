@@ -8,8 +8,8 @@ import type {
   ServerEventDraft,
   SessionSpan,
   Step,
-} from "@questline/schema"
-import { PlayerState as PlayerStateSchema, QuestPack as QuestPackSchema } from "@questline/schema"
+} from "@pathofdev/schema"
+import { PlayerState as PlayerStateSchema, QuestPack as QuestPackSchema } from "@pathofdev/schema"
 import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {

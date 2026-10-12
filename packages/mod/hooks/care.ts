@@ -1,4 +1,4 @@
-import type { RulesConfig } from '@questline/schema'
+import type { RulesConfig } from '@pathofdev/schema'
 import type { CareView } from '../types'
 
 // How the pet feels, in plain words and hearts, from its mood and the rules' happy line. A low mood reads as sleepy,
