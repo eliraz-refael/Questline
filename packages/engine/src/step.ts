@@ -50,7 +50,7 @@ import {
   windowOf,
 } from "./quests.ts"
 import { ulids } from "./random.ts"
-import { boughtToday, isFood, listPrice, offerParts, waresOf } from "./shop.ts"
+import { boughtToday, buysXp, isFood, isXpFood, listPrice, offerParts, waresOf } from "./shop.ts"
 import { addScores, bandPct, commandKey, contextThresholds, gradeOf, measureContext, statsOf } from "./stats.ts"
 import { streakAsOf } from "./streak.ts"
 
@@ -899,9 +899,9 @@ const spend = (run: Run, entryId: string): void => {
 }
 
 /**
- * Food the pet eats: gone from the inventory, it lifts the pet's mood and starts the food's XP boost, a flat one of
- * kind `food` (the strongest running food boost counts, so two never stack). A replay applies what the live run
- * accepted, with the definition the catalogue now has.
+ * Food the pet eats: gone from the inventory, it lifts the pet's mood, and XP food (from play only) starts its XP
+ * boost, a flat one of kind `food` (the strongest running food boost counts, so two never stack); a treat only lifts
+ * the mood. A replay applies what the live run accepted, with the definition the catalogue now has.
  */
 const feed = (state: PlayerState, entryId: string, context: Context): Step => {
   const { rules, now, catalog } = context
@@ -916,6 +916,7 @@ const feed = (state: PlayerState, entryId: string, context: Context): Step => {
   const run = begin(state, context)
   spend(run, entry.id)
   const next = lifted(pet, rules, now, rules.pet.care.fed)
+  const gained = next.mood.value - moodNow(pet, rules, now)
   setHoldings(run, { pet: next })
   const effect = item?.effect ?? null
   const boost =
@@ -934,6 +935,7 @@ const feed = (state: PlayerState, entryId: string, context: Context): Step => {
       itemId: entry.itemId,
       name: item?.name ?? entry.itemId,
       mood: next.mood.value,
+      gained,
       ...(boost === undefined ? {} : { xpBoost: boost }),
     },
   })
@@ -957,6 +959,9 @@ const buy = (state: PlayerState, offerId: string, context: Context): Step => {
     if (parts.day !== today) {
       return refuse(state, { code: "sold_out", message: "That offer has ended: the shop restocks each day" })
     }
+    // Gold never buys XP: a sigil or XP food is never on offer, whatever the id names.
+    const named = catalog.find((def) => def.id === parts.itemId)
+    if (named !== undefined && buysXp(named)) return refuse(state, xpFromPlay(named))
     if (ware === undefined) return refuse(state, { code: "invalid", message: "The shop has no such offer today" })
     if (bought >= ware.stock) {
       return refuse(state, { code: "sold_out", message: `${ware.item.name} is sold out for today` })
@@ -989,6 +994,17 @@ const buy = (state: PlayerState, offerId: string, context: Context): Step => {
   return finish(run)
 }
 
+/**
+ * The refusal for gold, a re-roll or shards asked for what would buy XP: a sigil or XP food, which come only from play,
+ * as drops and mission rewards.
+ */
+const xpFromPlay = (item: ItemDef): CommandRefusal => ({
+  code: "not_allowed",
+  message: isXpFood(item)
+    ? `${item.name} boosts XP, so it comes only from play, never from gold or shards`
+    : `${item.name} is a sigil, which comes only from play, never from gold or shards`,
+})
+
 /** Whether the inventory holds another copy of the entry's item, so it is a duplicate to trade in. */
 const isDuplicate = (state: PlayerState, entry: InventoryEntry): boolean =>
   state.holdings.inventory.some((other) => other.id !== entry.id && other.itemId === entry.itemId)
@@ -1020,9 +1036,10 @@ const reroll = (state: PlayerState, entryId: string, context: Context): Step => 
   const entry = holdings.inventory.find((owned) => owned.id === entryId)
   if (entry === undefined) return refuse(state, { code: "not_owned", message: "That item is not in the inventory" })
   const item = catalog.find((def) => def.id === entry.itemId)
-  // Never a sigil, so gold never buys XP, and never food, which the re-roll would cost more than: a look for a look.
+  // Never a sigil or XP food, so gold never buys XP, and never a treat, which the re-roll would cost more than: a look
+  // for a look.
   const pool = catalog.filter(
-    (def) => def.rarity === item?.rarity && !isSigil(def) && !isFood(def) && def.id !== entry.itemId,
+    (def) => def.rarity === item?.rarity && !buysXp(def) && !isFood(def) && def.id !== entry.itemId,
   )
   if (context.mode.kind === "live") {
     const refusal = tradeRefusal(state, entry, item)
@@ -1078,7 +1095,7 @@ const salvage = (state: PlayerState, entryId: string, context: Context): Step =>
   return finish(run)
 }
 
-/** Shards of a rarity made into a chosen item of it, anything but a sigil. */
+/** Shards of a rarity made into a chosen item of it, anything but a sigil or XP food. */
 const craft = (state: PlayerState, data: { rarity: Rarity; itemId: string }, context: Context): Step => {
   const { rules, catalog, now } = context
   const { rarity, itemId } = data
@@ -1087,7 +1104,7 @@ const craft = (state: PlayerState, data: { rarity: Rarity; itemId: string }, con
   const have = state.holdings.shards[rarity]
   if (context.mode.kind === "live") {
     if (item === undefined) return refuse(state, { code: "invalid", message: "No item in the catalogue has that id" })
-    if (isSigil(item)) return refuse(state, { code: "not_allowed", message: "Shards never make a sigil" })
+    if (buysXp(item)) return refuse(state, xpFromPlay(item))
     if (item.rarity !== rarity) {
       return refuse(state, { code: "invalid", message: `${item.name} is ${item.rarity}, not ${rarity}` })
     }
