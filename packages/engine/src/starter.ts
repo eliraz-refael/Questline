@@ -71,7 +71,7 @@ export const starterRules: RulesConfig = {
     care: { fed: 30, petted: 5, pettedPerHour: 3 },
   },
   // Four band styles a day, common and uncommon, one of each, and the treats every day, three of each. A steady day
-  // earns about 250 gold (about 150 from five drops, the rest from missions), so a common style costs half a day's
+  // earns about 240 gold (about 140 from five drops, the rest from missions), so a common style costs half a day's
   // gold, an uncommon one a day's, and a treat a few percent. Treats lift the mood only: XP food is never sold. Pet
   // wear, scenes and level-up effects join the shelf once the band draws them.
   shop: {

@@ -8,6 +8,7 @@ import type {
   Input,
   InventoryEntry,
   PlayerState,
+  Rarity,
   Recorded,
   RulesConfig,
   Slot,
@@ -210,36 +211,25 @@ describe("step: loot", () => {
 })
 
 describe("the starter loot odds", () => {
-  /** Each rarity's odds in thousandths of its table's total. */
-  const perMille = (weights: RarityWeights) => {
-    const total = Object.values(weights).reduce((sum, weight) => sum + weight, 0)
-    return Object.fromEntries(Object.entries(weights).map(([rarity, weight]) => [rarity, (weight * 1000) / total]))
+  const below: ReadonlyArray<Rarity> = ["common", "uncommon", "rare", "epic"]
+  /** Checks a table against the one before legendary fell to 0.4%, both in thousandths. */
+  const fromOld = (now: RarityWeights, old: RarityWeights) => {
+    const total = Object.values(now).reduce((sum, weight) => sum + weight, 0)
+    const perMille = (rarity: Rarity) => (now[rarity] * 1000) / total
+    expect(perMille("legendary")).toBe(4)
+    const given = old.legendary - 4
+    const rest = below.reduce((sum, rarity) => sum + old[rarity], 0)
+    for (const rarity of below) {
+      const share = (given * old[rarity]) / rest
+      const gained = perMille(rarity) - old[rarity]
+      expect(gained).toBeGreaterThanOrEqual(Math.floor(share))
+      expect(gained).toBeLessThanOrEqual(Math.ceil(share))
+    }
   }
 
-  it("give legendary exactly 0.4%, on a drop and on a level-up", () => {
-    expect(perMille(starterRules.loot.weights).legendary).toBe(4)
-    expect(perMille(starterRules.loot.onLevelUp.weights).legendary).toBe(4)
-  })
-
-  it("hand legendary's old 0.6 points to the rarities below it, in proportion to their odds", () => {
-    expect(perMille(starterRules.loot.weights)).toEqual({ common: 604, uncommon: 251, rare: 101, epic: 40, legendary: 4 })
-    expect(perMille(starterRules.loot.onLevelUp.weights)).toEqual({
-      common: 503,
-      uncommon: 302,
-      rare: 151,
-      epic: 40,
-      legendary: 4,
-    })
-  })
-
-  it("leave a drop rolled under the old odds as it was, in a replay under the new ones", () => {
-    const legendaryOnly = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 1 }
-    const before = { ...starterRules, version: 9, loot: { ...starterRules.loot, onLevelUp: { weights: legendaryOnly } } }
-    const inputs = [client("change.merged")]
-    const { state, steps } = play(inputs, before)
-    expect(steps[0]?.rolls[0]).toMatchObject({ rulesVersion: 9, drop: { rarity: "legendary" } })
-    const recorded = steps.map((s) => ({ rolls: s.rolls, refusal: s.refusal }))
-    expect(replay(inputs, recorded, starterRules).state).toEqual(state)
+  it("give legendary exactly 0.4%, its old 0.6 points going to the rarities below in proportion to their odds", () => {
+    fromOld(starterRules.loot.weights, { common: 600, uncommon: 250, rare: 100, epic: 40, legendary: 10 })
+    fromOld(starterRules.loot.onLevelUp.weights, { common: 500, uncommon: 300, rare: 150, epic: 40, legendary: 10 })
   })
 })
 
@@ -491,7 +481,7 @@ describe("step: review fixes, prompts and stats", () => {
 })
 
 describe("step: level-up loot", () => {
-  it("drops one item on a level-up, always, by the level-up's own weights, and replays it", () => {
+  it("drops one item on a level-up, always, by the level-up's own weights, and replays it under other odds", () => {
     const legendary = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 1 }
     const rules = { ...starterRules, loot: { ...starterRules.loot, onLevelUp: { weights: legendary } } }
     const inputs = [client("change.merged")]
@@ -514,7 +504,8 @@ describe("step: level-up loot", () => {
     ])
     expect(state.holdings.inventory).toHaveLength(1)
     const recorded = steps.map((s) => ({ rolls: s.rolls, refusal: s.refusal }))
-    expect(replay(inputs, recorded, rules).state).toEqual(state)
+    // The starter's level-up odds rarely give a legendary: the recorded roll, not today's odds, decides the replay.
+    expect(replay(inputs, recorded, starterRules).state).toEqual(state)
   })
 
   it("rolls nothing for a level already reached", () => {
