@@ -2589,7 +2589,7 @@ describe('the shop', () => {
     await streaming($, on, stocked, false, { rules: shopRules, kept: kept() })
     await openShop($)
     const all = (await paneTexts($, 72)).texts.join('\n')
-    expect(all).toMatch(/^Shop {2}looks and food for gold, a new shelf each day · ◈ 200 gold$/m)
+    expect(all).toMatch(/^Shop {2}looks and treats for gold, a new shelf each day · ◈ 200 gold$/m)
     expect(all).toMatch(/^Today's shelf ─+ restocks in 16h 0m$/m)
     expect(all).toMatch(/^◆ Copper Purse {2}common · Gold$/m)
     expect(all).toContain('sold out today')
@@ -2735,9 +2735,10 @@ describe('caring for the pet', () => {
   }
   const meal = { kind: 'food', source: 'trail-mix', xpBoostPct: 10, endsAt: '2026-10-09T08:42:00.000Z' }
   const commandsOf = (sent: ReadonlyArray<Sent>) => sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
+  // Wide enough that every meal's head keeps all its notes.
   const inventory = async ($: Parameters<TestBody>[0]) => {
     await $.command.run({ command: 'questline', args: '', origin: composer, presentation })
-    return (await paneTexts($, 72)).texts.join('\n')
+    return (await paneTexts($, 90)).texts.join('\n')
   }
 
   test('the card shows how it feels, takes a pat, and feeds it the food owned', async ($, on) => {

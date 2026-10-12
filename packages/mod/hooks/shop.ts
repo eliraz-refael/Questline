@@ -55,7 +55,7 @@ export const shopViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>): Sho
     const def = byId.get(offer.itemId)
     const food = def === undefined ? undefined : foodOf(def)
     // Gold never buys XP: an offer of XP food or a sigil, from a server before treats, is not shown to buy.
-    if (def === undefined) return []
+    if (def === undefined || isXpFood(food) || def.sigil !== undefined) return []
     return [
       {
         offerId: offer.offerId,
@@ -111,7 +111,7 @@ export const shopViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>): Sho
   )
   // Shards never make what would buy XP: a sigil or XP food.
   const craftable = defs
-    .filter((def) => def.sigil === undefined && enough.has(tierOf(def.rarity)))
+    .filter((def) => def.sigil === undefined && !isXpFood(foodOf(def)) && enough.has(tierOf(def.rarity)))
     .map(
       (def): CraftView => ({
         itemId: def.id,
