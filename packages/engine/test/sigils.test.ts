@@ -408,7 +408,10 @@ describe("sigils: drops only", () => {
     const crafting = { ...fresh(), holdings: { ...fresh().holdings, shards: { ...fresh().holdings.shards, epic: 10 } } }
     const crafted = play([craft("arcane-sigil"), craft("pixel-dragon")], crafting)
     expect(crafted.steps.map((s) => s.refusal)).toEqual([
-      { code: "not_allowed", message: "Shards never make a sigil" },
+      {
+        code: "not_allowed",
+        message: "Arcane Sigil is a sigil, which comes only from play, never from gold or shards",
+      },
       null,
     ])
     expect(crafted.state.holdings.inventory.map((entry) => entry.itemId)).toEqual(["pixel-dragon"])

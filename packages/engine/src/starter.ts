@@ -4,7 +4,7 @@ import type { BandFrame, BandLook, BandSlot, ItemDef, Rarity, RulesConfig } from
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
 
 export const starterRules: RulesConfig = {
-  version: 8,
+  version: 9,
   schemaVersion: 7,
   appliesFrom: null,
   // Steeper than the 1.6 before sigils: a player wearing the sigil typical of their stage reaches each level about
@@ -66,17 +66,17 @@ export const starterRules: RulesConfig = {
     // few days, or a few pats, keeps a pet happy.
     care: { fed: 30, petted: 5, pettedPerHour: 3 },
   },
-  // Four band styles a day, common and uncommon, one of each, and the food every day, three of each. A steady day
+  // Four band styles a day, common and uncommon, one of each, and the treats every day, three of each. A steady day
   // earns about 250 gold (about 150 from five drops, the rest from missions), so a common style costs half a day's
-  // gold, an uncommon one a day's, and an hour's food boost a tenth. Pet wear, scenes and level-up effects join the
-  // shelf once the band draws them.
+  // gold, an uncommon one a day's, and a treat a few percent. Treats lift the mood only: XP food is never sold. Pet
+  // wear, scenes and level-up effects join the shelf once the band draws them.
   shop: {
     offers: 4,
     rarities: ["common", "uncommon"],
     categories: ["bandStyle"],
     stock: 1,
     prices: { common: 120, uncommon: 250, rare: 600, epic: 1500, legendary: 4000 },
-    food: { stock: 3, prices: { common: 25, uncommon: 60, rare: 150, epic: 400, legendary: 1000 } },
+    food: { stock: 3, prices: { common: 15, uncommon: 35, rare: 80, epic: 200, legendary: 500 } },
   },
   streak: { xpPerDay: 10, maxXp: 70, restDaysPerWeek: 1 },
   prompt: {
@@ -101,7 +101,7 @@ export const starterRules: RulesConfig = {
       legendary: [2.3, 2.5],
     },
   },
-  catalogVersion: 5,
+  catalogVersion: 6,
   // Three dailies run each local day; each local week offers five weeklies, of which three can run at once.
   missions: {
     daily: { count: 3, tier: "uncommon" },
@@ -358,6 +358,24 @@ const sigils: ReadonlyArray<ItemDef> = [
 export const starterCatalog: ReadonlyArray<ItemDef> = [
   item({ id: "plain-cap", name: "Plain Cap", rarity: "common", category: "wearable", slot: "head" }),
   item({ id: "paper-scarf", name: "Paper Scarf", rarity: "common", category: "wearable", slot: "neck" }),
+  // Treats lift the pet's mood and nothing else: the shop sells them. XP food also starts an XP boost, so it comes only
+  // from play, as drops and mission rewards.
+  item({
+    id: "honey-biscuit",
+    name: "Honey Biscuit",
+    rarity: "common",
+    category: "food",
+    slot: null,
+    lore: "Baked in the shape of a tiny paw.",
+  }),
+  item({
+    id: "sugar-plum",
+    name: "Sugar Plum",
+    rarity: "uncommon",
+    category: "food",
+    slot: null,
+    lore: "Saved for a pet that sat through a long build.",
+  }),
   item({
     id: "trail-mix",
     name: "Trail Mix",

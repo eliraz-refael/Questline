@@ -353,9 +353,10 @@ const sigils = Effect.gen(function* () {
   `
 })
 
-// The shop and pet care (engine 11, rules 8): a pet now keeps the pats of the last hour, as only so many an hour lift
+// The shop and pet care (engine 12, rules 9): a pet now keeps the pats of the last hour, as only so many an hour lift
 // its mood. A pet saved before it has had none, since every pet.pet the log holds was refused, so a replay of the log
-// keeps the pet just as this leaves it. The rows then read as engine 11 and rules 8, which their state now is.
+// keeps the pet just as this leaves it. The rows then read as engine 12 and rules 9, which their state now is. XP food
+// a player owns stays theirs: it was dropped or bought under the rules then, and nothing else in the state changed.
 const shopPetCare = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
   yield* sql`
@@ -363,7 +364,7 @@ const shopPetCare = Effect.gen(function* () {
     SET state = jsonb_set(state, '{holdings,pet,petted}', '[]'::jsonb)
     WHERE jsonb_typeof(state -> 'holdings' -> 'pet') = 'object' AND state -> 'holdings' -> 'pet' -> 'petted' IS NULL
   `
-  yield* sql`UPDATE player_state SET engine_version = 11, rules_version = 8 WHERE engine_version < 11`
+  yield* sql`UPDATE player_state SET engine_version = 12, rules_version = 9 WHERE engine_version < 12`
 })
 
 /** Every migration, by the name the migrator records it under. */

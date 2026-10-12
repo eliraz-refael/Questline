@@ -278,8 +278,8 @@ describe("migrations", () => {
         ),
       )(stored)
       expect(rows.map((row) => [row.player_id, row.engine_version, row.rules_version])).toEqual([
-        ["egg", 11, 8],
-        ["pet", 11, 8],
+        ["egg", 12, 9],
+        ["pet", 12, 9],
       ])
       expect(rows[1]?.state).toEqual(replayed)
       expect(rows[1]?.state.holdings.pet?.petted).toEqual([])
@@ -339,10 +339,10 @@ describe("migrations", () => {
         ),
       )(stored)
       // Every row reads as what its state now is, carried or not, so nothing keyed on the versions carries it again;
-      // the shop's migration after it marks them engine 11, rules 8.
+      // the shop's migration after it marks them engine 12, rules 9.
       expect(rows.map((row) => [row.player_id, row.engine_version, row.rules_version])).toEqual([
-        ["mid", 11, 8],
-        ["new", 11, 8],
+        ["mid", 12, 9],
+        ["new", 12, 9],
       ])
       const [carried, untouched] = rows
       expect(carried?.state.progress.xp.reported).toBe(5000 + carriedXp(5000))

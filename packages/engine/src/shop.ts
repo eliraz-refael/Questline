@@ -4,10 +4,10 @@ import { rarityRank } from "./loot.ts"
 import { draws } from "./random.ts"
 import { isSigil } from "./sigils.ts"
 
-// The shop: a shelf of items drawn anew each local day, and the food on offer every day, each so many a day, for gold.
+// The shop: a shelf of items drawn anew each local day, and treats on offer every day, each so many a day, for gold.
 // The offers are worked out from the day, the rules and the catalogue, so only what was bought today is stored. The
-// same day draws the same shelf for every player. The shop never sells a sigil: gold buys looks and food, never a
-// multiplier on XP.
+// same day draws the same shelf for every player. Gold never buys XP: the shop never sells a sigil or XP food (food
+// whose meal boosts XP), and no re-roll or shard craft makes either. Both come only from play, as drops and rewards.
 
 type ShopContext = Pick<Context, "rules" | "catalog">
 
@@ -24,6 +24,13 @@ export const offerParts = (offerId: string): { readonly day: string; readonly it
 
 export const isFood = (item: ItemDef): boolean => item.category === "food"
 
+/** Food whose meal boosts XP for a while: it comes only from play, never from gold. A treat only lifts the mood. */
+export const isXpFood = (item: ItemDef): boolean =>
+  isFood(item) && item.effect !== null && item.effect.xpBoostPct > 0 && item.effect.minutes > 0
+
+/** What gold, a re-roll or shards may never make, as it would buy XP: a sigil or XP food. */
+export const buysXp = (item: ItemDef): boolean => isSigil(item) || isXpFood(item)
+
 /** The price the rules give an item in the shop: food at the food's prices, anything else at the shelf's. */
 export const listPrice = (rules: ShopContext["rules"], item: ItemDef): number =>
   (isFood(item) ? rules.shop.food.prices : rules.shop.prices)[item.rarity]
@@ -37,7 +44,7 @@ export const shelfOf = (day: string, context: ShopContext): ReadonlyArray<ItemDe
   const pool = context.catalog
     .filter(
       (item) =>
-        !isSigil(item) &&
+        !buysXp(item) &&
         !isFood(item) &&
         shop.rarities.includes(item.rarity) &&
         shop.categories.includes(item.category),
@@ -53,10 +60,10 @@ export const shelfOf = (day: string, context: ShopContext): ReadonlyArray<ItemDe
   return picked.sort(byRarityThenName)
 }
 
-/** The food on offer every day: each food of the shop's rarities. */
+/** The treats on offer every day: each food of the shop's rarities whose meal only lifts the mood, never XP food. */
 export const pantryOf = (context: ShopContext): ReadonlyArray<ItemDef> =>
   context.catalog
-    .filter((item) => isFood(item) && !isSigil(item) && context.rules.shop.rarities.includes(item.rarity))
+    .filter((item) => isFood(item) && !buysXp(item) && context.rules.shop.rarities.includes(item.rarity))
     .sort(byRarityThenName)
 
 /** An item of the shop today: its price and how many a day it sells. */
@@ -89,8 +96,8 @@ export const shopOffers = (state: PlayerState, context: ShopContext, now: string
   })
 }
 
-/** The items the player's shards can make now: every item but a sigil, of each rarity with enough shards. */
+/** The items the player's shards can make now: every item but a sigil or XP food, of each rarity with enough shards. */
 export const craftable = (state: PlayerState, context: Pick<Context, "rules" | "catalog">): ReadonlyArray<ItemDef> =>
   context.catalog.filter(
-    (item) => !isSigil(item) && state.holdings.shards[item.rarity] >= context.rules.loot.shardsToCraft,
+    (item) => !buysXp(item) && state.holdings.shards[item.rarity] >= context.rules.loot.shardsToCraft,
   )

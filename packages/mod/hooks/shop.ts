@@ -53,8 +53,9 @@ export const shopViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>): Sho
   for (const entry of inventory) copies.set(entry.itemId, (copies.get(entry.itemId) ?? 0) + 1)
   const offers = (Array.isArray(snapshot.shop) ? snapshot.shop : []).flatMap((offer): Array<OfferView> => {
     const def = byId.get(offer.itemId)
+    const food = def === undefined ? undefined : foodOf(def)
+    // Gold never buys XP: an offer of XP food or a sigil, from a server before treats, is not shown to buy.
     if (def === undefined) return []
-    const food = foodOf(def)
     return [
       {
         offerId: offer.offerId,
@@ -108,6 +109,7 @@ export const shopViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>): Sho
   const enough = new Set(
     shards.filter((one) => shardsToCraft !== null && one.count >= shardsToCraft).map((one) => one.rarity),
   )
+  // Shards never make what would buy XP: a sigil or XP food.
   const craftable = defs
     .filter((def) => def.sigil === undefined && enough.has(tierOf(def.rarity)))
     .map(
@@ -172,9 +174,18 @@ export const careViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>, now:
   }
 }
 
-/** A food's boost in words, `+10% XP for 1h`, or that it only feeds. */
-export const foodText = (food: FoodView | undefined): string =>
-  food === undefined ? '' : food === null ? 'a meal' : boostText(food)
+/** Whether food boosts XP when eaten: XP food, which comes only from play. A treat (null) only lifts the mood. */
+export const isXpFood = (food: FoodView | undefined): food is NonNullable<FoodView> =>
+  food !== undefined && food !== null
+
+/**
+ * What a meal does, in words: `+30 mood` for a treat, `+30 mood · +10% XP for 1h` for XP food; the mood left out when
+ * the rules don't say.
+ */
+export const foodText = (food: FoodView | undefined, fed: number | null): string =>
+  [...(fed === null || fed <= 0 ? [] : [`+${counted(fed)} mood`]), ...(isXpFood(food) ? [boostText(food)] : [])].join(
+    ' · ',
+  )
 
 /** Minutes left, in its two largest units: `1h 5m`, `42m`. */
 const leftText = (ms: number): string => {
@@ -292,12 +303,13 @@ const offerEntry = (
   const head = headOf(offer.name, offer.rarity, [kind, owned], room)
   const inner = width - detailIndent
   const fed = care?.fed ?? null
+  // A treat lifts the mood and nothing else: that is all the shop sells for the pet.
   const details: Array<Row> = isFood
     ? [
         clip(
           [
-            { text: foodText(offer.food), color: 'success' },
-            ...(fed === null || fed <= 0 ? [] : [dim(' · '), { text: `mood +${counted(fed)}`, color: 'error' }]),
+            ...(fed === null || fed <= 0 ? [dim('a treat')] : [{ text: `+${counted(fed)} mood`, color: 'error' }]),
+            dim(' · no XP'),
             ...(offer.stock === null || offer.stock === 0 ? [] : [dim(` · ${offer.stock} left today`)]),
           ],
           inner,
@@ -374,7 +386,7 @@ export const shopLayout = (
   const purse: Run = { text: `${goldText(shop.gold)} gold`, color: 'warning', bold: true }
   const intro = fitting(
     [
-      [{ text: 'Shop', bold: true }, dim('  looks and food for gold, a new shelf each day · '), purse],
+      [{ text: 'Shop', bold: true }, dim('  looks and treats for gold, a new shelf each day · '), purse],
       [{ text: 'Shop', bold: true }, dim('  a new shelf each day · '), purse],
       [{ text: 'Shop', bold: true }, dim('  '), purse],
     ],
@@ -415,13 +427,25 @@ export const shopLayout = (
     {
       key: 'food',
       title: titled(
-        'Food',
+        'Treats',
         petName === null ? ['for your pet, once it hatches', 'for your pet'] : [`for ${petName}`],
         width,
       ),
-      rows: [],
+      rows: [
+        fitting(
+          [
+            [
+              blank(entryIndent),
+              dim('They lift the mood. Food that boosts XP comes only from play: drops and missions.'),
+            ],
+            [blank(entryIndent), dim('They lift the mood; XP food comes from play.')],
+            [blank(entryIndent), dim('Mood only; XP food comes from play.')],
+          ],
+          width,
+        ),
+      ],
       entries: pantry.map((offer) => offerEntry(offer, shop.gold, now, width, care)),
-      empty: pantry.length === 0 ? clip([dim('No food on offer today.')], width - entryIndent) : null,
+      empty: pantry.length === 0 ? clip([dim('No treats on offer today.')], width - entryIndent) : null,
     },
     {
       key: 'spares',
@@ -537,20 +561,17 @@ export const petCardLayout = (care: CareView | null, pet: PetShown, columns: num
         )
   const fed = care.fed
   const meals = care.meals.map((meal): MealEntry => {
-    const notes = [meal.rarity, foodText(meal.food), ...(meal.copies > 1 ? [`${meal.copies} owned`] : [])]
+    const notes = [meal.rarity, foodText(meal.food, fed), ...(meal.copies > 1 ? [`${meal.copies} owned`] : [])]
     const head = headOf(meal.name, meal.rarity, notes, roomBeside(meal.name, buttonCells('Feed'), width, detailIndent))
     return { key: meal.itemId, entryId: meal.entryId, head, lore: meal.lore }
   })
   const empty =
     meals.length === 0
-      ? clip([dim('No food yet: the Shop tab sells it, and it drops as loot.')], width - detailIndent)
+      ? clip([dim('No food yet: the Shop tab sells treats, and XP food drops as loot.')], width - detailIndent)
       : null
   const food = fitting(
     [
-      [
-        { text: 'Food', bold: true },
-        ...(fed === null || fed <= 0 ? [] : [dim(`  a meal lifts the mood +${counted(fed)}`)]),
-      ],
+      [{ text: 'Food', bold: true }, dim('  treats lift the mood; XP food boosts XP too')],
       [{ text: 'Food', bold: true }],
     ],
     width - entryIndent,

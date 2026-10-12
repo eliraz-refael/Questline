@@ -22,7 +22,7 @@ describe("the shop and pet care, end to end", () => {
         const { shop, items } = opened.snapshot
         expect(shop.map((offer) => offer.stock)).toEqual([1, 1, 1, 1, 3, 3])
         for (const offer of shop) expect(items.some((item) => item.id === offer.itemId)).toBe(true)
-        const food = shop.find((offer) => offer.itemId === "trail-mix")
+        const food = shop.find((offer) => offer.itemId === "honey-biscuit")
         if (food === undefined) throw new Error("no food on offer")
 
         const buy: typeof ShopBuy.Type = { id: nextId(), type: "shop.buy", data: { offerId: food.offerId } }
@@ -33,7 +33,7 @@ describe("the shop and pet care, end to end", () => {
         // The level-up's drop may be food too: the meal is the one the shop sold.
         const meal = bought.snapshot.inventory.find((entry) => entry.source.kind === "shop")
         if (meal === undefined) throw new Error("the food never arrived")
-        expect(meal).toMatchObject({ itemId: "trail-mix", source: { kind: "shop", ref: food.offerId } })
+        expect(meal).toMatchObject({ itemId: "honey-biscuit", source: { kind: "shop", ref: food.offerId } })
 
         yield* api.runCommand({ payload: { id: nextId(), type: "dev.setMood", data: { mood: 40 } } })
         const fed = yield* api.runCommand({ payload: { id: nextId(), type: "pet.feed", data: { entryId: meal.id } } })
@@ -41,8 +41,9 @@ describe("the shop and pet care, end to end", () => {
         const patted = yield* api.runCommand({ payload: { id: nextId(), type: "pet.pet", data: {} } })
         expect(typesOf(patted)).toEqual(["pet.petted"])
         const after = yield* api.openSession({ payload: { sessionId: session } })
+        // A treat lifts the mood and nothing else: no XP boost from gold.
         expect(after.snapshot.pet?.mood).toBe(75)
-        expect(after.snapshot.boosts).toMatchObject([{ kind: "food", source: "trail-mix", xpBoostPct: 10 }])
+        expect(after.snapshot.boosts).toEqual([])
         expect(after.snapshot.inventory.some((entry) => entry.id === meal.id)).toBe(false)
       }),
       undefined,
@@ -78,7 +79,7 @@ describe("the shop and pet care, end to end", () => {
         expect(yield* api.runCommand({ payload: craft("arcane-sigil") })).toEqual({
           status: "refused",
           code: "not_allowed",
-          message: "Shards never make a sigil",
+          message: "Arcane Sigil is a sigil, which comes only from play, never from gold or shards",
         })
         expect(typesOf(yield* api.runCommand({ payload: craft("pixel-dragon") }))).toEqual(["shards.crafted"])
       }),
