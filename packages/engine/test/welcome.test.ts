@@ -141,6 +141,14 @@ describe("names the player picks", () => {
       expect(nameIssue(name, "your egg")).toMatch(/^A name takes letters, digits/)
     }
   })
+
+  it("refuse one within the most characters whose letters outside the BMP overflow what a state keeps", () => {
+    // Seventeen styled letters: within the 20 characters, but 34 UTF-16 code units, past the schema's Name.
+    const styled = "𝓐".repeat(17)
+    expect([...styled].length).toBeLessThanOrEqual(maxNameLength)
+    expect(nameIssue(styled, "your character")).toBe("That name's characters take too much room: try a shorter one")
+    expect(nameIssue("𝓐".repeat(16), "your character")).toBeNull()
+  })
 })
 
 describe("character.rename", () => {

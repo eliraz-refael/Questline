@@ -11,7 +11,7 @@ import type {
   SessionStartInput,
 } from 'claude-code'
 import type { QuestRewards } from '@pathofdev/schema'
-import type { BandLook, BandView, Celebration, MissionsView, MissionView, WelcomeStep } from '../types'
+import type { BandLook, BandView, Celebration, MissionsView, MissionView, WelcomeStep, WelcomeView } from '../types'
 import { barCells } from './band'
 import { joinQueue, queueOf, rewardsText } from './celebrate'
 import { cellsOf, cellsOfRow, glyphSlot } from './cells'
@@ -24,7 +24,7 @@ import { headerOf, renamedNote, tabBarOf } from './pane'
 import { clientVersion, initOf, socketPathsOf } from './server'
 import { statsLayout, twoColumnsFrom } from './stats'
 import { statsViewOf } from './view'
-import { closeSetsAside, lootText, stepperRow, taperText, xpText } from './welcome'
+import { closeSetsAside, freshWizard, lootText, stepperRow, taperText, welcomeLayout, xpText } from './welcome'
 
 // A fake local server beneath the mod: it answers the four routes, records what the mod sends, and holds the
 // stream until the test's clock passes 25 seconds, as the real one does.
@@ -196,6 +196,8 @@ type ServerOptions = {
   listensOn?: { at: string }
   /** The mod's pane is up already, as the engine keeps it across a reload. */
   isPaneUp?: boolean
+  /** A server that takes this long to answer a command, in ms. */
+  commandTakes?: number
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
@@ -320,6 +322,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     if (path === '/v1/commands') {
       if (options.commandStatus !== undefined) return reply(options.commandStatus, { error: 'internal' })
       if (options.downAfterCommand === true) options.isDown = true
+      if (options.commandTakes !== undefined) await clock.sleep(options.commandTakes)
       return reply(200, commandAnswer(body, options.owned, options.isDev === true, options.quests, options.kept))
     }
     // The stream answers as soon as the test hands it events, or after 25 seconds with none.
@@ -3294,6 +3297,74 @@ describe('the welcome', () => {
     expect(shown.texts).not.toContain('A name takes at most')
     await shown.ui.unmount()
     expect(commandsOf(sent)).toHaveLength(1)
+  })
+
+  test('review fix: a Back while a step saves leaves the wizard where the player put it', async ($, on) => {
+    const { sent, clock } = await streaming($, on, undefined, false, {
+      rules: welcomeRules,
+      kept: { welcome: fresh() },
+      commandTakes: 2_000,
+    })
+    let shown = await look($)
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    shown = await look($)
+    await shown.ui.input({ key: 'welcome:name', text: 'Ada', kind: 'change' })
+    // Next sends the rename, which the server is slow to answer; Back lands before it does.
+    await shown.ui.press({ key: 'welcome:next' })
+    await shown.ui.unmount()
+    shown = await look($)
+    await shown.ui.press({ key: 'welcome:back' })
+    await shown.ui.unmount()
+    await clock.advance(2_500)
+    await until(clock, () => commandsOf(sent).length === 1)
+    await clock.settle()
+    shown = await look($)
+    expect(shown.texts).toContain('Welcome to Path of Dev')
+    expect(shown.texts).not.toContain('Pick your egg')
+    await shown.ui.unmount()
+  })
+
+  test('review fix: the keys hint names as many egg keys as there are eggs, and none once hatched', () => {
+    const band: BandView = {
+      name: 'Player',
+      level: 0,
+      title: 'Apprentice',
+      glyph: '⚔',
+      xp: { total: 0, intoLevel: 0, forNextLevel: 100 },
+      gold: 0,
+      isDev: false,
+      pet: null,
+    }
+    const species = welcomeRules.pet.species.slice(0, 3)
+    const view: WelcomeView = {
+      isKnown: true,
+      isDone: false,
+      species,
+      egg: { species: 'fox', name: 'Ember' },
+      grading: { minWords: 6, maxXp: 20, perDay: null, counted: [], lootAtTen: null, greatAt: null, greatFactor: null },
+    }
+    const keys = (shown: WelcomeView, pet: BandView['pet'] = null) =>
+      welcomeLayout({
+        view: shown,
+        band: { ...band, pet },
+        wizard: { ...freshWizard, step: 'pet' },
+        columns: 72,
+        isFocused: true,
+        hasInput: true,
+      })
+        .keys.map((run) => run.text)
+        .join('')
+    expect(keys(view)).toBe('tab moves · enter presses · 1-3 picks an egg · esc hands the keys back')
+    expect(keys({ ...view, species: species.slice(0, 1) })).toContain(' · 1 picks the egg · ')
+    expect(keys(view, { species: 'fox', name: 'Ember', form: 0, mood: 90 })).toBe(
+      'tab moves · enter presses · esc hands the keys back',
+    )
+  })
+
+  test('review fix: says what a 7 earns as the engine prices it, to the thousandth', () => {
+    expect(xpText(25)).toBe('A 10 earns 25 XP and a 7 earns 17.5, before your sigil and boosts.')
+    expect(xpText(20)).toBe('A 10 earns 20 XP and a 7 earns 14, before your sigil and boosts.')
   })
 
   test('shows a pet that has hatched as it is, with no egg to pick, and sends no pick', async ($, on) => {

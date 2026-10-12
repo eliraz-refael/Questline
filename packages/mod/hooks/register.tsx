@@ -72,7 +72,15 @@ import type { SigilChoice } from './sigils'
 import { multiplierText, sigilChoices, wornSigil } from './sigils'
 import { statsLayout, titleRow } from './stats'
 import type { WelcomeLayout } from './welcome'
-import { closeSetsAside, freshWizard, stepAfter, stepBefore, welcomeLayout, welcomeViewOf } from './welcome'
+import {
+  closeSetsAside,
+  freshWizard,
+  speciesWord,
+  stepAfter,
+  stepBefore,
+  welcomeLayout,
+  welcomeViewOf,
+} from './welcome'
 import {
   batchesOf,
   batchGainOf,
@@ -853,14 +861,17 @@ const nextStep = async ($: EngineInterface, typed?: string) => {
           ? { ...at, petName: typed }
           : at
   const error = await saveStep($, draft, band, shown)
+  // A Back, or another press, while the save was out has moved the wizard on: it stands as they left it.
+  const moved = async () => ((await read($, wizard)) ?? freshWizard).step !== draft.step
   if (error !== null) {
-    await update($, wizard, () => ({ ...draft, error }))
+    if (!(await moved())) await update($, wizard, () => ({ ...draft, error }))
     return
   }
   if (draft.step === 'ready') {
     await leaveWelcome($)
     return
   }
+  if (await moved()) return
   await update($, wizard, () => ({ ...draft, step: stepAfter(draft.step), error: null }))
 }
 
@@ -1891,11 +1902,10 @@ export const register: Register = (on, options) => {
       // A server that runs the welcome names the egg, and its species and name can change there until it hatches.
       const greeted = await read($, welcome)
       const picked = greeted?.isKnown === true ? greeted.egg : null
-      const species = greeted?.species.find((one) => one.id === picked?.species)?.name ?? picked?.species ?? ''
       const egg = eggCardLayout(
         canHatch(current),
         columns,
-        picked === null ? null : { name: picked.name, species: species.toLowerCase() },
+        picked === null ? null : { name: picked.name, species: speciesWord(greeted?.species ?? [], picked.species) },
       )
       petSection = (
         <Box key="pet" flexDirection="column" marginBottom={1}>
@@ -2084,35 +2094,26 @@ const showTab = async ($: EngineInterface, next: PaneTab) => {
   if (was === 'welcome' && next !== 'welcome') await markWelcomed($)
 }
 
+/** Each run of a row as a Text of its own style, for `draw` and `para` to hold. */
+const runsOf = (Text: ElementConstructor<TextProps>, row: Row) =>
+  row.map((run, i) => (
+    <Text
+      key={String(i)}
+      {...(run.color === undefined ? {} : { color: run.color })}
+      {...(run.bold === undefined ? {} : { bold: run.bold })}
+      {...(run.dim === undefined ? {} : { dimColor: run.dim })}
+      {...(run.background === undefined ? {} : { backgroundColor: run.background })}
+    >
+      {run.text}
+    </Text>
+  ))
+
 /** One row of styled runs as one Text, cut at the band's edge rather than wrapped. */
 const draw = (Text: ElementConstructor<TextProps>, row: Row, key: string) => (
   <Text key={key} wrap="truncate">
-    {row.map((run, i) => (
-      <Text
-        key={String(i)}
-        {...(run.color === undefined ? {} : { color: run.color })}
-        {...(run.bold === undefined ? {} : { bold: run.bold })}
-        {...(run.dim === undefined ? {} : { dimColor: run.dim })}
-        {...(run.background === undefined ? {} : { backgroundColor: run.background })}
-      >
-        {run.text}
-      </Text>
-    ))}
+    {runsOf(Text, row)}
   </Text>
 )
 
 /** One paragraph of styled runs, wrapped to the width it is given rather than cut. */
-const para = (Text: ElementConstructor<TextProps>, row: Row, key: string) => (
-  <Text key={key}>
-    {row.map((run, i) => (
-      <Text
-        key={String(i)}
-        {...(run.color === undefined ? {} : { color: run.color })}
-        {...(run.bold === undefined ? {} : { bold: run.bold })}
-        {...(run.dim === undefined ? {} : { dimColor: run.dim })}
-      >
-        {run.text}
-      </Text>
-    ))}
-  </Text>
-)
+const para = (Text: ElementConstructor<TextProps>, row: Row, key: string) => <Text key={key}>{runsOf(Text, row)}</Text>

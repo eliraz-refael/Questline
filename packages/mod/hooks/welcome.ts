@@ -12,9 +12,6 @@ import { sprite } from './view'
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
-/** Whether the server runs the welcome: only one whose rules list the species an egg can be. */
-export const knowsWelcomeOf = (rules: Partial<RulesConfig>): boolean => Array.isArray(rules.pet?.species)
-
 const numberOr = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null)
 
 /** What the grading step says, from the rules beside the session and the `minWords` option. */
@@ -57,7 +54,8 @@ export const welcomeViewOf = (snapshot: Snapshot, rules: Partial<RulesConfig>, m
   const welcome: unknown = snapshot.welcome
   const egg: unknown = snapshot.egg
   return {
-    isKnown: knowsWelcomeOf(rules) && species.length > 0,
+    // Only a server whose rules list the species an egg can be runs the welcome.
+    isKnown: species.length > 0,
     // Read as done unless the snapshot says otherwise, so a reply missing it never offers the welcome again.
     isDone: !isRecord(welcome) || welcome['done'] !== false,
     species,
@@ -216,7 +214,8 @@ export const taperText = (bands: GradingView['perDay']): string | null => {
 export const xpText = (maxXp: number | null): string =>
   maxXp === null
     ? 'The better the grade, the more XP the prompt earns.'
-    : `A 10 earns ${maxXp} XP and a 7 earns ${Math.floor((maxXp * 7) / 10)}, before your sigil and boosts.`
+    : // As the engine rounds a grant: to the thousandth.
+      `A 10 earns ${maxXp} XP and a 7 earns ${Math.round(maxXp * 700) / 1000}, before your sigil and boosts.`
 
 /** The loot a grade rolls for, in a sentence, from the rules' chance at a 10 and the great grade's lift. */
 export const lootText = (grading: Pick<GradingView, 'lootAtTen' | 'greatAt' | 'greatFactor'>): string => {
@@ -309,7 +308,7 @@ export const gradingPoints = (grading: GradingView, width: number): Array<Gradin
 ]
 
 /** A species' name inside a sentence: `the owl`. */
-const speciesWord = (species: ReadonlyArray<SpeciesView>, id: string): string =>
+export const speciesWord = (species: ReadonlyArray<SpeciesView>, id: string): string =>
   (species.find((one) => one.id === id)?.name ?? id).toLowerCase()
 
 /** Everything a step reads beside the welcome itself. */
@@ -324,10 +323,13 @@ export type WelcomeInput = {
   hasInput: boolean
 }
 
-const keysHint = (isFocused: boolean, step: WelcomeStep): Row =>
-  isFocused
-    ? [dim(`tab moves · enter presses${step === 'pet' ? ' · 1-4 picks an egg' : ''} · esc hands the keys back`)]
+/** How to work the pane; `eggs` is how many egg cards carry a hotkey, on the pet step. */
+const keysHint = (isFocused: boolean, step: WelcomeStep, eggs: number): Row => {
+  const picks = step !== 'pet' || eggs === 0 ? '' : eggs === 1 ? ' · 1 picks the egg' : ` · 1-${eggs} picks an egg`
+  return isFocused
+    ? [dim(`tab moves · enter presses${picks} · esc hands the keys back`)]
     : [dim('ctrl+x tab, or a click, hands this pane the keys')]
+}
 
 /** The step the wizard is on, laid out for `columns`. */
 export const welcomeLayout = (input: WelcomeInput): WelcomeLayout => {
@@ -340,7 +342,7 @@ export const welcomeLayout = (input: WelcomeInput): WelcomeLayout => {
     error: wizard.error === null ? null : [{ text: wizard.error, color: 'error' }],
     back: step === 'hello' ? null : 'Back',
     skip: view.isDone ? 'Close' : 'Skip the welcome',
-    keys: keysHint(input.isFocused, step),
+    keys: keysHint(input.isFocused, step, view.isKnown && band.pet === null ? Math.min(9, view.species.length) : 0),
   }
   switch (step) {
     case 'hello':
