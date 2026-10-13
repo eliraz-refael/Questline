@@ -8,6 +8,7 @@ const shards = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 }
 
 const fresh = {
   characterName: "Player",
+  welcomedAt: null,
   timezone: "Europe/Berlin",
   progress: {
     xp: { verified: 0, reported: 0 },
@@ -43,6 +44,7 @@ const fresh = {
     inventory: [],
     equipped: {},
     pet: null,
+    egg: null,
     peakLevel: 0,
     achievements: [],
     completedQuests: [],
@@ -110,6 +112,20 @@ describe("PlayerState", () => {
     const mood = { value: 140, at }
     const pet = { species: "fox", name: "Ember", hatchedAt: at, forms: [0], form: 0, mood, petted: [] }
     expect(decodeState({ ...fresh, holdings: { ...fresh.holdings, pet } })._tag).toBe("Failure")
+  })
+})
+
+describe("PlayerState: the welcome", () => {
+  it("keeps when the welcome was done and the egg picked in it, and needs both, as the migration writes them", () => {
+    const egg = { species: "owl", name: "Hoot" }
+    const welcomed = { ...fresh, welcomedAt: at, holdings: { ...fresh.holdings, egg } }
+    expect(Schema.decodeUnknownSync(PlayerState)(welcomed)).toEqual(welcomed)
+    const { welcomedAt: _welcomedAt, ...unwelcomed } = fresh
+    expect(decodeState(unwelcomed)._tag).toBe("Failure")
+    const { egg: _egg, ...eggless } = fresh.holdings
+    expect(decodeState({ ...fresh, holdings: eggless })._tag).toBe("Failure")
+    const nameless = { ...fresh.holdings, egg: { ...egg, name: "" } }
+    expect(decodeState({ ...fresh, holdings: nameless })._tag).toBe("Failure")
   })
 })
 

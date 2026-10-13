@@ -4,10 +4,12 @@ import {
   catalogIssue,
   ClientEvent,
   clientEventTypes,
+  Command,
   CommandResponse,
   GitHubRepo,
   ItemDef,
   LevelCurve,
+  PetRules,
   PromptRules,
   ServerEvent,
   ShopRules,
@@ -246,6 +248,61 @@ describe("ServerEvent: the shop and pet care", () => {
   })
 })
 
+describe("PetRules: the species and the default egg", () => {
+  const pet = {
+    moodDecayPerDay: 10,
+    happyAbove: 70,
+    happyXpBonusPct: 5,
+    evolveAt: [10, 25, 50],
+    care: { fed: 30, petted: 5, pettedPerHour: 3 },
+    species: [
+      { id: "fox", name: "Fox", about: "quick and curious" },
+      { id: "owl", name: "Owl", about: "calm and wise" },
+    ],
+    egg: { species: "fox", name: "Ember" },
+  }
+  const decode = Schema.decodeUnknownExit(PetRules)
+
+  it("takes species with ids of their own, and a default egg of one of them", () => {
+    expect(decode(pet)._tag).toBe("Success")
+    expect(decode({ ...pet, egg: { species: "dragon", name: "Ember" } })._tag).toBe("Failure")
+    expect(decode({ ...pet, species: [pet.species[0], pet.species[0]] })._tag).toBe("Failure")
+    expect(decode({ ...pet, species: [] })._tag).toBe("Failure")
+    const spaced = { id: "Big Fox", name: "Fox", about: "" }
+    expect(decode({ ...pet, species: [spaced], egg: { species: "Big Fox", name: "E" } })._tag).toBe("Failure")
+  })
+})
+
+describe("Command: the welcome's choices", () => {
+  const decode = Schema.decodeUnknownExit(Command)
+
+  it("takes a typed name of any length up to 200, which the engine tidies and checks, and the welcome done", () => {
+    expect(decode({ id: ulid, type: "character.rename", data: { name: "  Ada  Lovelace " } })._tag).toBe("Success")
+    expect(decode({ id: ulid, type: "character.rename", data: { name: "x".repeat(40) } })._tag).toBe("Success")
+    expect(decode({ id: ulid, type: "character.rename", data: { name: "x".repeat(201) } })._tag).toBe("Failure")
+    expect(decode({ id: ulid, type: "egg.choose", data: { species: "owl", name: "Hoot" } })._tag).toBe("Success")
+    expect(decode({ id: ulid, type: "egg.choose", data: { name: "Hoot" } })._tag).toBe("Failure")
+    expect(decode({ id: ulid, type: "welcome.done", data: {} })._tag).toBe("Success")
+  })
+})
+
+describe("ServerEvent: the welcome", () => {
+  const event = (type: string, data: unknown) => ({ seq: 1, at, cause: ulid, type, data })
+  const decode = Schema.decodeUnknownExit(ServerEvent)
+
+  it("decodes a new name, an egg picked and the welcome done, each name held to 1-32 characters", () => {
+    for (const one of [
+      event("character.renamed", { name: "Ada" }),
+      event("egg.chosen", { species: "owl", name: "Hoot" }),
+      event("welcome.done", {}),
+    ]) {
+      expect(decode(one)._tag).toBe("Success")
+    }
+    expect(decode(event("character.renamed", { name: "" }))._tag).toBe("Failure")
+    expect(decode(event("egg.chosen", { species: "owl", name: "x".repeat(33) }))._tag).toBe("Failure")
+  })
+})
+
 describe("GitHubRepo", () => {
   it("accepts GitHub slugs and refuses path-like strings", () => {
     const valid = Schema.is(GitHubRepo)
@@ -439,6 +496,8 @@ describe("Snapshot", () => {
       equipped: {},
     },
     pet: null,
+    egg: { species: "fox", name: "Ember" },
+    welcome: { done: false },
     inventory: [],
     items: [],
     quests: [],

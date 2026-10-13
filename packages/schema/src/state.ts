@@ -2,7 +2,7 @@ import { Schema } from "effect"
 import { Boost, ClaimKind, ClaimStatus, InventoryEntry, Pet, Pity, PlayerStats } from "./domain.ts"
 import { Count, IsoDate, IsoDateTime, Name, Percent, QualityDimension, Rarity, Slot, Ulid } from "./primitives.ts"
 import { MissionCadence } from "./quests.ts"
-import { ScoringFact } from "./rules.ts"
+import { Egg, ScoringFact } from "./rules.ts"
 import { CheckoutRef, GitHubWork } from "./subjects.ts"
 
 // The rules engine's state for one player: one JSON document in `player_state` and `snapshots`. It stores facts,
@@ -162,6 +162,11 @@ export const Holdings = Schema.Struct({
   equipped: Schema.Record(Slot, Schema.optionalKey(Ulid)),
   /** Null until hatched at level 1. */
   pet: Schema.NullOr(OwnedPet),
+  /**
+   * The egg as the player picked it in the welcome, until it hatches as that species under that name; null when they
+   * never picked one, so it hatches as the rules' default egg.
+   */
+  egg: Schema.NullOr(Egg),
   /** Highest level reached since the last prestige. Reaching a level at or below it again grants nothing. */
   peakLevel: Count,
   achievements: Schema.Array(Schema.Struct({ id: Schema.String, unlockedAt: IsoDateTime })),
@@ -178,6 +183,8 @@ export interface Holdings extends Schema.Schema.Type<typeof Holdings> {}
 
 export const PlayerState = Schema.Struct({
   characterName: Name,
+  /** When the player finished or skipped the first-run welcome; null until then, so it shows once. */
+  welcomedAt: Schema.NullOr(IsoDateTime),
   /** IANA zone. Caps, streaks and dailies count local days in it; a replay reads it from here, not the clock. */
   timezone: Schema.String,
   progress: Progress,

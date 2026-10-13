@@ -4,8 +4,8 @@ import type { BandFrame, BandLook, BandSlot, ItemDef, Rarity, RulesConfig } from
 // the proof of concept: merges are reported XP until the verifier lands, so the loop has its big moment.
 
 export const starterRules: RulesConfig = {
-  version: 10,
-  schemaVersion: 7,
+  version: 11,
+  schemaVersion: 8,
   appliesFrom: null,
   // Steeper than the 1.6 before sigils: a player wearing the sigil typical of their stage reaches each level about
   // when one without sigils did, on the doc's steady day of 400 XP of work and 200 of prompts. Level 1 stays 100 XP.
@@ -69,6 +69,15 @@ export const starterRules: RulesConfig = {
     // A meal lifts the mood by three days' drift and a pat by half a day's, three pats an hour at most: a meal every
     // few days, or a few pats, keeps a pet happy.
     care: { fed: 30, petted: 5, pettedPerHour: 3 },
+    // The design doc's four starter eggs, in the order the welcome offers them. A player who never picks one hatches
+    // the fox Ember, as every egg did before the welcome.
+    species: [
+      { id: "fox", name: "Fox", about: "quick, curious" },
+      { id: "slime", name: "Slime", about: "soft, cheerful" },
+      { id: "robot", name: "Robot", about: "steady, precise" },
+      { id: "owl", name: "Owl", about: "calm, wise" },
+    ],
+    egg: { species: "fox", name: "Ember" },
   },
   // Four band styles a day, common and uncommon, one of each, and the treats every day, three of each. A steady day
   // earns about 240 gold (about 140 from five drops, the rest from missions), so a common style costs half a day's

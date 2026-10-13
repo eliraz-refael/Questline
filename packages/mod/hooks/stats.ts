@@ -35,7 +35,7 @@ export const twoColumnsFrom = 2 * 40 + cardGap
 const indent = 2
 
 /** The quality scores in the rubric's order, as the tab names them, with what raises each. */
-const dimensions: ReadonlyArray<{ id: string; label: string; tip: string }> = [
+export const dimensions: ReadonlyArray<{ id: string; label: string; tip: string }> = [
   { id: 'clarity', label: 'Clarity', tip: 'make the ask unambiguous' },
   { id: 'grammar', label: 'Grammar', tip: 'mind spelling and punctuation' },
   { id: 'specificity', label: 'Specificity', tip: 'name the files, errors, symbols' },

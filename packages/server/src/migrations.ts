@@ -366,6 +366,25 @@ const shopPetCare = Effect.gen(function* () {
   yield* sql`UPDATE player_state SET engine_version = 11, rules_version = 8 WHERE engine_version < 11`
 })
 
+// The first-run welcome (engine 13, rules 11): the state keeps when the player finished or skipped it, and the egg they
+// picked in it. A player saved before it has done neither, since every command that sets them is new, so a replay of
+// the log ends with both empty, as this leaves them: such a player is offered the welcome once, their save untouched.
+// The rows then read as engine 13 and rules 11, which their state now is.
+const welcome = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    UPDATE player_state
+    SET state = jsonb_set(state, '{welcomedAt}', 'null'::jsonb)
+    WHERE state -> 'welcomedAt' IS NULL
+  `
+  yield* sql`
+    UPDATE player_state
+    SET state = jsonb_set(state, '{holdings,egg}', 'null'::jsonb)
+    WHERE jsonb_typeof(state -> 'holdings') = 'object' AND state -> 'holdings' -> 'egg' IS NULL
+  `
+  yield* sql`UPDATE player_state SET engine_version = 13, rules_version = 11 WHERE engine_version < 13`
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
@@ -378,6 +397,7 @@ export const migrations = {
   "0008_presence": presence,
   "0009_sigils": sigils,
   "0010_shop_pet_care": shopPetCare,
+  "0011_welcome": welcome,
 }
 
 /** Runs the migrations not applied yet, in order. */

@@ -31,6 +31,7 @@ import { addDays, isLater, localDay } from "./days.ts"
 import { formFor, formsFor, glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import type { RarityWeights } from "./loot.ts"
 import { pityAfter, raiseRare, rarityRank, rollLoot } from "./loot.ts"
+import { nameIssue, tidyName } from "./names.ts"
 import { lifted, patted } from "./pet.ts"
 import { closeSpan, openSpan, prunePresence, spanAt } from "./presence.ts"
 import { equippedSigil, isSigil } from "./sigils.ts"
@@ -57,9 +58,10 @@ import { streakAsOf } from "./streak.ts"
 // This version covers the proof of concept: reported XP with daily caps, XP for graded prompts (times the equipped
 // sigil), levels, the streak, a loot roll per turn, per graded prompt (better odds for a better grade) and per
 // level-up, the player stats, the daily and weekly missions (parallel ones from the sessions the server says are open)
-// and their XP boosts, hatching the pet and caring for it (food and pats), equipping items, the shop, and trading
-// duplicates in (a re-roll for gold, or shards that craft a chosen item). Verified-tier facts wait for the verifier,
-// and other commands are refused for now.
+// and their XP boosts, hatching the pet and caring for it (food and pats), equipping items, the shop, trading
+// duplicates in (a re-roll for gold, or shards that craft a chosen item), and the first-run welcome's choices (the
+// character's name, the egg's species and name, and the welcome done). Verified-tier facts wait for the verifier, and
+// other commands are refused for now.
 
 /** What one step builds up. It lives only inside `step`, so the function stays pure. */
 interface Run {
@@ -321,6 +323,12 @@ const applyCommand = (state: PlayerState, command: Command, context: Context): S
       return salvage(state, command.data.entryId, context)
     case "shards.craft":
       return craft(state, command.data, context)
+    case "character.rename":
+      return rename(state, command.data.name, context)
+    case "egg.choose":
+      return chooseEgg(state, command.data, context)
+    case "welcome.done":
+      return welcomed(state, context)
     case "dev.grantItem":
     case "dev.grantStyles":
     case "dev.grantXp":
@@ -816,26 +824,86 @@ const prune = (run: Run): void => {
   })
 }
 
+/**
+ * The egg hatches at level 1: as the species and name the player picked for it in the welcome, else as the command
+ * names them (an older mod sends the fox Ember), which must be a species of the rules' and a name the engine keeps. A
+ * replay applies what the live run accepted, even if a rebalance has since moved the level below 1.
+ */
 const hatch = (state: PlayerState, data: { species: string; name: string }, context: Context): Step => {
   const { rules, now } = context
   if (state.holdings.pet !== null) return refuse(state, { code: "not_allowed", message: "The pet has hatched" })
-  // A replay applies what the live run accepted, even if a rebalance has since moved the level below 1.
-  if (context.mode.kind === "live" && levelOf(state, rules).level < 1) {
-    return refuse(state, { code: "not_allowed", message: "The egg hatches at level 1" })
+  const picked = state.holdings.egg
+  if (context.mode.kind === "live") {
+    if (levelOf(state, rules).level < 1) {
+      return refuse(state, { code: "not_allowed", message: "The egg hatches at level 1" })
+    }
+    const refusal = picked === null ? eggRefusal(data, rules) : null
+    if (refusal !== null) return refuse(state, refusal)
   }
+  const egg = picked ?? data
   const forms = formsFor(rules, state.holdings.peakLevel)
   const form = formFor(rules, state.holdings.peakLevel)
   const pet: OwnedPet = {
-    species: data.species,
-    name: data.name,
+    species: egg.species,
+    name: egg.name,
     hatchedAt: now,
     forms,
     form,
     mood: { value: 100, at: now },
     petted: [],
   }
-  const run = begin({ ...state, holdings: { ...state.holdings, pet } }, context)
+  const run = begin({ ...state, holdings: { ...state.holdings, pet, egg: null } }, context)
   run.events.push({ type: "pet.hatched", data: { species: pet.species, name: pet.name, form, mood: 100, equipped: {} } })
+  return finish(run)
+}
+
+/** Why an egg can't be: a species the rules don't have, or a name the engine doesn't keep. */
+const eggRefusal = (egg: { species: string; name: string }, rules: Context["rules"]): CommandRefusal | null => {
+  const species = rules.pet.species
+  if (!species.some((one) => one.id === egg.species)) {
+    const names = species.map((one) => one.name).join(", ")
+    return { code: "invalid", message: `No egg hatches as a ${egg.species}: pick one of ${names}` }
+  }
+  const issue = nameIssue(egg.name, "your egg")
+  return issue === null ? null : { code: "invalid", message: issue }
+}
+
+/** The character's name, tidied, as the band and the pane show it. */
+const rename = (state: PlayerState, typed: string, context: Context): Step => {
+  const name = tidyName(typed)
+  if (context.mode.kind === "live") {
+    const issue = nameIssue(name, "your character")
+    if (issue !== null) return refuse(state, { code: "invalid", message: issue })
+  }
+  const run = begin({ ...state, characterName: name }, context)
+  run.events.push({ type: "character.renamed", data: { name } })
+  return finish(run)
+}
+
+/**
+ * The egg picked in the welcome: a species of the rules' and a tidied name, which it hatches as. Once it has hatched
+ * the pet keeps both, so the pick is refused. A replay applies what the live run accepted.
+ */
+const chooseEgg = (state: PlayerState, data: { species: string; name: string }, context: Context): Step => {
+  const pet = state.holdings.pet
+  if (pet !== null) {
+    return refuse(state, { code: "not_allowed", message: `${pet.name} has hatched, and keeps its species and name` })
+  }
+  const egg = { species: data.species, name: tidyName(data.name) }
+  if (context.mode.kind === "live") {
+    const refusal = eggRefusal(egg, context.rules)
+    if (refusal !== null) return refuse(state, refusal)
+  }
+  const run = begin({ ...state, holdings: { ...state.holdings, egg } }, context)
+  run.events.push({ type: "egg.chosen", data: egg })
+  return finish(run)
+}
+
+/** The welcome finished or skipped: it never shows again on its own. Done again, it changes nothing. */
+const welcomed = (state: PlayerState, context: Context): Step => {
+  if (state.welcomedAt !== null) return finish(begin(state, context))
+  const run = begin({ ...state, welcomedAt: context.now }, context)
+  run.events.push({ type: "welcome.done", data: {} })
   return finish(run)
 }
 
