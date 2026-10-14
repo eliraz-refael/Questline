@@ -40,6 +40,9 @@ importers:
       '@pathofdev/schema':
         specifier: workspace:*
         version: link:../schema
+      effect:
+        specifier: 4.0.0
+        version: 4.0.0
 
   packages/schema:
     dependencies:

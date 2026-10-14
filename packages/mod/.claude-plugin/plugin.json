@@ -29,9 +29,15 @@
     "server": {
       "type": "string",
       "title": "Server",
-      "description": "Which local server the mod plays on: your own save (default), or the dev sandbox in ~/.pathofdev-dev for trying out band styles, XP and celebrations (start it with PATHOFDEV_DEV=1 pnpm --filter @pathofdev/server start). PATHOFDEV_HOME, when set, picks the home for either.",
-      "options": ["default", "dev"],
+      "description": "Which server the mod plays on: your own local save (default), the local dev sandbox in ~/.pathofdev-dev for trying out band styles, XP and celebrations (start it with PATHOFDEV_DEV=1 pnpm --filter @pathofdev/server start), or online, the public server at the Online server URL (closed beta). PATHOFDEV_HOME, when set, picks the home for either local one. Each server keeps its own queue of events.",
+      "options": ["default", "dev", "online"],
       "default": "default"
+    },
+    "serverUrl": {
+      "type": "string",
+      "title": "Online server URL",
+      "description": "The https address of the online server, used when Server is online. Anything but a plain https origin plays on https://api.pathof.dev. Online, the mod never sends a repo's name, only opaque keys.",
+      "default": "https://api.pathof.dev"
     }
   }
 }

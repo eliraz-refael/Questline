@@ -42,25 +42,33 @@ import {
   commitRef,
   compactionOf,
   exitIsTheRuns,
+  repoIn,
   repoOf,
   repoRef,
+  subjectFormOf,
   testRunner,
   workRef,
 } from './observe'
 import type { Repo } from './observe'
 import {
   answerOf,
-  initOf,
+  idOf,
   isClosed,
   isCommand,
   isEvents,
   isSession,
   isStream,
+  queueAfter,
+  requestOf,
   ServerDown,
+  settledBy,
   socketPathsOf,
+  storeKey,
   streamPathOf,
-  urlOf,
+  targetOf,
+  tokenOf,
 } from './server'
+import type { Route, Target } from './server'
 import { loops as isLooping, ownedLooks, ratesOf, wornLooks } from './looks'
 import type { MissionEntry } from './missions'
 import { knowsTogether, missionChip, missionsLayout, missionsViewOf, roomBeside } from './missions'
@@ -145,9 +153,10 @@ const retryMs = 5_000
 const closeMs = 500
 
 // Module memory: a reload runs session.start again, which sets it all anew.
-/** The `toasts` and `server` options. */
+/** The `toasts` and `server` options, and where the `server` and `serverUrl` options say the mod plays. */
 let toasts = true
 let server: ServerKind = 'default'
+let target: Target = { kind: 'local' }
 /** The `minWords` option, which the welcome's grading step says. */
 let gradeWords = 6
 /** Takes the gain's line down once it has stood a minute. */
@@ -189,8 +198,8 @@ let isPaneOpen = false
 let paneClock: Timer | null = null
 
 /**
- * One request to the local server, on the socket it last answered on, else on the others it may listen on. A failure
- * to reach it at all is `ServerDown`.
+ * One request to the target: to a local server on the socket it last answered on, else on the others it may listen
+ * on, or to the online server with the player's token. A failure to reach it at all is `ServerDown`.
  */
 async function call<A>(
   $: EngineInterface,
@@ -199,17 +208,20 @@ async function call<A>(
   body?: unknown,
   method?: 'DELETE',
 ): Promise<A> {
+  const route: Route = { path, ...(body === undefined ? {} : { body }), ...(method === undefined ? {} : { method }) }
+  const token = target.kind === 'online' ? tokenOf(await $.store.get(storeKey(target, 'token'))) : null
   let failure: unknown = null
-  const tried = [socket, ...sockets.filter((other) => other !== socket)]
+  const tried = target.kind === 'online' ? [target.origin] : [socket, ...sockets.filter((other) => other !== socket)]
   for (const at of tried) {
+    const { url, init } = requestOf(target, route, { socketPath: at, token })
     let response
     try {
-      response = await $.http.fetch(urlOf(path), initOf(at, body, method))
+      response = await $.http.fetch(url, init)
     } catch (cause) {
       failure ??= cause
       continue
     }
-    socket = at
+    if (target.kind === 'local') socket = at
     return answerOf(path, response, is)
   }
   throw new ServerDown(`The Path of Dev server does not answer on ${tried.join(' or ')}`, { cause: failure })
@@ -225,11 +237,8 @@ const runCommand = ($: EngineInterface, command: Command) => call($, '/v1/comman
 /** Answers once the stream moves past `after`, or after 25 seconds with nothing; each poll keeps the session live. */
 const stream = ($: EngineInterface, after: number) => call($, streamPathOf(after, sessionId), isStream)
 
-const idOf = (event: unknown): string | null =>
-  typeof event === 'object' && event !== null && 'id' in event && typeof event.id === 'string' ? event.id : null
-
 const queued = async ($: EngineInterface): Promise<Array<unknown>> => {
-  const stored = await $.store.get('queue')
+  const stored = await $.store.get(storeKey(target, 'queue'))
   return Array.isArray(stored) ? stored : []
 }
 
@@ -244,7 +253,7 @@ const changeQueue = <A,>(change: () => Promise<A>): Promise<A> => {
 
 const enqueue = ($: EngineInterface, event: ClientEvent) =>
   changeQueue(async () => {
-    await $.store.set('queue', [...(await queued($)), event].slice(-maxQueued))
+    await $.store.set(storeKey(target, 'queue'), [...(await queued($)), event].slice(-maxQueued))
   })
 
 const stamp = async ($: EngineInterface) => {
@@ -263,14 +272,12 @@ const flush = async ($: EngineInterface): Promise<void> => {
     for (;;) {
       const batch = (await queued($)).filter((event) => !waiting.has(idOf(event) ?? '')).slice(0, batchSize)
       if (batch.length === 0) return
-      const answer = await sendEvents($, batch)
-      const done = new Set(
-        answer.results.filter((result) => result.reason !== 'unknown_type').map((result) => result.id),
-      )
+      // A failure throws past here, so it settles nothing: a signed-out or offline server keeps every event.
+      const done = settledBy(await sendEvents($, batch))
       for (const event of batch) if (!done.has(idOf(event) ?? '')) waiting.add(idOf(event) ?? '')
       if (done.size > 0)
         await changeQueue(async () => {
-          await $.store.set('queue', (await queued($)).filter((event) => !done.has(idOf(event) ?? '')))
+          await $.store.set(storeKey(target, 'queue'), queueAfter(await queued($), done))
         })
     }
   } catch (error) {
@@ -543,7 +550,7 @@ const git = async ($: EngineInterface, cwd: string, args: ReadonlyArray<string>)
 const findRepo = async ($: EngineInterface, cwd: string) => {
   const top = await git($, cwd, ['rev-parse', '--show-toplevel'])
   if (top === null) return
-  repo = repoOf(await git($, cwd, ['remote', 'get-url', 'origin']), top)
+  repo = repoIn(subjectFormOf(target), repoOf(await git($, cwd, ['remote', 'get-url', 'origin']), top))
   const head = await git($, cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
   branch = head === null || head === 'HEAD' ? null : head
 }
@@ -552,7 +559,7 @@ const findRepo = async ($: EngineInterface, cwd: string) => {
 const explore = async ($: EngineInterface) => {
   if (repo === null) return
   const id = repo.kind === 'github' ? repo.name : repo.id
-  const stored = await $.store.get('explored')
+  const stored = await $.store.get(storeKey(target, 'explored'))
   const explored = Array.isArray(stored) ? stored : []
   if (explored.includes(id)) return
   await enqueue($, {
@@ -560,7 +567,7 @@ const explore = async ($: EngineInterface) => {
     type: 'repo.explored',
     data: { repo: await repoRef(secret, repo) },
   })
-  await $.store.set('explored', [...explored, id])
+  await $.store.set(storeKey(target, 'explored'), [...explored, id])
 }
 
 const machineSecret = async ($: EngineInterface): Promise<string> => {
@@ -773,9 +780,10 @@ const offerWelcome = async ($: EngineInterface) => {
 const openWelcome = async ($: EngineInterface, step: WelcomeStep = 'hello'): Promise<string> => {
   const shown = await read($, welcome)
   if (shown === null) {
-    return (await read($, link)) === 'offline'
-      ? `The Path of Dev server is not answering. Start it: ${startHint(server)}`
-      : 'Connecting to the Path of Dev server…'
+    if ((await read($, link)) !== 'offline') return 'Connecting to the Path of Dev server…'
+    return target.kind === 'online'
+      ? `The Path of Dev server at ${target.origin} is not answering.`
+      : `The Path of Dev server is not answering. Start it: ${startHint(server)}`
   }
   if (!shown.isKnown) return `The server predates the welcome: restart it with ${startHint(server)}`
   await update($, wizard, () => ({ ...freshWizard, step }))
@@ -993,6 +1001,7 @@ export const register: Register = (on, options) => {
   motion = motionOf(options)
   toasts = toastsOf(options)
   server = serverOf(options)
+  target = targetOf(options)
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
