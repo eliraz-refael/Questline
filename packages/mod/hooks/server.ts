@@ -22,8 +22,13 @@ export class ServerDown extends Error {}
 /** The online server wants a sign-in: its token is missing, revoked, or no longer in the beta. */
 export class SignedOut extends ServerDown {}
 
-/** Where the mod plays: a local server over its Unix socket, or the public server at an https origin. */
-export type Target = { readonly kind: 'local' } | { readonly kind: 'online'; readonly origin: string }
+/**
+ * Where the mod plays: a local server over its Unix socket (the player's own save, or with `dev` the dev sandbox), or
+ * the public server at an https origin.
+ */
+export type Target =
+  | { readonly kind: 'local'; readonly dev?: true }
+  | { readonly kind: 'online'; readonly origin: string }
 
 /** The public server, when the `serverUrl` option names none. */
 export const publicOrigin = 'https://api.pathof.dev'
@@ -52,15 +57,18 @@ export const targetOf = (options: PluginOptions): Target => {
   const url = options['serverUrl']
   return options['server'] === 'online'
     ? { kind: 'online', origin: (typeof url === 'string' ? originOf(url) : null) ?? publicOrigin }
-    : { kind: 'local' }
+    : options['server'] === 'dev'
+      ? { kind: 'local', dev: true }
+      : { kind: 'local' }
 }
 
 /**
- * The store key of `name` for a target: a local server's is the name itself, as before there were targets, and each
- * online origin has its own, so nothing queued for one server is ever sent to another.
+ * The store key of `name` for a target: the player's own local save keeps the name itself, as before there were
+ * targets; the dev sandbox and each online origin have their own, so nothing queued for one server is ever sent to
+ * another.
  */
 export const storeKey = (target: Target, name: string): string =>
-  target.kind === 'local' ? name : `${name}@${target.origin}`
+  target.kind === 'online' ? `${name}@${target.origin}` : target.dev === true ? `${name}@dev` : name
 
 /** The player's game token as the store holds it, or null when there is none. */
 export const tokenOf = (stored: unknown): string | null => (typeof stored === 'string' && stored !== '' ? stored : null)

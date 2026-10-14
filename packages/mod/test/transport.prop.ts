@@ -112,9 +112,9 @@ describe('requests', () => {
 
 describe('store keys', () => {
   const Name = Schema.Literals(['queue', 'explored', 'token'])
-  const ValidTarget = Schema.Union([Schema.Struct({ kind: Schema.Literal('local') }), Url])
+  const ValidTarget = Schema.Union([Schema.Struct({ kind: Schema.Literal('local'), dev: Schema.Boolean }), Url])
   const valid = (target: typeof ValidTarget.Type): Target => {
-    if ('kind' in target) return { kind: 'local' }
+    if ('kind' in target) return target.dev ? { kind: 'local', dev: true } : { kind: 'local' }
     return { kind: 'online', origin: originOf(urlOf(target)) ?? publicOrigin }
   }
 

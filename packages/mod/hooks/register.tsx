@@ -62,6 +62,7 @@ import {
   requestOf,
   ServerDown,
   settledBy,
+  SignedOut,
   socketPathsOf,
   storeKey,
   streamPathOf,
@@ -210,6 +211,8 @@ async function call<A>(
 ): Promise<A> {
   const route: Route = { path, ...(body === undefined ? {} : { body }), ...(method === undefined ? {} : { method }) }
   const token = target.kind === 'online' ? tokenOf(await $.store.get(storeKey(target, 'token'))) : null
+  // With no token the online server can only answer 401: don't knock every few seconds to hear it.
+  if (target.kind === 'online' && token === null) throw new SignedOut(`${path}: not signed in to ${target.origin}`)
   let failure: unknown = null
   const tried = target.kind === 'online' ? [target.origin] : [socket, ...sockets.filter((other) => other !== socket)]
   for (const at of tried) {
@@ -226,6 +229,15 @@ async function call<A>(
   }
   throw new ServerDown(`The Path of Dev server does not answer on ${tried.join(' or ')}`, { cause: failure })
 }
+
+/** What to do when the target doesn't answer: start the local server, or wait on the online one. */
+const offlineHint = (): string =>
+  target.kind === 'online' ? `the server at ${target.origin} is not answering` : `start the server: ${startHint(server)}`
+
+const notAnswering = (): string =>
+  target.kind === 'online'
+    ? `The Path of Dev server at ${target.origin} is not answering.`
+    : `The Path of Dev server is not answering. Start it: ${startHint(server)}`
 
 /** Opens the session, or says it is still here; `presence` asks the server to count it live while this mod polls. */
 const openSession = ($: EngineInterface) => call($, '/v1/sessions', isSession, { sessionId, presence: true })
@@ -780,10 +792,7 @@ const offerWelcome = async ($: EngineInterface) => {
 const openWelcome = async ($: EngineInterface, step: WelcomeStep = 'hello'): Promise<string> => {
   const shown = await read($, welcome)
   if (shown === null) {
-    if ((await read($, link)) !== 'offline') return 'Connecting to the Path of Dev server…'
-    return target.kind === 'online'
-      ? `The Path of Dev server at ${target.origin} is not answering.`
-      : `The Path of Dev server is not answering. Start it: ${startHint(server)}`
+    return (await read($, link)) === 'offline' ? notAnswering() : 'Connecting to the Path of Dev server…'
   }
   if (!shown.isKnown) return `The server predates the welcome: restart it with ${startHint(server)}`
   await update($, wizard, () => ({ ...freshWizard, step }))
@@ -1208,7 +1217,7 @@ export const register: Register = (on, options) => {
             <Text color="claude" bold>
               ⚔ Path of Dev{' '}
             </Text>
-            <Text dimColor>offline · start the server: {startHint(server)}</Text>
+            <Text dimColor>offline · {offlineHint()}</Text>
           </Box>
         </Box>
       )
@@ -1342,7 +1351,7 @@ export const register: Register = (on, options) => {
     if (current === null || owned === null) {
       const why =
         status === 'offline'
-          ? `The Path of Dev server is not answering. Start it: ${startHint(server)}`
+          ? notAnswering()
           : 'Connecting to the Path of Dev server…'
       return (
         <Box flexDirection="column" paddingX={1}>
