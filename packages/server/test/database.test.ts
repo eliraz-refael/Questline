@@ -95,4 +95,16 @@ describe("the server's randomness", () => {
         expect(yield* hexFrom(seed, bytes)).toBe(drawn)
       }),
   )
+
+  it.effect.prop("starts again from its seed each time one layer is built", [Schema.String], ([seed]) =>
+    Effect.gen(function* () {
+      // One layer value, as a fixture defined once at module load is: each build must start its own generator.
+      const layer = ServerRandom.layer(seed)
+      const draw = Effect.gen(function* () {
+        const random = yield* ServerRandom
+        return yield* random.hex(16)
+      }).pipe(Effect.provide(layer))
+      expect(yield* draw).toBe(yield* draw)
+    }),
+  )
 })

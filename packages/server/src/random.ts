@@ -19,11 +19,16 @@ export class ServerRandom extends Context.Service<
     readonly rollSeed: Effect.Effect<string>
   }
 >()("pathofdev/ServerRandom") {
-  /** Seeded with `seed`, or once from the OS when none is given. */
+  /**
+   * Seeded with `seed`, or from the OS when none is given, each time the layer is built: a layer built twice starts
+   * two generators, never one shared between them.
+   */
   static readonly layer = (seed?: string) =>
     Layer.effect(
       ServerRandom,
-      Effect.map(Random.Random.pipe(Random.withSeed(seed ?? randomBytes(32).toString("hex"))), randomOf),
+      Effect.suspend(() =>
+        Effect.map(Random.Random.pipe(Random.withSeed(seed ?? randomBytes(32).toString("hex"))), randomOf),
+      ),
     )
 }
 
