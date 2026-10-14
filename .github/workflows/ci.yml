@@ -59,7 +59,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      # Only the server's tests touch a database; the rest already ran in `ci`.
+      - run: pnpm test packages/server
 
   # The Claude Code mod runs on the engine's own runtime, so its checks are the engine's: validate reads it as a
   # session would, and the mod's tests run against the engine's test kit.
