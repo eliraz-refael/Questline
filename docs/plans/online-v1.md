@@ -59,7 +59,7 @@ profiles at pathof.dev/u/:login, deployed on Coolify behind CI. Local PGlite pla
 ## Architecture
 ```
 mod (server=online, queue:online, token:online) --HTTPS+Bearer--> Cloudflare --> Traefik
-  api.pathof.dev  -> public server (same build) -> Postgres 17 (Coolify) -> R2 daily
+  api.pathof.dev  -> public server (same build) -> Postgres 18 (Coolify) -> R2 daily
   pathof.dev/u/*  -> public server (profiles, s-maxage=60, CF cache rule)
   pathof.dev/*    -> static site/ (nginx)
 mod --device flow--> github.com (client_id only) ; server --GET /user--> api.github.com
@@ -89,7 +89,7 @@ Dependencies: schema <- engine <- server <- (local-main | public-main); mod -> s
 ## Implementation order (PRs)
 0  Site numbers + guard (site/index.html, site.test.ts)                         [parallel]
 1  Postgres parity: @effect/sql-pg, db.ts, services.ts core, Effect Random (7B), fixture DB switch
-   (PATHOFDEV_TEST_DATABASE_URL), CI matrix pglite|postgres:17, per-file schema, 0009/0010 on PG with rows [parallel]
+   (PATHOFDEV_TEST_DATABASE_URL), CI matrix pglite|postgres:18, per-file schema, 0009/0010 on PG with rows [parallel]
 3  Mod transport: Target/requestOf/headersOf, per-target store keys, subjectFormOf, option server=online + url,
    packages/mod/test properties; prove $.http.fetch over HTTPS with headers         [parallel with 1-2]
 2  Per-request identity: Authentication + CurrentPlayer in schema, LocalAuth, handlers read per request,
