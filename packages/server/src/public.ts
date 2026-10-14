@@ -74,7 +74,10 @@ export class BadConfig extends Data.TaggedError("BadConfig")<{
 
 /** The settings `env` holds, or the first var missing or unreadable, by name; never what it holds. */
 export const publicConfigOf = (env: Readonly<Record<string, string | undefined>>) => {
-  const provider = ConfigProvider.fromEnv({ env: env as Record<string, string> })
+  // An empty var counts as unset, as `isMissing` says: one with a default takes it, a required one stops the boot.
+  const set: Record<string, string> = {}
+  for (const [name, value] of Object.entries(env)) if (value !== undefined && value !== "") set[name] = value
+  const provider = ConfigProvider.fromEnv({ env: set })
   const read = <A>(variable: PublicVar, config: Config.Config<A>) =>
     config.parse(provider).pipe(
       Effect.mapError(() => new BadConfig({ variable, isMissing: (env[variable] ?? "") === "" })),

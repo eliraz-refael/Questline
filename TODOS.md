@@ -55,6 +55,17 @@ the work is, why it matters, where things stand and what it waits on.
   the decoded input's JSON (`\u0000`, or `\ud800`-`\udfff` not in a pair) is enough; names already have patterns.
 - **Depends on:** nothing.
 
+### Change a session and log its event in one transaction
+
+- **What:** in `presence.ts`, opening, closing and lapsing a session should change the `sessions` row and log its
+  `session.*` event in one transaction, with the version guard inside it.
+- **Why:** today `writer.guard` runs first, then the `sessions` change commits, then `apply` logs the event. If a newer
+  build writes the player in between (a deploy rolling out), the event fails with `ServerBehind` after the row has
+  committed: a new session is kept but `session.opened` is never logged, and the mod's retry finds it already heard.
+- **Context:** wrapping both in one outer transaction nests `apply`'s, so `StreamHub.notify` would fire before the real
+  commit and wake waiters early. Notify has to move after the outer commit. Found in the review of PR #32; a single
+  replica makes the window small.
+
 ### Purge Cloudflare's cache when a profile changes
 
 - **What:** when a player hides a section, makes their profile private or deletes their account, purge

@@ -58,7 +58,7 @@ jobs:
         if: steps.secrets.outputs.ready == 'true'
         run: |
           key=$(aws s3api list-objects-v2 --endpoint-url "$R2_ENDPOINT" --bucket "$R2_BUCKET" --output text \
-            --query "sort_by(Contents[?ends_with(Key, '.dmp') || ends_with(Key, '.gz') || ends_with(Key, '.sql')], &LastModified)[-1].Key")
+            --query "sort_by(Contents[?ends_with(Key, '.dmp') || ends_with(Key, '.gz') || ends_with(Key, '.sql')] || \`[]\`, &LastModified)[-1].Key")
           if [ -z "$key" ] || [ "$key" = None ]; then echo "::error::No dump in the bucket"; exit 1; fi
           echo "Newest dump: $key"
           echo "Restored \`$key\`" >> "$GITHUB_STEP_SUMMARY"
@@ -70,7 +70,7 @@ jobs:
         if: steps.secrets.outputs.ready == 'true'
         run: |
           psql --quiet --command 'CREATE DATABASE restored'
-          pg() { docker run --rm --network host --volume "$PWD:/work" --workdir /work \
+          pg() { docker run --rm --interactive --network host --volume "$PWD:/work" --workdir /work \
             --env PGHOST --env PGUSER --env PGPASSWORD postgres:18 "$@"; }
           if [ "$(head -c 5 dump)" = PGDMP ]; then
             pg pg_restore --no-owner --no-privileges --exit-on-error --dbname restored dump

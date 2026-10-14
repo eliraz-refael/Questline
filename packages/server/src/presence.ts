@@ -171,14 +171,15 @@ const make = Effect.gen(function* () {
             reason: "lapsed",
             at: row.last_heard_at,
           }
-          // A save a newer build wrote is that build's to close: the session stays open until one runs again.
-          const isNewer = yield* writer.guard(row.player_id).pipe(
-            Effect.as(false),
-            Effect.catchTag("ServerBehind", () => Effect.succeed(true)),
-          )
-          if (isNewer || !(yield* lapse(row).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) continue
-          closed += 1
-          yield* record(row.player_id, now, event)
+          // A save a newer build wrote is that build's to close: the session stays open until one runs again. One
+          // written between the guard and the record fails only this row, never the rest of the sweep.
+          const isClosed = yield* Effect.gen(function* () {
+            yield* writer.guard(row.player_id)
+            if (!(yield* lapse(row).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) return false
+            yield* record(row.player_id, now, event)
+            return true
+          }).pipe(Effect.catchTag("ServerBehind", () => Effect.succeed(false)))
+          if (isClosed) closed += 1
         }
         return closed
       }),
