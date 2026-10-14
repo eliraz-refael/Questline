@@ -1,8 +1,8 @@
 import { it } from "@effect/vitest"
-import { Effect, Random, Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
-import { migrate, randomHex } from "../src/index.ts"
+import { migrate, ServerRandom } from "../src/index.ts"
 import { client, commit, merged, prompt, session, withServer } from "./fixtures.ts"
 
 // What holds on either database the server runs on (PGlite, or Postgres in CI), and of the server's own randomness.
@@ -62,6 +62,13 @@ describe("the database", () => {
     ), serverRuns)
 })
 
+/** `bytes` bytes of hex from a generator freshly seeded with `seed`. */
+const hexFrom = (seed: string, bytes: number) =>
+  Effect.gen(function* () {
+    const random = yield* ServerRandom
+    return yield* random.hex(bytes)
+  }).pipe(Effect.provide(ServerRandom.layer(seed)))
+
 describe("the server's randomness", () => {
   it.effect.prop("gives the same ids and roll seeds from the same seed", [Schema.NonEmptyString, Work], ([seed, work]) =>
     Effect.gen(function* () {
@@ -83,9 +90,9 @@ describe("the server's randomness", () => {
     [Schema.String, Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 64 }))],
     ([seed, bytes]) =>
       Effect.gen(function* () {
-        const drawn = yield* randomHex(bytes).pipe(Random.withSeed(seed))
+        const drawn = yield* hexFrom(seed, bytes)
         expect(drawn).toMatch(new RegExp(`^[0-9a-f]{${bytes * 2}}$`))
-        expect(yield* randomHex(bytes).pipe(Random.withSeed(seed))).toBe(drawn)
+        expect(yield* hexFrom(seed, bytes)).toBe(drawn)
       }),
   )
 })

@@ -3,9 +3,9 @@ import { initialState, levelForXp, levelOf, starterRules, step } from "@pathofde
 import type { CommandRefusal, Context, Recorded } from "@pathofdev/schema"
 import { Input, PlayerState } from "@pathofdev/schema"
 import { Effect, Schema } from "effect"
-import { Migrator, SqlClient } from "effect/sql"
+import { SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
-import { carriedXp, catalog, migrate, migrations } from "../src/index.ts"
+import { carriedXp, catalog, migrate, migrations, runMigrations } from "../src/index.ts"
 import { commit, hatch, minutesLater, nextId, profile, prompt, start, testSql } from "./fixtures.ts"
 
 // Each test starts a fresh PGlite and runs every migration: the first cold start can take seconds on a CI runner.
@@ -15,7 +15,7 @@ describe("migrations", () => {
   it.effect("start a player saved before the player stats from zero, and leave a newer one's alone", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
-      yield* Migrator.make({})({ loader: Migrator.fromRecord({ "0001_initial": migrations["0001_initial"] }) })
+      yield* runMigrations({ "0001_initial": migrations["0001_initial"] })
       const fresh = initialState({ ...profile, now: start })
       const { stats: _stats, ...before } = fresh.progress
       const saved = { ...fresh, progress: before }
@@ -41,7 +41,7 @@ describe("migrations", () => {
   it.effect("give celebrations stored before tiers the tier the engine now stages them at", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
-      yield* Migrator.make({})({ loader: Migrator.fromRecord({ "0001_initial": migrations["0001_initial"] }) })
+      yield* runMigrations({ "0001_initial": migrations["0001_initial"] })
       yield* sql`
         INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
         VALUES ('p', NULL, NULL, 'Player', 'seed', ${start})
@@ -70,12 +70,10 @@ describe("migrations", () => {
   it.effect("give level-ups stored before glyphs the starter's glyph for their level", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
-      yield* Migrator.make({})({
-        loader: Migrator.fromRecord({
-          "0001_initial": migrations["0001_initial"],
-          "0002_player_stats": migrations["0002_player_stats"],
-          "0003_celebration_tiers": migrations["0003_celebration_tiers"],
-        }),
+      yield* runMigrations({
+        "0001_initial": migrations["0001_initial"],
+        "0002_player_stats": migrations["0002_player_stats"],
+        "0003_celebration_tiers": migrations["0003_celebration_tiers"],
       })
       yield* sql`
         INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
@@ -108,7 +106,7 @@ describe("migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const { "0005_band_looks": _looks, ...before } = migrations
-      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      yield* runMigrations(before)
       yield* sql`
         INSERT INTO players (id, github_user_id, github_login, display_name, roll_seed, created_at)
         VALUES ('p', NULL, NULL, 'Player', 'seed', ${start})
@@ -139,7 +137,7 @@ describe("migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0006"))
-      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      yield* runMigrations(before)
       const fresh = initialState({ ...profile, now: start })
       const { bestStreak: _best, ...progress } = fresh.progress
       const { best: _grade, dimensions: _dimensions, ...prompts } = fresh.progress.stats.prompts
@@ -203,7 +201,7 @@ describe("migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0007"))
-      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      yield* runMigrations(before)
       const fresh = initialState({ ...profile, now: start })
       const { questWindows: _windows, ...progress } = fresh.progress
       yield* sql`
@@ -227,7 +225,7 @@ describe("migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0010"))
-      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      yield* runMigrations(before)
       // The log: the egg hatched, then a pat, which the server before care refused.
       const hatched: Input = { kind: "command", command: hatch() }
       const patted: Input = { kind: "command", command: { id: nextId(), type: "pet.pet", data: {} } }
@@ -292,7 +290,7 @@ describe("migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0011"))
-      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      yield* runMigrations(before)
       // The log: the egg hatched, then a prompt graded 8, which earned XP and dropped nothing.
       const context = { rollSeed: "seed", rules: starterRules, catalog, questPacks: [] }
       const replaying: Context["mode"] = { kind: "replay", recorded: { rolls: [], refusal: null } }
@@ -373,7 +371,7 @@ describe("migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0009"))
-      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      yield* runMigrations(before)
       const fresh = initialState({ ...profile, now: start })
       // 5,000 XP was level 11 and about half way to 12 under 100 * L^1.6.
       const boost = { source: "trail-mix", xpBoostPct: 10, endsAt: "2026-10-09T09:00:00.000Z" }

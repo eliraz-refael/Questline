@@ -3,7 +3,7 @@ import { Context, Duration, Effect, Layer, Option, Schema, Semaphore } from "eff
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
 import { nowIso } from "./game.ts"
-import { newId } from "./random.ts"
+import { ServerRandom } from "./random.ts"
 import { PlayerWriter } from "./writer.ts"
 
 // Presence: which of a player's sessions are live. A mod that keeps its session live opens it with `POST /v1/sessions`,
@@ -51,6 +51,7 @@ export const lapse = (row: Unheard) =>
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const random = yield* ServerRandom
   const writer = yield* PlayerWriter
   // A table change and the input it logs go together, one at a time, so an open and a close of one session never
   // reach the engine in the other order.
@@ -76,7 +77,7 @@ const make = Effect.gen(function* () {
   })
 
   const record = (playerId: string, now: string, event: SystemEvent) =>
-    Effect.flatMap(newId(now), (id) =>
+    Effect.flatMap(random.id(now), (id) =>
       writer.apply(playerId, now, [{ id, input: { kind: "system", event }, naturalKey: null }]),
     )
 

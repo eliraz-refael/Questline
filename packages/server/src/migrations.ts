@@ -1,7 +1,8 @@
 import { levelForXp, xpForLevel } from "@pathofdev/engine"
 import { Clock, Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
-import { newId } from "./random.ts"
+import type { SqlError } from "effect/sql/SqlError"
+import { ServerRandom } from "./random.ts"
 
 // The proof of concept's tables (see the design doc's Data model). The event log is the truth; player_state is the
 // engine state at its head. Times the engine reads are kept as the ISO strings it was given, so a replay sees the
@@ -303,6 +304,7 @@ const SavedXp = Schema.Struct({
 
 const sigils = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const random = yield* ServerRandom
   const now = new Date(yield* Clock.currentTimeMillis).toISOString()
   const rows = yield* sql<{ player_id: string; state: unknown; log_seq: number }>`
     SELECT player_id, state, log_seq FROM player_state WHERE rules_version < ${carriedCurve.rulesVersion}
@@ -329,7 +331,7 @@ const sigils = Effect.gen(function* () {
     if (amount === 0) continue
     const logSeq = row.log_seq + 1
     const input = { kind: "system", event: { type: "xp.carried", amount, rulesVersion: carriedCurve.rulesVersion } }
-    const id = yield* newId(now, logSeq)
+    const id = yield* random.id(now, logSeq)
     // The versions the carry was made under: engine 10, rules 7, catalogue 4, the first input schema.
     yield* sql`
       INSERT INTO event_log (
@@ -400,5 +402,18 @@ export const migrations = {
   "0011_welcome": welcome,
 }
 
+/** A migration: what it needs past the database is the server's randomness, for the ids of the inputs it logs. */
+export type Migration = Effect.Effect<void, SqlError | Schema.SchemaError, SqlClient.SqlClient | ServerRandom>
+
+/** Runs those of `record` not applied yet, in the order of their names. */
+export const runMigrations = (record: Readonly<Record<string, Migration>>) =>
+  Effect.gen(function* () {
+    const random = yield* ServerRandom
+    const provided = Object.fromEntries(
+      Object.entries(record).map(([name, migration]) => [name, Effect.provideService(migration, ServerRandom, random)]),
+    )
+    return yield* Migrator.make({})({ loader: Migrator.fromRecord(provided) })
+  })
+
 /** Runs the migrations not applied yet, in order. */
-export const migrate = Migrator.make({})({ loader: Migrator.fromRecord(migrations) })
+export const migrate = runMigrations(migrations)

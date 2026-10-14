@@ -3,11 +3,11 @@ import { initialState } from "@pathofdev/engine"
 import type { ServerEvent } from "@pathofdev/schema"
 import { PlayerState } from "@pathofdev/schema"
 import { Effect, Schema } from "effect"
-import { Migrator, SqlClient } from "effect/sql"
+import { SqlClient } from "effect/sql"
 import { TestClock } from "effect/testing"
 import { describe, expect } from "vitest"
-import { CurrentPlayer, lapse, migrate, migrations, Presence } from "../src/index.ts"
-import { client, minutesLater, nextId, profile, prompt, session, start, testSql, withServer } from "./fixtures.ts"
+import { lapse, migrate, migrations, Presence, runMigrations } from "../src/index.ts"
+import { client, localPlayer, minutesLater, nextId, profile, prompt, session, start, testSql, withServer } from "./fixtures.ts"
 
 // Presence over the routes: a mod that keeps its session live opens it, its stream polls keep it fresh, and it closes
 // it at the end; the sweep closes one unheard for two minutes. Only the changes reach the log.
@@ -171,7 +171,7 @@ describe("presence: review fixes", () => {
       Effect.gen(function* () {
         const api = yield* client
         const presence = yield* Presence
-        const player = yield* CurrentPlayer
+        const player = yield* localPlayer
         yield* api.openSession({ payload: { sessionId: session, presence: true } })
         // What the sweep saw: unheard since the start. A poll then names the session before the close.
         const seen = { player_id: player.id, session_id: session, last_heard_at: start }
@@ -203,7 +203,7 @@ describe("the presence migration", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const before = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < "0008"))
-      yield* Migrator.make({})({ loader: Migrator.fromRecord(before) })
+      yield* runMigrations(before)
       const fresh = initialState({ ...profile, now: start })
       const mission = {
         questId: "light-packer",

@@ -1,18 +1,19 @@
 import type { CommandResponse, EventResult, ServerEvent } from "@pathofdev/schema"
-import { clientEventTypes, PathOfDevApi } from "@pathofdev/schema"
+import { clientEventTypes, CurrentPlayer, PathOfDevApi } from "@pathofdev/schema"
 import { Clock, Duration, Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import type { Admitted } from "./edge.ts"
 import { admit } from "./edge.ts"
 import { minClientVersion, nowIso, rules } from "./game.ts"
 import { StreamHub } from "./hub.ts"
-import { CurrentPlayer, Players } from "./players.ts"
+import { Players } from "./players.ts"
 import { Presence } from "./presence.ts"
 import type { Applied } from "./writer.ts"
 import { PlayerWriter } from "./writer.ts"
 
 // The routes the mod uses. Database and decoding failures here are defects: the mod retries the request, and every
-// input is idempotent by id.
+// input is idempotent by id. Each handler reads the player it acts for from its own request, which the server's
+// `Authentication` provides: the services are built once and shared by every player.
 
 /** A held stream answers with nothing after this long, under the proxies' 30-second limit. */
 export const streamTimeout = Duration.seconds(25)
@@ -32,7 +33,6 @@ export const ModHandlers = HttpApiBuilder.group(
   PathOfDevApi,
   "mod",
   Effect.fn(function* (handlers) {
-    const player = yield* CurrentPlayer
     const players = yield* Players
     const writer = yield* PlayerWriter
     const hub = yield* StreamHub
@@ -41,6 +41,7 @@ export const ModHandlers = HttpApiBuilder.group(
     return handlers.handleAll({
       openSession: ({ payload, request }) =>
         Effect.gen(function* () {
+          const player = yield* CurrentPlayer
           // A new local day or week rolls its missions first, so the snapshot shows them; the stream carries the offer.
           yield* writer.refreshQuests(player.id, yield* nowIso)
           // Only a mod that keeps its session live opens it: an older one would lapse between its polls.
@@ -52,10 +53,14 @@ export const ModHandlers = HttpApiBuilder.group(
         }).pipe(Effect.orDie),
 
       closeSession: ({ params }) =>
-        Effect.map(presence.close(player.id, params.id), (closed) => ({ closed })).pipe(Effect.orDie),
+        Effect.gen(function* () {
+          const player = yield* CurrentPlayer
+          return { closed: yield* presence.close(player.id, params.id) }
+        }).pipe(Effect.orDie),
 
       sendEvents: ({ payload }) =>
         Effect.gen(function* () {
+          const player = yield* CurrentPlayer
           const now = yield* nowIso
           const admissions = payload.events.map((raw) => admit(raw, now))
           const admitted = admissions.flatMap((one): Array<Admitted> => (one.kind === "admitted" ? [one.admitted] : []))
@@ -73,6 +78,7 @@ export const ModHandlers = HttpApiBuilder.group(
 
       runCommand: ({ payload }) =>
         Effect.gen(function* () {
+          const player = yield* CurrentPlayer
           const now = yield* nowIso
           const applied = yield* writer.apply(player.id, now, [
             { id: payload.id, input: { kind: "command", command: payload }, naturalKey: null },
@@ -89,6 +95,7 @@ export const ModHandlers = HttpApiBuilder.group(
 
       stream: ({ query }) =>
         Effect.gen(function* () {
+          const player = yield* CurrentPlayer
           // The timeout runs from the poll's arrival, so the reads before the wait count against it too.
           const arrived = yield* Clock.currentTimeMillis
           // The poll is the heartbeat: hearing from the session keeps it live, and opens a lapsed one again. A failure

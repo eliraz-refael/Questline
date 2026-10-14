@@ -5,8 +5,8 @@ import { Effect, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
 import type { Admitted, Stepper } from "../src/index.ts"
-import { admit, CurrentPlayer, PlayerWriter } from "../src/index.ts"
-import { commit, hatch, merged, start, turn, withServer } from "./fixtures.ts"
+import { admit, PlayerWriter } from "../src/index.ts"
+import { commit, hatch, localPlayer, merged, start, turn, withServer } from "./fixtures.ts"
 
 const admitted = (raw: unknown): Admitted => {
   const one = admit(raw, start)
@@ -22,7 +22,7 @@ const command = (raw: ReturnType<typeof hatch>): Admitted => ({
 
 const apply = (inputs: ReadonlyArray<Admitted>) =>
   Effect.gen(function* () {
-    const player = yield* CurrentPlayer
+    const player = yield* localPlayer
     const writer = yield* PlayerWriter
     return yield* writer.apply(player.id, start, inputs)
   })

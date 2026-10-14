@@ -1,4 +1,5 @@
 import { NodeHttpServer } from "@effect/platform-node"
+import { Authentication, CurrentPlayer } from "@pathofdev/schema"
 import { Data, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/http"
 import { Buffer } from "node:buffer"
@@ -21,7 +22,7 @@ import { join } from "node:path"
 import type { Database } from "./db.ts"
 import { ApiRoutes } from "./http.ts"
 import type { LocalProfile } from "./players.ts"
-import { CurrentPlayer, Players } from "./players.ts"
+import { Players } from "./players.ts"
 import type { CoreOptions } from "./services.ts"
 import { core } from "./services.ts"
 
@@ -261,17 +262,23 @@ export const defaultProfile = (): LocalProfile => {
   return { displayName: name, characterName: name, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
 }
 
-/** Everything behind the routes, over `database` (the core), with the local player in place. */
-export const services = (database: Database, profile: LocalProfile, options?: CoreOptions) => {
-  const Player = Layer.effect(
-    CurrentPlayer,
+/**
+ * The local server's `Authentication`: every request acts for its one player, made on the first start. Only the
+ * player's own user can reach the socket, so a request needs no token, and one that carries a token is not read.
+ */
+export const LocalAuth = (profile: LocalProfile) =>
+  Layer.effect(
+    Authentication,
     Effect.gen(function* () {
       const players = yield* Players
-      return yield* players.local(profile)
+      const player = yield* players.local(profile)
+      return Authentication.of({ bearer: (handler) => Effect.provideService(handler, CurrentPlayer, player) })
     }),
   )
-  return Player.pipe(Layer.provideMerge(core(database, options)))
-}
+
+/** Everything behind the local server's routes, over `database`: the core, and its one player's `Authentication`. */
+export const services = (database: Database, profile: LocalProfile, options?: CoreOptions) =>
+  LocalAuth(profile).pipe(Layer.provideMerge(core("local", database, options)))
 
 /** The local server, listening on the socket until the scope closes. */
 export const localServer = (paths: LocalPaths = localPaths(), profile: LocalProfile = defaultProfile()) => {
