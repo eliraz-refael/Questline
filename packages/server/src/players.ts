@@ -1,12 +1,12 @@
-import { engineVersion, initialState, project, ulids } from "@pathofdev/engine"
+import { engineVersion, initialState, project } from "@pathofdev/engine"
 import type { Player as PlayerType, Snapshot, StreamResponse } from "@pathofdev/schema"
 import { Count, Player, PlayerState, ServerEvent } from "@pathofdev/schema"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
-import { randomBytes } from "node:crypto"
 import { catalog, DevMode, minClientVersion, nowIso, rules } from "./game.ts"
 import { QuestPacks } from "./quest-packs.ts"
+import { newId, newRollSeed } from "./random.ts"
 
 // Reads of a player that never change one: who the player is, the snapshot the mod draws, and the stream after a
 // cursor. Writes go through the PlayerWriter.
@@ -79,9 +79,9 @@ const make = Effect.gen(function* () {
   const create = (profile: LocalProfile) =>
     Effect.gen(function* () {
       const now = yield* nowIso
-      const rollSeed = randomBytes(32).toString("hex")
+      const rollSeed = yield* newRollSeed
       const player: PlayerType = {
-        id: ulids(randomBytes(16).toString("hex"), 0, now)(),
+        id: yield* newId(now),
         githubUserId: null,
         githubLogin: null,
         displayName: profile.displayName,

@@ -52,6 +52,9 @@ importers:
       '@effect/platform-node':
         specifier: 4.0.0
         version: 4.0.0(effect@4.0.0)(redis@6.2.1)
+      '@effect/sql-pg':
+        specifier: 4.0.0
+        version: 4.0.0(effect@4.0.0)
       '@effect/sql-pglite':
         specifier: 4.0.0
         version: 4.0.0(effect@4.0.0)
@@ -82,6 +85,11 @@ packages:
     peerDependencies:
       effect: ^4.0.0
       redis: '>=5.0.0 <7.0.0'
+
+  '@effect/sql-pg@4.0.0':
+    resolution: {integrity: sha512-w0sRMA08Tgz73aReYpFSxD+nz2LUKYhH/4zaRpo4G5b5YG+eqiAL7XYhqIjvGZ8MZacazbG71Jhprv6ccz9HDg==}
+    peerDependencies:
+      effect: ^4.0.0
 
   '@effect/sql-pglite@4.0.0':
     resolution: {integrity: sha512-BTlCPSipKMHZJEoJ94rR4f8Gx8cv8tLpZeHc3sajg2ko/2GY8s6CyycSra3Z6GLFUhcivRTYQ9Zc5LThz64qfQ==}
@@ -695,6 +703,10 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
+
+  '@effect/sql-pg@4.0.0(effect@4.0.0)':
+    dependencies:
+      effect: 4.0.0
 
   '@effect/sql-pglite@4.0.0(effect@4.0.0)':
     dependencies:

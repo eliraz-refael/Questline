@@ -30,6 +30,37 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
+  # The same suite on Postgres, which the public server runs: every test gets a schema of its own in this database. A
+  # job of its own, not a matrix, so the `ci` check above keeps its name.
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      PATHOFDEV_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.9.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
   # The Claude Code mod runs on the engine's own runtime, so its checks are the engine's: validate reads it as a
   # session would, and the mod's tests run against the engine's test kit.
   mod:

@@ -1,14 +1,14 @@
-import { engineVersion, localDay, questsDue, step, ulids } from "@pathofdev/engine"
+import { engineVersion, localDay, questsDue, step } from "@pathofdev/engine"
 import type { CommandRefusal, Context as StepContext, Input, PlayerState, ServerEvent, Step } from "@pathofdev/schema"
 import { CommandRefusal as CommandRefusalSchema, Count, PlayerState as PlayerStateSchema, ServerEvent as ServerEventSchema } from "@pathofdev/schema"
 import { Context, Effect, Layer, Option, Result, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
-import { randomBytes } from "node:crypto"
 import type { Admitted } from "./edge.ts"
 import { catalog, DevMode, inputSchemaVersion, rules } from "./game.ts"
 import { StreamHub } from "./hub.ts"
 import { QuestPacks } from "./quest-packs.ts"
+import { newId } from "./random.ts"
 
 // Every change to a player goes through `apply`, in one transaction that holds the player's row: client events,
 // commands and, later, verified facts and rebalance grants. So there is exactly one place where state changes.
@@ -229,7 +229,7 @@ const make = (stepper: Stepper) =>
         if (!questsDue(state, now)) return []
         // Keyed by the local day, so two sessions opening at once roll it once.
         const naturalKey = `quests.refresh:${localDay(now, state.timezone)}`
-        const id = ulids(randomBytes(16).toString("hex"), 0, now)()
+        const id = yield* newId(now)
         const input: Input = { kind: "system", event: { type: "quests.refresh" } }
         return yield* apply(playerId, now, [{ id, input, naturalKey }])
       })

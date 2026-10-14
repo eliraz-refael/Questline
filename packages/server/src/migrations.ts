@@ -1,7 +1,7 @@
-import { levelForXp, ulids, xpForLevel } from "@pathofdev/engine"
+import { levelForXp, xpForLevel } from "@pathofdev/engine"
 import { Clock, Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
-import { randomBytes } from "node:crypto"
+import { newId } from "./random.ts"
 
 // The proof of concept's tables (see the design doc's Data model). The event log is the truth; player_state is the
 // engine state at its head. Times the engine reads are kept as the ISO strings it was given, so a replay sees the
@@ -329,7 +329,7 @@ const sigils = Effect.gen(function* () {
     if (amount === 0) continue
     const logSeq = row.log_seq + 1
     const input = { kind: "system", event: { type: "xp.carried", amount, rulesVersion: carriedCurve.rulesVersion } }
-    const id = ulids(randomBytes(16).toString("hex"), logSeq, now)()
+    const id = yield* newId(now, logSeq)
     // The versions the carry was made under: engine 10, rules 7, catalogue 4, the first input schema.
     yield* sql`
       INSERT INTO event_log (

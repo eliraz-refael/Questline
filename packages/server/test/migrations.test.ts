@@ -2,12 +2,11 @@ import { it } from "@effect/vitest"
 import { initialState, levelForXp, levelOf, starterRules, step } from "@pathofdev/engine"
 import type { CommandRefusal, Context, Recorded } from "@pathofdev/schema"
 import { Input, PlayerState } from "@pathofdev/schema"
-import { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
 import { carriedXp, catalog, migrate, migrations } from "../src/index.ts"
-import { commit, hatch, minutesLater, nextId, profile, prompt, start } from "./fixtures.ts"
+import { commit, hatch, minutesLater, nextId, profile, prompt, start, testSql } from "./fixtures.ts"
 
 // Each test starts a fresh PGlite and runs every migration: the first cold start can take seconds on a CI runner.
 const coldStart = 30_000
@@ -35,7 +34,7 @@ describe("migrations", () => {
       const rows = yield* sql`SELECT state FROM player_state ORDER BY player_id DESC`
       const states = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ state: PlayerState })))(rows)
       expect(states.map((row) => row.state.progress.stats)).toEqual([fresh.progress.stats, counted.progress.stats])
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
 
@@ -64,7 +63,7 @@ describe("migrations", () => {
         SELECT data ->> 'tier' AS tier FROM server_events WHERE player_id = 'p' ORDER BY seq
       `
       expect(tiers.map((row) => row.tier)).toEqual(["rare", "epic", "uncommon", "legendary"])
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
 
@@ -101,7 +100,7 @@ describe("migrations", () => {
         SELECT data ->> 'glyph' AS glyph FROM server_events WHERE player_id = 'p' ORDER BY seq
       `
       expect(glyphs.map((row) => row.glyph)).toEqual(["⚔", "🗡️", "🛡️", "👑", "🐉", "✦"])
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
 
@@ -133,7 +132,7 @@ describe("migrations", () => {
         { item: { id: "solid-bar", rarity: "common", look }, tier: "common" },
         { delta: 10, totalAfter: 10, reason: "drop" },
       ])
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
   it.effect("work out the best grade and the profile from the graded prompts the log accepted, the best streak at 0", () =>
@@ -196,7 +195,7 @@ describe("migrations", () => {
       expect(old?.bestStreak).toBe(0)
       expect(quiet?.stats.prompts).toEqual({ ...fresh.progress.stats.prompts, graded: 2 })
       expect(kept).toEqual(newer.progress)
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
 
@@ -220,7 +219,7 @@ describe("migrations", () => {
       const states = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ state: PlayerState })))(stored)
       expect(states.map((row) => row.state)).toEqual([fresh])
       expect(yield* sql`SELECT * FROM quest_packs`).toEqual([])
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
 
@@ -285,7 +284,7 @@ describe("migrations", () => {
       expect(rows[1]?.state).toEqual(replayed)
       expect(rows[1]?.state.holdings.pet?.petted).toEqual([])
       expect(rows[0]?.state).toEqual(initialState({ ...profile, now: start }))
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
 
@@ -354,7 +353,7 @@ describe("migrations", () => {
       expect(rows[0]?.state).toEqual(initialState({ ...profile, now: start }))
       // Nothing was logged for it.
       expect(yield* sql`SELECT * FROM event_log`).toEqual([])
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
 
@@ -435,7 +434,7 @@ describe("migrations", () => {
       const stepped = step(saved, input, { ...context, mode: replaying })
       expect(stepped.state).toEqual(carried?.state)
       expect(stepped.events).toEqual([])
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
 })
