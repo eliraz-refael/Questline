@@ -4047,7 +4047,7 @@ describe('signing in', () => {
       await run($, 'login')
       await clock.advance(5_000)
       await until(clock, () => toasts.length === 3)
-      expect(toasts[2]).toBe("GitHub can't check the sign-in right now: try /pathofdev login again in a minute.")
+      expect(toasts[2]).toBe("The sign-in can't be checked right now (GitHub or the server is busy): try /pathofdev login again in a minute.")
       expect(kept.get(tokenKey)).toBe('pod_old')
     },
   )

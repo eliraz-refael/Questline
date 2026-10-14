@@ -76,7 +76,8 @@ export const storeKey = (target: Target, name: string): string =>
 /** The player's game token as the store holds it, or null when there is none. */
 export const tokenOf = (stored: unknown): string | null => (typeof stored === 'string' && stored !== '' ? stored : null)
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
 
 export const isSession = (value: unknown): value is SessionResponse =>
   isRecord(value) && isRecord(value['snapshot']) && typeof value['snapshot']['cursor'] === 'number'
@@ -153,7 +154,7 @@ export const failureOf = (response: Pick<HttpResponse, 'ok' | 'status'>): Failur
         ? 'unavailable'
         : 'unexpected'
 
-const parsed = (text: string): unknown => {
+export const parsed = (text: string): unknown => {
   try {
     return JSON.parse(text)
   } catch {

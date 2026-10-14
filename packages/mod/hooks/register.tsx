@@ -961,6 +961,8 @@ const login = async ($: EngineInterface): Promise<string> => {
   // A switch of server while GitHub answered: this sign-in was for the last one.
   if (target !== to) return noSignIn()
   const flow: SigningIn = { origin: to.origin, code, poll: firstPoll(code, await $.clock.now()), timer: null }
+  // A code that expires before its first poll could come: kept, it would stand as "under way" with nothing polling.
+  if (flow.poll.kind !== 'waiting') return 'GitHub gave a sign-in code that expires at once: try /pathofdev login again.'
   signingIn = flow
   waitToPoll($, flow)
   const minutes = Math.max(1, Math.round(code.expiresIn / 60))
@@ -991,23 +993,38 @@ const pollGitHub = async ($: EngineInterface, flow: SigningIn) => {
     waitToPoll($, flow)
     return
   }
+  if (poll.kind === 'signedIn') {
+    // The flow stays under way through the trade, so a logout or a switch meanwhile still stops it.
+    try {
+      await trade($, flow, poll.githubToken)
+    } finally {
+      if (signingIn === flow) signingIn = null
+    }
+    return
+  }
   signingIn = null
-  if (poll.kind === 'signedIn') await trade($, flow.origin, poll.githubToken)
-  else if (poll.kind === 'expired') $.ui.toast('The GitHub sign-in code expired: /pathofdev login gives you a new one.')
+  if (poll.kind === 'expired') $.ui.toast('The GitHub sign-in code expired: /pathofdev login gives you a new one.')
   else if (poll.kind === 'denied') $.ui.toast('The GitHub sign-in was cancelled: /pathofdev login starts another.')
   else $.ui.toast(`GitHub turned the sign-in down (${poll.error}): /pathofdev login starts another.`)
 }
+
+/** The request that revokes `token` at an online target. */
+const revokeOf = (to: Target, token: string) =>
+  requestOf(to, { path: '/v1/auth/logout', method: 'POST' }, { socketPath: '', token })
 
 /**
  * Trades the GitHub token for a game token at `origin`, the server the sign-in was started for, and drops it: kept
  * nowhere, sent nowhere else. The game token goes in the store; a sign-in turned down or unchecked leaves the sign-in
  * as it was. A token it replaces is revoked, so none is left working that nobody holds.
  */
-const trade = async ($: EngineInterface, origin: string, githubToken: string) => {
+const trade = async ($: EngineInterface, flow: SigningIn, githubToken: string) => {
+  const { origin } = flow
   const to: Target = { kind: 'online', origin }
   const asked = signInRequestOf(to, githubToken, timeZoneOf())
   if (asked === null) return
   const response = await $.http.fetch(asked.url, asked.init).catch(() => null)
+  // A logout or a switch of server while the server answered stopped this sign-in: its token is not kept.
+  if (signingIn !== flow) return
   if (response === null) {
     $.ui.toast(`The Path of Dev server at ${origin} is not answering: try /pathofdev login again later.`)
     return
@@ -1019,18 +1036,19 @@ const trade = async ($: EngineInterface, origin: string, githubToken: string) =>
     return
   }
   if (signIn.kind === 'unavailable') {
-    $.ui.toast("GitHub can't check the sign-in right now: try /pathofdev login again in a minute.")
+    $.ui.toast("The sign-in can't be checked right now (GitHub or the server is busy): try /pathofdev login again in a minute.")
     return
   }
   if (signIn.kind === 'unexpected') {
     $.ui.toast(`The Path of Dev server at ${origin} answered the sign-in with ${signIn.status}.`)
     return
   }
+  signingIn = null
   const key = storeKey(to, 'token')
   const replaced = tokenOf(await $.store.get(key))
   await $.store.set(key, signIn.token)
   if (replaced !== null && replaced !== signIn.token) {
-    const revoke = requestOf(to, { path: '/v1/auth/logout', method: 'POST' }, { socketPath: '', token: replaced })
+    const revoke = revokeOf(to, replaced)
     later($, () => $.http.fetch(revoke.url, revoke.init))
   }
   $.ui.toast(`Signed in to ${origin}${signIn.login === null ? '' : ` as ${signIn.login}`}.`)
@@ -1053,7 +1071,7 @@ const logout = async ($: EngineInterface): Promise<string> => {
   const key = storeKey(to, 'token')
   const token = tokenOf(await $.store.get(key))
   if (token === null) return `${stopped}You're not signed in to ${to.origin}.`
-  const { url, init } = requestOf(to, { path: '/v1/auth/logout', method: 'POST' }, { socketPath: '', token })
+  const { url, init } = revokeOf(to, token)
   const response = await $.http.fetch(url, init).catch(() => null)
   const failure = response === null ? 'unavailable' : failureOf(response)
   if (failure !== null && failure !== 'signedOut') {

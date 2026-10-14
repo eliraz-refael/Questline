@@ -1,7 +1,7 @@
 import type { SignInResponse } from '@pathofdev/schema'
 import type { HttpInit, HttpResponse } from 'claude-code'
 import type { Target } from './server'
-import { failureOf, headersOf, originOf } from './server'
+import { failureOf, headersOf, isRecord, originOf, parsed } from './server'
 
 // Signing in to the online server: `/pathofdev login` runs GitHub's device flow straight against github.com, with the
 // game's public client id and no scopes (no secret anywhere), then trades the GitHub token for a game token at the
@@ -27,7 +27,7 @@ import { failureOf, headersOf, originOf } from './server'
 //   POST <origin>/v1/auth/github { githubToken, timezone }  (https, its own origin, no Authorization) ◀─┘
 //     ├─ 200 { token, player } ─▶ the game token in $.store under token@<origin>; the GitHub token is dropped
 //     ├─ 401 ───────────────────▶ refused: GitHub said no, or not in the beta; the sign-in stays as it was
-//     ├─ 503 (429/502/504) ─────▶ unavailable: GitHub couldn't check it; try again, the sign-in stays as it was
+//     ├─ 503 (429/502/504) ─────▶ unavailable: GitHub or the server couldn't check it; try again, the sign-in stays as it was
 //     └─ anything else ─────────▶ unexpected
 
 /** Path of Dev's GitHub app, as the device flow names it: public, with no secret. */
@@ -80,16 +80,6 @@ export const accessTokenRequest = (deviceCode: string): { readonly url: string; 
   url: accessTokenUrl,
   init: toGitHub({ client_id: clientId, device_code: deviceCode, grant_type: deviceGrant }),
 })
-
-const parsed = (text: string): unknown => {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return undefined
-  }
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
 const filled = (value: unknown): string | null => (typeof value === 'string' && value !== '' ? value : null)
 
@@ -211,7 +201,10 @@ export const nextPoll = (poll: Poll, answer: TokenAnswer | null, now: number): P
 export const timeZoneOf = (): string => {
   try {
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
-    return typeof zone === 'string' && zone !== '' ? zone : 'UTC'
+    if (typeof zone !== 'string' || zone === '') return 'UTC'
+    // The server takes an IANA zone only: a runtime that can't place itself says `Etc/Unknown`, which it turns away.
+    new Intl.DateTimeFormat('en-US', { timeZone: zone })
+    return zone === 'Etc/Unknown' ? 'UTC' : zone
   } catch {
     return 'UTC'
   }
@@ -257,5 +250,7 @@ export const signInOf = (response: Pick<HttpResponse, 'ok' | 'status' | 'text'>)
   }
   if (failure === 'unavailable') return { kind: 'unavailable' }
   if (failure === 'unexpected' || !isSignIn(body)) return { kind: 'unexpected', status: response.status }
-  return { kind: 'signedIn', token: body.token, login: filled(body.player.githubLogin) }
+  // Shown to the player in a toast: printable ASCII only, like a refusal's message.
+  const login = filled(body.player.githubLogin)?.replace(/[^ -~]/g, '').slice(0, 64) ?? ''
+  return { kind: 'signedIn', token: body.token, login: login === '' ? null : login }
 }
