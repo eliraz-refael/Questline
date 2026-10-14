@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type {
   CommandInfo,
+  ConfigRow,
   ModelCompleteInput,
   ModelCompleteResult,
   On,
@@ -29,7 +30,7 @@ import { closeSetsAside, freshWizard, lootText, stepperRow, taperText, welcomeLa
 // A fake local server beneath the mod: it answers the four routes, records what the mod sends, and holds the
 // stream until the test's clock passes 25 seconds, as the real one does.
 
-type Sent = { path: string; body: unknown; method: string; query: string }
+type Sent = { path: string; body: unknown; method: string; query: string; socket: string }
 
 /** What the player owns in the fake server: entries, their definitions, and what is equipped where. */
 type Owned = { inventory: Array<{ id: string; itemId: string }>; items: Array<unknown>; equipped: Record<string, string> }
@@ -198,6 +199,10 @@ type ServerOptions = {
   isPaneUp?: boolean
   /** A server that takes this long to answer a command, in ms. */
   commandTakes?: number
+  /** A server that takes this long to answer a batch of events, in ms. */
+  eventsTake?: number
+  /** The one socket whose stream hands the mod the test's events, any other holding its 25 seconds; any when unset. */
+  streamsOn?: string
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
@@ -288,7 +293,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     const path = new URL(e.url).pathname
     const body: unknown = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
     const method = e.init?.method ?? 'GET'
-    sent.push({ path, body, method, query: new URL(e.url).search })
+    sent.push({ path, body, method, query: new URL(e.url).search, socket: socketPath })
     if (method === 'DELETE' && path.startsWith('/v1/sessions/')) {
       if (options.closeTakes !== undefined) await clock.sleep(options.closeTakes)
       return options.predatesPresence === true ? reply(404, { code: 'not_found', message: 'Not found' }) : reply(200, { closed: true })
@@ -311,6 +316,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
         acceptedEventTypes: [],
       })
     if (path === '/v1/events') {
+      if (options.eventsTake !== undefined) await clock.sleep(options.eventsTake)
       const events = typeof body === 'object' && body !== null && 'events' in body && Array.isArray(body.events) ? body.events : []
       // A type from a newer mod than this server knows, as `future.*` stands for here.
       const resultOf = (event: { id: string; type: string }) =>
@@ -326,8 +332,9 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
       return reply(200, commandAnswer(body, options.owned, options.isDev === true, options.quests, options.kept))
     }
     // The stream answers as soon as the test hands it events, or after 25 seconds with none.
-    const stream = options.stream ?? []
-    if (options.stream === undefined) await clock.sleep(25_000)
+    const isFed = options.streamsOn === undefined || options.streamsOn === socketPath
+    const stream = isFed ? (options.stream ?? []) : []
+    if (options.stream === undefined || !isFed) await clock.sleep(25_000)
     else for (let waited = 0; waited < 25_000 && stream.length === 0; waited += 100) await clock.sleep(100)
     const events = stream.splice(0)
     const cursor = Math.max(0, ...events.map((event) => event.seq))
@@ -3477,5 +3484,299 @@ describe('the welcome', () => {
     const narrow = stepperRow('grading', 30).map((run) => run.text).join('')
     expect(narrow).toMatch(/^● ● ● {2}Grading {2}○ +4 of 5$/)
     expect(cellsOf(narrow)).toBe(30)
+  })
+})
+
+describe('switching servers', () => {
+  const run = ($: Parameters<TestBody>[0], args: string, command = 'pathofdev') =>
+    $.command.run({ command, args, origin: composer, presentation })
+  const own = '/home/player/.pathofdev/server.sock'
+  const sandbox = '/home/player/.pathofdev-dev/server.sock'
+  const sessionOf = (body: unknown): string =>
+    isRecord(body) && typeof body['sessionId'] === 'string' ? body['sessionId'] : ''
+  const opensOn = (sent: ReadonlyArray<Sent>, socket: string) =>
+    sent.filter((one) => one.path === '/v1/sessions' && one.socket === socket).map((one) => sessionOf(one.body))
+  const closesOn = (sent: ReadonlyArray<Sent>, socket: string) =>
+    sent.filter((one) => one.method === 'DELETE' && one.socket === socket).map((one) => one.path)
+  const typesOn = (sent: ReadonlyArray<Sent>, socket: string) =>
+    eventsOf(sent.filter((one) => one.socket === socket)).map((event) => event['type'])
+  const messages: Array<SessionMessage> = [{ role: 'user', text: 'Fix the parser', toolUses: [] }]
+
+  /** The /config rows beneath the mod, its Server option among them, and every value a plugin writes to one. */
+  const settings = (on: On, isLocked = false) => {
+    const written: Array<{ key: string; value: unknown }> = []
+    const theme: ConfigRow = {
+      key: 'theme',
+      label: 'Theme',
+      kind: 'choice',
+      value: 'dark',
+      options: ['dark', 'light'],
+      provider: { plugin: 'engine', tier: 'core' },
+      isLocked: false,
+    }
+    const server: ConfigRow = {
+      key: 'questline.server',
+      label: 'Server',
+      kind: 'choice',
+      value: 'default',
+      options: ['default', 'dev', 'online'],
+      provider: { plugin: 'questline', tier: 'user' },
+      isLocked,
+    }
+    on('config.list', () => ({ value: [theme, server] }))
+    on('config.set', ($, e) => {
+      written.push({ key: e.key, value: e.value })
+      return { value: e.value }
+    })
+    return written
+  }
+
+  test('/pathofdev server says where the mod plays and how to switch; a bad one gets the usage', async ($, on) => {
+    const written = settings(on)
+    await streaming($, on, ownedOf())
+    const where = 'Playing on your own save (~/.pathofdev). Switch with /pathofdev server play, dev or online.'
+    expect((await run($, 'server')).text).toBe(where)
+    expect((await run($, 'server', 'questline')).text).toContain(where)
+    for (const args of ['server mars', 'server toString', 'server __proto__', 'server dev now', 'server play please']) {
+      expect((await run($, args)).text).toMatch(/^Servers: \/pathofdev server play/)
+    }
+    expect((await run($, 'server play')).text).toBe('Already playing on your own save (~/.pathofdev).')
+    expect((await run($, 'server default')).text).toBe('Already playing on your own save (~/.pathofdev).')
+    expect((await run($, 'dev off')).text).toBe('Already playing on your own save (~/.pathofdev).')
+    expect((await run($, 'dev')).text).toContain('/pathofdev dev off back to your own save')
+    expect(written).toEqual([])
+  })
+
+  test('server dev writes the option, flushes and closes the last server, and plays on the sandbox at once', async ($, on) => {
+    const written = settings(on)
+    const { sent, clock } = await streaming($, on, ownedOf())
+    const [first] = opensOn(sent, own)
+    // A compaction waits in the queue for the player's own save, till the next flush.
+    await $.session.compact({ trigger: 'manual', messages })
+    expect((await run($, 'server dev')).text).toBe('Now on the dev sandbox (~/.pathofdev-dev).')
+    expect(written).toEqual([{ key: 'questline.server', value: 'dev' }])
+    expect(typesOn(sent, own)).toContain('session.compacted')
+    expect(closesOn(sent, own)).toEqual([`/v1/sessions/${first}`])
+    const [opened] = opensOn(sent, sandbox)
+    expect(opened).not.toBe(first)
+    await until(clock, () => sent.some((one) => one.path === '/v1/stream' && one.socket === sandbox))
+    expect((await run($, 'server')).text).toMatch(/^Playing on the dev sandbox \(~\/\.pathofdev-dev\)\./)
+    // What the mod sends from now on goes to the sandbox, even once the last server's stream has answered.
+    await clock.advance(30_000)
+    await $.session.compact({ trigger: 'auto', messages })
+    await clock.advance(30_000)
+    await clock.settle()
+    expect(typesOn(sent, sandbox)).toContain('session.compacted')
+    expect(typesOn(sent, own)).toHaveLength(1)
+  })
+
+  test("an event the last server's stream brings after a switch is not shown", async ($, on) => {
+    settings(on)
+    const { send, toasts } = await streaming($, on, ownedOf(), false, { streamsOn: own })
+    expect((await run($, 'server dev')).text).toBe('Now on the dev sandbox (~/.pathofdev-dev).')
+    // The stream the mod held on the player's own save answers now, with an XP gain from there.
+    await send(xpGranted(40))
+    expect(toasts).toEqual([])
+    expect((await band($)).all).not.toContain('+40')
+  })
+
+  test("dev off takes the sandbox's controls down, and says how to start a save that isn't running", { options: { server: 'dev' } }, async ($, on) => {
+    const written = settings(on)
+    const listensOn = { at: sandbox }
+    await streaming($, on, ownedOf(), true, { listensOn })
+    expect((await paneTexts($, 72)).texts).toContain('Dev')
+    expect((await paneTexts($, 72)).texts.join('\n')).toMatch(/PATH OF DEV ✦ dev/)
+    expect((await run($, 'dev off')).text).toBe(
+      "Now playing on your own save (~/.pathofdev). It isn't running: start it with " +
+        'pnpm --filter @pathofdev/server start',
+    )
+    expect(written).toEqual([{ key: 'questline.server', value: 'default' }])
+    const pane = (await paneTexts($, 72)).texts
+    expect(pane).not.toContain('Dev')
+    expect(pane.join('\n')).not.toMatch(/PATH OF DEV ✦ dev/)
+    expect(pane.join('\n')).not.toContain('Lv 4')
+    expect((await run($, 'server')).text).toBe(
+      'Playing on your own save (~/.pathofdev). Switch with /pathofdev server play, dev or online. ' +
+        "It isn't running: start it with pnpm --filter @pathofdev/server start",
+    )
+  })
+
+  test("each server's queue waits for that server: the sandbox's goes to it when the mod comes back", { options: { server: 'dev' } }, async ($, on) => {
+    settings(on)
+    const listensOn = { at: sandbox }
+    const { sent, clock } = await streaming($, on, ownedOf(), true, { listensOn })
+    // The sandbox stops; a compaction there waits for it.
+    listensOn.at = own
+    await $.session.compact({ trigger: 'manual', messages })
+    expect((await run($, 'dev off')).text).toBe('Now playing on your own save (~/.pathofdev).')
+    await clock.advance(30_000)
+    await clock.settle()
+    expect(typesOn(sent, own)).toEqual([])
+    listensOn.at = sandbox
+    expect((await run($, 'server dev')).text).toBe('Now on the dev sandbox (~/.pathofdev-dev).')
+    await until(clock, () => typesOn(sent, sandbox).includes('session.compacted'))
+    expect(typesOn(sent, own)).toEqual([])
+  })
+
+  test('server online with no token says so, sends nothing there, and keeps the token off the local socket', async ($, on) => {
+    const written = settings(on)
+    const { sent } = await streaming($, on, ownedOf())
+    const before = sent.length
+    expect((await run($, 'server online')).text).toBe(
+      "Now playing on the online server at https://api.pathof.dev. You're not signed in to https://api.pathof.dev, " +
+        'so the mod waits offline and keeps what you do queued for it.',
+    )
+    expect(written).toEqual([{ key: 'questline.server', value: 'online' }])
+    expect(sent.slice(before).every((one) => one.socket === own && one.method === 'DELETE')).toBe(true)
+    expect((await paneTexts($, 72)).texts.join('\n')).toMatch(/PATH OF DEV ✦ online/)
+  })
+
+  test("the last server's stream answering late leaves the new server first in line", async ($, on) => {
+    settings(on)
+    const { sent, clock, send } = await streaming($, on, ownedOf(), false, { streamsOn: sandbox })
+    expect((await run($, 'server dev')).text).toBe('Now on the dev sandbox (~/.pathofdev-dev).')
+    // The sandbox's stream answers ten seconds in and is held again, till well after the one on the player's own save
+    // answers at 25 seconds; the flush at 30 seconds comes between them.
+    await clock.advance(10_000)
+    await send(xpGranted(5))
+    await clock.advance(16_000)
+    await clock.settle()
+    const before = sent.length
+    await $.session.compact({ trigger: 'manual', messages })
+    await clock.advance(5_000)
+    await clock.settle()
+    expect(typesOn(sent.slice(before), own)).toEqual([])
+    expect(typesOn(sent.slice(before), sandbox)).toContain('session.compacted')
+  })
+
+  test('a flush under way at a switch sends nothing more of the last queue, and none of it to the new server', async ($, on) => {
+    settings(on)
+    const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
+    const waiting = Array.from({ length: 150 }, (_, i) => ({
+      id: `waiting-${i}`,
+      occurredAt: '2026-10-09T07:00:00.000Z',
+      sessionId: 'earlier',
+      type: 'session.cleared',
+      data: {},
+    }))
+    mock.store(on, { explored: ['acme/widgets'], queue: waiting })
+    mock.env(on, { HOME: '/home/player' })
+    const { sent } = fakeServer(on, clock, { eventsTake: 2_000 })
+    await $.session.start(start)
+    // The first batch of 100 is out to the player's own save, which takes its time.
+    await until(clock, () => sent.some((one) => one.path === '/v1/events'))
+    const answer = run($, 'server dev')
+    await clock.advance(1_000)
+    expect((await answer).text).toBe('Now on the dev sandbox (~/.pathofdev-dev).')
+    await clock.advance(5_000)
+    await clock.settle()
+    const waitingOn = (socket: string) =>
+      eventsOf(sent.filter((one) => one.socket === socket)).filter((event) =>
+        String(event['id']).startsWith('waiting-'),
+      )
+    expect(waitingOn(sandbox)).toEqual([])
+    expect(waitingOn(own)).toHaveLength(100)
+  })
+
+  /** A store the test reads straight, which can hold one key's read a second, as a slow host would. */
+  const storeOf = (on: On, clock: Clock, entries: Record<string, unknown> = {}) => {
+    const kept = new Map<string, unknown>(Object.entries({ explored: ['acme/widgets'], ...entries }))
+    const slow = { key: '' }
+    on('store.get', async ($, e) => {
+      if (e.key === slow.key) await clock.sleep(1_000)
+      return { value: kept.get(e.key) }
+    })
+    on('store.set', ($, e) => {
+      kept.set(e.key, e.value)
+      return { value: undefined }
+    })
+    return { kept, slow }
+  }
+  const origin = 'https://api.pathof.dev'
+
+  test('review fix: a commit right after a switch to online names no repo there', async ($, on) => {
+    settings(on)
+    const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
+    const { kept } = storeOf(on, clock)
+    mock.env(on, { HOME: '/home/player' })
+    const { sent } = fakeServer(on, clock)
+    on('tool.call', { tool: 'Bash' }, () => ({
+      result: {
+        stdout: '',
+        stderr: '',
+        interrupted: false,
+        gitOperation: { commit: { sha: 'a'.repeat(40), kind: 'committed', branch: 'main' } },
+      },
+    }))
+    await $.session.start(start)
+    await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
+    expect((await run($, 'server online')).text).toMatch(/^Now playing on the online server at https:\/\/api\.pathof\.dev\./)
+    await $.tool.call({ tool: 'Bash', command: 'git commit -m "Add widgets"' })
+    await clock.settle()
+    const online = JSON.stringify(kept.get(`queue@${origin}`))
+    expect(online).toContain('commit.made')
+    expect(online).not.toContain('acme')
+  })
+
+  test('review fix: a batch that set out for the online server goes there, even as a switch lands', { options: { server: 'online' } }, async ($, on) => {
+    settings(on)
+    const clock = mock.clock(on, { now: Date.parse('2026-10-09T08:00:00Z') })
+    const { slow } = storeOf(on, clock, { [`token@${origin}`]: 'pod_test', [`explored@${origin}`]: ['acme/widgets'] })
+    mock.env(on, { HOME: '/home/player' })
+    const { sent } = fakeServer(on, clock)
+    await $.session.start(start)
+    await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
+    await $.session.compact({ trigger: 'manual', messages })
+    // The flush at 30 seconds reads the token slowly; the switch to the sandbox lands while it waits.
+    slow.key = `token@${origin}`
+    await clock.advance(30_000)
+    const answer = run($, 'server dev')
+    await clock.advance(3_000)
+    expect((await answer).text).toBe('Now on the dev sandbox (~/.pathofdev-dev).')
+    await clock.advance(3_000)
+    await clock.settle()
+    expect(typesOn(sent, sandbox)).toEqual([])
+    expect(typesOn(sent, '')).toContain('session.compacted')
+  })
+
+  test('review fix: the reload the option sets off as it is written opens a new session, not the closed one', async ($, on) => {
+    on('config.list', () => ({
+      value: [
+        {
+          key: 'questline.server',
+          label: 'Server',
+          kind: 'choice',
+          value: 'default',
+          options: ['default', 'dev', 'online'],
+          provider: { plugin: 'questline', tier: 'user' },
+          isLocked: false,
+        } satisfies ConfigRow,
+      ],
+    }))
+    // The engine reloads the mod as it writes the option: the reload's session.start, and the connect it sets off,
+    // run before the write returns.
+    const clocked: { clock: Clock | null } = { clock: null }
+    on('config.set', async ($$, e) => {
+      await $.session.start(start)
+      await clocked.clock?.advance(100)
+      return { value: e.value }
+    })
+    const { sent, clock } = await streaming($, on, ownedOf())
+    clocked.clock = clock
+    const [first] = opensOn(sent, own)
+    expect((await run($, 'server dev')).text).toBe('Now on the dev sandbox (~/.pathofdev-dev).')
+    expect(closesOn(sent, own)).toEqual([`/v1/sessions/${first}`])
+    expect(opensOn(sent, own).filter((id) => id === first)).toHaveLength(1)
+  })
+
+  test('a Server option the settings pin stays, and the mod plays where it did', async ($, on) => {
+    const written = settings(on, true)
+    const { sent } = await streaming($, on, ownedOf())
+    expect((await run($, 'server dev')).text).toBe(
+      'Your managed settings pin the Server option, so the mod stays where it plays.',
+    )
+    expect(written).toEqual([])
+    expect(closesOn(sent, own)).toEqual([])
+    expect(opensOn(sent, sandbox)).toEqual([])
   })
 })

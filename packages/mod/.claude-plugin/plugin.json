@@ -29,7 +29,7 @@
     "server": {
       "type": "string",
       "title": "Server",
-      "description": "Which server the mod plays on: your own local save (default), the local dev sandbox in ~/.pathofdev-dev for trying out band styles, XP and celebrations (start it with PATHOFDEV_DEV=1 pnpm --filter @pathofdev/server start), or online, the public server at the Online server URL (closed beta). PATHOFDEV_HOME, when set, picks the home for either local one. Each server keeps its own queue of events.",
+      "description": "Which server the mod plays on: your own local save (default), the local dev sandbox in ~/.pathofdev-dev for trying out band styles, XP and celebrations (start it with PATHOFDEV_DEV=1 pnpm --filter @pathofdev/server start), or online, the public server at the Online server URL (closed beta). PATHOFDEV_HOME, when set, picks the home for either local one. Each server keeps its own queue of events. /pathofdev server says which one you play on, and /pathofdev server play, dev or online switches it here.",
       "options": ["default", "dev", "online"],
       "default": "default"
     },

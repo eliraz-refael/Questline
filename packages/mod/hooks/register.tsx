@@ -1,6 +1,6 @@
 import type { ClientEvent, Command, ServerEvent, Slot } from '@pathofdev/schema'
 import { atom, read, update } from 'claude-code'
-import type { ElementConstructor, EngineInterface, Register, TextProps, Timer } from 'claude-code'
+import type { ElementConstructor, EngineInterface, PluginOptions, Register, TextProps, Timer } from 'claude-code'
 import type {
   BandLook,
   BandSlot,
@@ -80,6 +80,8 @@ import { careViewOf, eggCardLayout, petCardLayout, shopLayout, shopViewOf } from
 import type { SigilChoice } from './sigils'
 import { multiplierText, sigilChoices, wornSigil } from './sigils'
 import { statsLayout, titleRow } from './stats'
+import type { ServerName } from './switching'
+import { nameOf, nowText, placeOf, serverAskOf, serverRowOf, tagOf, whereText } from './switching'
 import type { WelcomeLayout } from './welcome'
 import {
   closeSetsAside,
@@ -158,6 +160,17 @@ const closeMs = 500
 let toasts = true
 let server: ServerKind = 'default'
 let target: Target = { kind: 'local' }
+/** The options as `register` took them, which a switch of servers reads the online server's URL from. */
+let given: PluginOptions = {}
+/** `PATHOFDEV_HOME` (or `QUESTLINE_HOME`), when set: the home of either local server. */
+let named: string | undefined
+/**
+ * Counts the switches of server: a poll, a flush or a snapshot that set out before one is the last server's, and
+ * nothing it brings back is shown or settled here.
+ */
+let generation = 0
+/** A switch of server is under way: a second one meanwhile is turned away. */
+let isSwitching = false
 /** The `minWords` option, which the welcome's grading step says. */
 let gradeWords = 6
 /** Takes the gain's line down once it has stood a minute. */
@@ -210,13 +223,15 @@ async function call<A>(
   method?: 'DELETE',
 ): Promise<A> {
   const route: Route = { path, ...(body === undefined ? {} : { body }), ...(method === undefined ? {} : { method }) }
-  const token = target.kind === 'online' ? tokenOf(await $.store.get(storeKey(target, 'token'))) : null
+  // The target as the call set out: a switch of server during the token's read must not send this one elsewhere.
+  const to = target
+  const token = to.kind === 'online' ? tokenOf(await $.store.get(storeKey(to, 'token'))) : null
   // With no token the online server can only answer 401: don't knock every few seconds to hear it.
-  if (target.kind === 'online' && token === null) throw new SignedOut(`${path}: not signed in to ${target.origin}`)
+  if (to.kind === 'online' && token === null) throw new SignedOut(`${path}: not signed in to ${to.origin}`)
   let failure: unknown = null
-  const tried = target.kind === 'online' ? [target.origin] : [socket, ...sockets.filter((other) => other !== socket)]
+  const tried = to.kind === 'online' ? [to.origin] : [socket, ...sockets.filter((other) => other !== socket)]
   for (const at of tried) {
-    const { url, init } = requestOf(target, route, { socketPath: at, token })
+    const { url, init } = requestOf(to, route, { socketPath: at, token })
     let response
     try {
       response = await $.http.fetch(url, init)
@@ -224,7 +239,8 @@ async function call<A>(
       failure ??= cause
       continue
     }
-    if (target.kind === 'local') socket = at
+    // An answer from the last server's socket, after a switch, leaves the new server's first in line.
+    if (target.kind === 'local' && sockets.includes(at)) socket = at
     return answerOf(path, response, is)
   }
   throw new ServerDown(`The Path of Dev server does not answer on ${tried.join(' or ')}`, { cause: failure })
@@ -249,8 +265,8 @@ const runCommand = ($: EngineInterface, command: Command) => call($, '/v1/comman
 /** Answers once the stream moves past `after`, or after 25 seconds with nothing; each poll keeps the session live. */
 const stream = ($: EngineInterface, after: number) => call($, streamPathOf(after, sessionId), isStream)
 
-const queued = async ($: EngineInterface): Promise<Array<unknown>> => {
-  const stored = await $.store.get(storeKey(target, 'queue'))
+const queued = async ($: EngineInterface, key = storeKey(target, 'queue')): Promise<Array<unknown>> => {
+  const stored = await $.store.get(key)
   return Array.isArray(stored) ? stored : []
 }
 
@@ -277,23 +293,26 @@ const stamp = async ($: EngineInterface) => {
 const flush = async ($: EngineInterface): Promise<void> => {
   if (isFlushing) return
   isFlushing = true
+  // The queue of the server this flush set out for: a switch of server stops it before its next batch.
+  const at = generation
+  const key = storeKey(target, 'queue')
   // What this flush has sent and must leave queued (an unknown type waits for a newer server): the next batch
   // reads past it, so a run of such events never holds back the ones behind it.
   const waiting = new Set<string>()
   try {
     for (;;) {
-      const batch = (await queued($)).filter((event) => !waiting.has(idOf(event) ?? '')).slice(0, batchSize)
-      if (batch.length === 0) return
+      const batch = (await queued($, key)).filter((event) => !waiting.has(idOf(event) ?? '')).slice(0, batchSize)
+      if (batch.length === 0 || at !== generation) return
       // A failure throws past here, so it settles nothing: a signed-out or offline server keeps every event.
       const done = settledBy(await sendEvents($, batch))
       for (const event of batch) if (!done.has(idOf(event) ?? '')) waiting.add(idOf(event) ?? '')
       if (done.size > 0)
         await changeQueue(async () => {
-          await $.store.set(storeKey(target, 'queue'), queueAfter(await queued($), done))
+          await $.store.set(key, queueAfter(await queued($, key), done))
         })
     }
   } catch (error) {
-    if (error instanceof ServerDown) await update($, link, () => 'offline')
+    if (error instanceof ServerDown && at === generation) await update($, link, () => 'offline')
   } finally {
     isFlushing = false
   }
@@ -483,7 +502,10 @@ const tickLoop = async ($: EngineInterface, rate: number) => {
 
 /** Reloads the character from the server; `fromScratch` also moves the cursor to the snapshot's. */
 const refresh = async ($: EngineInterface, fromScratch: boolean) => {
+  const at = generation
   const opened = await openSession($)
+  // The last server's snapshot, after a switch: the band shows only the server the mod plays on now.
+  if (at !== generation) return
   if (fromScratch) cursor = opened.snapshot.cursor
   const next = viewOf(opened.snapshot)
   // An older server's answer carries no rules: it deals in no sigils, and the pane shows none.
@@ -513,8 +535,11 @@ const refresh = async ($: EngineInterface, fromScratch: boolean) => {
 const poll = async ($: EngineInterface): Promise<void> => {
   if (isPolling) return
   isPolling = true
+  const at = generation
   try {
     const answer = await stream($, cursor)
+    // The last server's stream, after a switch, which let it go: what it brought is not this server's.
+    if (at !== generation) return
     if (answer.resync === true) {
       await refresh($, true)
     } else if (answer.events.length > 0) {
@@ -523,9 +548,11 @@ const poll = async ($: EngineInterface): Promise<void> => {
       cursor = answer.cursor
       await refresh($, false)
     }
+    if (at !== generation) return
     isPolling = false
     $.clock.after(0, () => void poll($))
   } catch {
+    if (at !== generation) return
     isPolling = false
     await update($, link, () => 'offline').catch(() => undefined)
     retryLater($)
@@ -715,7 +742,7 @@ const patFromPrompt = async ($: EngineInterface): Promise<string> => {
 const runDev = async ($: EngineInterface, ask: DevAsk): Promise<{ text: string; isDone: boolean }> => {
   const current = await read($, view)
   if (current === null || !current.isDev) {
-    const how = `set the mod's server option to dev, and start it with ${startHint('dev')}`
+    const how = `switch to it with /pathofdev server dev, and start it with ${startHint('dev')}`
     return { text: `Dev mode needs the dev server: ${how}`, isDone: false }
   }
   const shown = await read($, missions)
@@ -750,6 +777,102 @@ const runDev = async ($: EngineInterface, ask: DevAsk): Promise<{ text: string; 
     if (!(error instanceof ServerDown)) return { text: 'The dev server answered something unexpected.', isDone: false }
     await update($, link, () => 'offline')
     return { text: 'The dev server is not answering.', isDone: false }
+  }
+}
+
+/** Why the server the mod plays on does not answer, as the player can act on it: online with no token, sign in. */
+const signedOutText = (origin: string): string =>
+  ` You're not signed in to ${origin}, so the mod waits offline and keeps what you do queued for it.`
+
+const downText = (): string =>
+  target.kind === 'online' ? ' It is not answering now.' : ` It isn't running: start it with ${startHint(server)}`
+
+/** What a first try at the server just switched to came to: nothing to add once it answered. */
+const reachText = (error: unknown): string =>
+  error === null
+    ? ''
+    : error instanceof SignedOut && target.kind === 'online'
+      ? signedOutText(target.origin)
+      : error instanceof ServerDown
+        ? downText()
+        : ' It answered something unexpected.'
+
+/** `/pathofdev server`: where the mod plays, and, when it is offline there, why and what to do. */
+const whereNow = async ($: EngineInterface): Promise<string> => {
+  const where = whereText(target, named)
+  if ((await read($, link)) !== 'offline') return where
+  const token = target.kind === 'online' ? tokenOf(await $.store.get(storeKey(target, 'token'))) : null
+  return `${where}${target.kind === 'online' && token === null ? signedOutText(target.origin) : downText()}`
+}
+
+/** Takes down what the mod showed of the last server, so none of it (its dev controls, say) stays on show. */
+const forget = async ($: EngineInterface) => {
+  fadeTimer?.cancel()
+  fadeTimer = null
+  frame?.cancel()
+  frame = null
+  reconnect?.cancel()
+  reconnect = null
+  lineup = []
+  playing = null
+  await update($, link, () => 'connecting')
+  await update($, view, () => null)
+  await update($, wardrobe, () => null)
+  await update($, stats, () => null)
+  await update($, missions, () => null)
+  await update($, shop, () => null)
+  await update($, care, () => null)
+  await update($, welcome, () => null)
+  await update($, wizard, () => null)
+  await update($, abandoning, () => null)
+  await update($, gain, () => null)
+  await update($, stage, () => null)
+  await update($, queue, () => [])
+  await syncLoop($)
+}
+
+/**
+ * `/pathofdev server play|dev|online`, or `dev off`: the mod plays on that server from now on. The choice is the
+ * `server` option, written as the player would in /config, so the settings say the same; the engine reloads the mod
+ * with it, and the reload finds the mod there already. The last server first sends what waits for it, if it answers
+ * at once (the rest stays queued for it), and closes its session; then the mod opens a new one on the new server.
+ */
+const switchServer = async ($: EngineInterface, to: ServerName): Promise<string> => {
+  if (to === nameOf(target)) return `Already playing on ${placeOf(target, named)}.`
+  if (isSwitching) return 'A switch of server is under way.'
+  isSwitching = true
+  try {
+    const row = serverRowOf(await $.config.list().catch(() => []), $.plugin.name)
+    if (row === null) return 'This session lists no Server option for Path of Dev: set it in /config.'
+    if (row.isLocked) return 'Your managed settings pin the Server option, so the mod stays where it plays.'
+    const ending = sessionId
+    await within($, closeMs, flush($))
+    await within($, closeMs, closeSession($, ending))
+    // The server never opens a closed session again: the reload the write sets off, finding this state, takes a new id.
+    await update($, session, () => null).catch(() => undefined)
+    const written = await $.config
+      .set({ key: row.key, value: to })
+      .catch((error: unknown) => ({ deny: error instanceof Error ? error.message : String(error) }))
+    if (written.deny !== undefined) {
+      // Still here: a new session, as the server never opens a closed one again.
+      await begin($, await $.session.cwd(), null)
+      return `The Server option stays as it is: ${written.deny}`
+    }
+    generation += 1
+    // The stream held on the last server is let go: the new one's starts at once, not once that one answers.
+    isPolling = false
+    given = { ...given, server: to }
+    server = serverOf(given)
+    target = targetOf(given)
+    // The repo as the new server's subjects name it, at once: none goes online by name before begin finds it again.
+    if (repo !== null) repo = repoIn(subjectFormOf(target), repo)
+    await forget($)
+    await begin($, await $.session.cwd(), null)
+    const reached = await refresh($, true).then(() => null, (error: unknown) => error)
+    if (reached instanceof ServerDown) await update($, link, () => 'offline')
+    return `${nowText(target, named)}${reachText(reached)}`
+  } finally {
+    isSwitching = false
   }
 }
 
@@ -904,9 +1027,14 @@ const draftStep = async ($: EngineInterface, change: Partial<Pick<Wizard, 'name'
   await update($, wizard, (at) => ({ ...(at ?? freshWizard), ...change, error: null }))
 }
 
-/** What `/pathofdev <args>` answers: the pane opened, the welcome, or dev mode's answer to `dev …`. */
+/** What `/pathofdev <args>` answers: the pane opened, the welcome, the servers' answer, or dev mode's to `dev …`. */
 const runCommandLine = async ($: EngineInterface, args: string): Promise<string> => {
   if (args.trim() === 'welcome') return openWelcome($)
+  const servers = serverAskOf(args)
+  if (servers !== null) {
+    if (typeof servers === 'string') return servers
+    return servers.kind === 'where' ? whereNow($) : switchServer($, servers.to)
+  }
   const ask = devAskOf(args)
   if (ask === null) {
     await openPane($)
@@ -993,7 +1121,7 @@ const begin = async ($: EngineInterface, cwd: string, kept: string | null) => {
   turnPeak = null
   sessionId = kept ?? ulid(await $.clock.now())
   await update($, session, () => sessionId)
-  const named = (await $.env.get('PATHOFDEV_HOME')) || (await $.env.get('QUESTLINE_HOME'))
+  named = (await $.env.get('PATHOFDEV_HOME')) || (await $.env.get('QUESTLINE_HOME'))
   sockets = socketPathsOf(named, await $.env.get('HOME'), server === 'dev')
   socket = sockets[0] ?? ''
   secret = await machineSecret($)
@@ -1011,6 +1139,7 @@ export const register: Register = (on, options) => {
   toasts = toastsOf(options)
   server = serverOf(options)
   target = targetOf(options)
+  given = options
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -1035,7 +1164,7 @@ export const register: Register = (on, options) => {
         name: 'pathofdev',
         description:
           'Open the Path of Dev pane: your inventory, the shop, stats and missions (`welcome` for the first-run ' +
-          'guide, `dev …` on the dev server)',
+          'guide, `server` to say or switch which server you play on, `dev …` on the dev server)',
       })
       .catch(() => undefined)
     await $.command
@@ -1327,13 +1456,16 @@ export const register: Register = (on, options) => {
         )}
       </Box>
     )
-    const beside = current === null ? '' : headerOf(current, columns)
+    // Beside the title, the server when it is not the player's own save, so dev mode and online play read apart.
+    const where = tagOf(target)
+    const beside = current === null ? '' : headerOf(current, columns - (where === '' ? 0 : cellsOf(where) + 1))
     const header = (
       <Box flexDirection="column">
         <Text key="header" wrap="truncate">
           <Text bold color="claude">
             {brand}
           </Text>
+          {where === '' ? null : <Text color={where === 'dev' ? 'warning' : 'suggestion'}> {where}</Text>}
           {beside === '' ? null : (
             <Text dimColor>
               {' '.repeat(headerGap)}
