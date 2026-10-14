@@ -26,11 +26,31 @@ import { clientVersion, initOf, socketPathsOf } from './server'
 import { statsLayout, twoColumnsFrom } from './stats'
 import { statsViewOf } from './view'
 import { closeSetsAside, freshWizard, lootText, stepperRow, taperText, welcomeLayout, xpText } from './welcome'
+import { github as recorded } from '../test/github'
 
 // A fake local server beneath the mod: it answers the four routes, records what the mod sends, and holds the
 // stream until the test's clock passes 25 seconds, as the real one does.
 
-type Sent = { path: string; body: unknown; method: string; query: string; socket: string }
+type Sent = { path: string; body: unknown; method: string; query: string; socket: string; authorization?: string | undefined }
+
+/**
+ * GitHub's device flow beneath the mod, from the recorded answers: the device code, then each poll's answer in turn
+ * (a number answers with that status), the last one again once they run out. It records when each request came.
+ */
+type GitHubFake = { device: string | number; polls: Array<string | number>; seen: Array<{ url: string; at: number; init: unknown }> }
+
+/**
+ * The online server's accounts: the game tokens it takes, and the GitHub token it trades for `issue`. An https request
+ * without a token it takes is answered 401; a sign-in or a logout answers `signIn` or `logout` when set.
+ */
+type Accounts = {
+  tokens: Set<string>
+  githubToken: string
+  issue: string
+  login: string
+  signIn?: { status: number; body: unknown }
+  logout?: number
+}
 
 /** What the player owns in the fake server: entries, their definitions, and what is equipped where. */
 type Owned = { inventory: Array<{ id: string; itemId: string }>; items: Array<unknown>; equipped: Record<string, string> }
@@ -203,6 +223,10 @@ type ServerOptions = {
   eventsTake?: number
   /** The one socket whose stream hands the mod the test's events, any other holding its 25 seconds; any when unset. */
   streamsOn?: string
+  /** GitHub, for a sign-in. */
+  github?: GitHubFake
+  /** The online server's accounts, which hold every https request to a token. */
+  accounts?: Accounts
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
@@ -282,6 +306,13 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
   const answeredOn: Array<string> = []
   const { registered, opened, toasts } = engineBeneath(on, options.isPaneUp === true)
   on('http.fetch', async ($, e) => {
+    const github = options.github
+    if (new URL(e.url).host === 'github.com') {
+      if (github === undefined) throw new Error('getaddrinfo ENOTFOUND github.com')
+      github.seen.push({ url: e.url, at: await clock.now(), init: e.init })
+      const answer = e.url.endsWith('/login/device/code') ? github.device : (github.polls.length > 1 ? github.polls.shift() : github.polls[0])
+      return typeof answer === 'number' ? reply(answer, {}) : { value: { status: 200, ok: true, headers: {}, text: answer ?? '' } }
+    }
     tried.push(new URL(e.url).pathname)
     const socketPath = e.init?.socketPath ?? ''
     sockets.add(socketPath)
@@ -293,7 +324,27 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     const path = new URL(e.url).pathname
     const body: unknown = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
     const method = e.init?.method ?? 'GET'
-    sent.push({ path, body, method, query: new URL(e.url).search, socket: socketPath })
+    const authorization = e.init?.headers?.['authorization']
+    sent.push({ path, body, method, query: new URL(e.url).search, socket: socketPath, authorization })
+    const accounts = options.accounts
+    if (accounts !== undefined && e.url.startsWith('https://')) {
+      const token = authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : ''
+      const signInAgain = { _tag: 'Unauthorized', message: 'This sign-in is no longer valid: sign in again' }
+      if (path === '/v1/auth/github') {
+        if (accounts.signIn !== undefined) return reply(accounts.signIn.status, accounts.signIn.body)
+        if (!isRecord(body) || body['githubToken'] !== accounts.githubToken)
+          return reply(401, { _tag: 'Unauthorized', message: 'GitHub did not accept this sign-in: sign in again' })
+        accounts.tokens.add(accounts.issue)
+        const player = { id: '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', githubUserId: 1, githubLogin: accounts.login, displayName: 'Mona', createdAt: '2026-10-09T08:00:00.000Z' }
+        return reply(200, { token: accounts.issue, player })
+      }
+      if (path === '/v1/auth/logout') {
+        if (accounts.logout !== undefined) return reply(accounts.logout, {})
+        if (!accounts.tokens.delete(token)) return reply(401, signInAgain)
+        return reply(200, { signedOut: true })
+      }
+      if (!accounts.tokens.has(token)) return reply(401, signInAgain)
+    }
     if (method === 'DELETE' && path.startsWith('/v1/sessions/')) {
       if (options.closeTakes !== undefined) await clock.sleep(options.closeTakes)
       return options.predatesPresence === true ? reply(404, { code: 'not_found', message: 'Not found' }) : reply(200, { closed: true })
@@ -3369,6 +3420,45 @@ describe('the welcome', () => {
     )
   })
 
+  test('online, the welcome says where the game plays and that a GitHub sign-in holds it', () => {
+    const band: BandView = {
+      name: 'Player',
+      level: 0,
+      title: 'Apprentice',
+      glyph: '⚔',
+      xp: { total: 0, intoLevel: 0, forNextLevel: 100 },
+      gold: 0,
+      isDev: false,
+      pet: null,
+    }
+    const view: WelcomeView = {
+      isKnown: true,
+      isDone: false,
+      species: [],
+      egg: null,
+      grading: { minWords: 6, maxXp: 20, perDay: null, counted: [], lootAtTen: null, greatAt: null, greatFactor: null },
+    }
+    const words = (step: WelcomeStep, online?: string) => {
+      const layout = welcomeLayout({
+        view,
+        band,
+        wizard: { ...freshWizard, step },
+        columns: 200,
+        isFocused: true,
+        hasInput: true,
+        ...(online === undefined ? {} : { online }),
+      })
+      const points = layout.part.kind === 'points' ? layout.part.points.map((point) => point.text) : []
+      return [...layout.paragraphs, ...points].map((row) => row.map((run) => run.text).join('')).join('\n')
+    }
+    expect(words('hello')).toContain('It all plays on this machine: no account, no sign-in')
+    expect(words('grading')).toContain('The game server, here on your machine, gets its scores')
+    const online = 'https://api.pathof.dev'
+    expect(words('hello', online)).not.toContain('no sign-in')
+    expect(words('hello', online)).toContain('You play on the online server at https://api.pathof.dev, signed in with GitHub')
+    expect(words('grading', online)).toContain('The game server, at https://api.pathof.dev, gets its scores')
+  })
+
   test('review fix: says what a 7 earns as the engine prices it, to the thousandth', () => {
     expect(xpText(25)).toBe('A 10 earns 25 XP and a 7 earns 17.5, before your sigil and boosts.')
     expect(xpText(20)).toBe('A 10 earns 20 XP and a 7 earns 14, before your sigil and boosts.')
@@ -3624,7 +3714,7 @@ describe('switching servers', () => {
     const before = sent.length
     expect((await run($, 'server online')).text).toBe(
       "Now playing on the online server at https://api.pathof.dev. You're not signed in to https://api.pathof.dev, " +
-        'so the mod waits offline and keeps what you do queued for it.',
+        'so the mod waits offline and keeps what you do queued for it: /pathofdev login signs you in.',
     )
     expect(written).toEqual([{ key: 'questline.server', value: 'online' }])
     expect(sent.slice(before).every((one) => one.socket === own && one.method === 'DELETE')).toBe(true)
@@ -3778,5 +3868,278 @@ describe('switching servers', () => {
     expect(written).toEqual([])
     expect(closesOn(sent, own)).toEqual([])
     expect(opensOn(sent, sandbox)).toEqual([])
+  })
+})
+
+describe('signing in', () => {
+  const run = ($: Parameters<TestBody>[0], args: string) =>
+    $.command.run({ command: 'pathofdev', args, origin: composer, presentation })
+  const origin = 'https://api.pathof.dev'
+  const tokenKey = `token@${origin}`
+  const queueKey = `queue@${origin}`
+  const githubToken = 'gho_16C7e42F292c6912E7710c838347Ae178B4a'
+  const messages: Array<SessionMessage> = [{ role: 'user', text: 'Fix the parser', toolUses: [] }]
+  const t0 = Date.parse('2026-10-09T08:00:00Z')
+
+  /** A store the test reads straight. */
+  const storeOf = (on: On, entries: Record<string, unknown>) => {
+    const kept = new Map<string, unknown>(Object.entries({ [`explored@${origin}`]: ['acme/widgets'], ...entries }))
+    on('store.get', ($, e) => ({ value: kept.get(e.key) }))
+    on('store.set', ($, e) => {
+      kept.set(e.key, e.value)
+      return { value: undefined }
+    })
+    on('store.delete', ($, e) => {
+      kept.delete(e.key)
+      return { value: undefined }
+    })
+    return kept
+  }
+
+  const accountsOf = (...tokens: Array<string>): Accounts => ({
+    tokens: new Set(tokens),
+    githubToken,
+    issue: 'pod_issued',
+    login: 'octocat',
+  })
+  const githubOf = (polls: Array<string | number>, device: string | number = recorded.deviceCode): GitHubFake => ({
+    device,
+    polls,
+    seen: [],
+  })
+  /** The polls GitHub got, as ms after the session started. */
+  const pollsOf = (github: GitHubFake) =>
+    github.seen.filter((one) => one.url.endsWith('/access_token')).map((one) => one.at - t0)
+
+  /** A session on the online server, with the store, GitHub and the server's accounts as given. */
+  const online = async (
+    $: Parameters<TestBody>[0],
+    on: On,
+    entries: Record<string, unknown>,
+    more: { github?: GitHubFake; accounts: Accounts },
+  ) => {
+    const clock = mock.clock(on, { now: t0 })
+    const kept = storeOf(on, entries)
+    mock.env(on, { HOME: '/home/player' })
+    const server = fakeServer(on, clock, { level: 4, ...more })
+    await $.session.start(start)
+    // Connected, or offline: signed out, or turned away.
+    await until(clock, async () => /offline|Lv 4/.test((await band($).catch(() => ({ all: "" }))).all))
+    return { clock, kept, ...server }
+  }
+
+  test(
+    'login runs the device flow as GitHub asks, trades the token at its origin, and plays on at once',
+    { options: { server: 'online' } },
+    async ($, on) => {
+      const github = githubOf([recorded.pending, recorded.slowDown, recorded.success])
+      const accounts = accountsOf()
+      const { clock, kept, sent, toasts } = await online($, on, {}, { github, accounts })
+      expect((await band($)).all).toContain('offline · sign in with /pathofdev login')
+      // Signed out, what the player does waits in the queue.
+      await $.session.compact({ trigger: 'manual', messages })
+      expect(JSON.stringify(kept.get(queueKey))).toContain('session.compacted')
+      expect((await run($, 'login')).text).toBe(
+        'To sign in to https://api.pathof.dev, open https://github.com/login/device and enter WDJB-MJHT (it works ' +
+          "for 15 minutes). GitHub tells the server only who you are; the mod says when you're in, and what you do " +
+          'meanwhile waits in the queue.',
+      )
+      expect((await run($, 'login')).text).toBe(
+        'A sign-in is under way: open https://github.com/login/device and enter WDJB-MJHT.',
+      )
+      // Pending at 5 s, slow_down at 10 s (the interval goes to 10 s), the token at 20 s.
+      await clock.advance(5_000)
+      await clock.advance(5_000)
+      await clock.advance(9_000)
+      await clock.settle()
+      expect(kept.get(tokenKey)).toBeUndefined()
+      await clock.advance(1_000)
+      await until(clock, () => kept.get(tokenKey) === 'pod_issued')
+      expect(pollsOf(github)).toEqual([5_000, 10_000, 20_000])
+      // GitHub hears the client id and the device code alone, with no Authorization.
+      for (const seen of github.seen) {
+        const init = seen.init as { headers?: Record<string, string>; body?: string }
+        expect(init.headers?.['authorization']).toBeUndefined()
+        expect(init.body).toContain('client_id=Ov23liaxznq5Qln0tRis')
+        expect(init.body).not.toContain('scope')
+      }
+      const [signIn, ...again] = sent.filter((one) => one.path === '/v1/auth/github')
+      expect(again).toEqual([])
+      expect(signIn?.authorization).toBeUndefined()
+      expect(signIn?.body).toMatchObject({ githubToken })
+      const zone = isRecord(signIn?.body) ? signIn.body['timezone'] : undefined
+      expect(typeof zone === 'string' && zone !== '').toBe(true)
+      // The GitHub token is kept nowhere.
+      expect(JSON.stringify([...kept.values()])).not.toContain('gho_')
+      expect(toasts).toContain('Signed in to https://api.pathof.dev as octocat.')
+      // The mod plays on at once: a session opens with the game token, and what waited goes.
+      await until(clock, () => eventsOf(sent).some((event) => event['type'] === 'session.compacted'))
+      expect(sent.some((one) => one.path === '/v1/sessions' && one.authorization === 'Bearer pod_issued')).toBe(true)
+      const batches = sent.filter((one) => one.path === '/v1/events')
+      expect(batches.every((one) => one.authorization === 'Bearer pod_issued')).toBe(true)
+      expect(kept.get(queueKey)).toEqual([])
+      expect((await band($)).all).toContain('Lv 4')
+      expect((await run($, 'login')).text).toBe(
+        "You're signed in to https://api.pathof.dev. /pathofdev logout signs you out.",
+      )
+    },
+  )
+
+  test('a code that expires ends the sign-in before it does: no poll after', { options: { server: 'online' } }, async ($, on) => {
+    const device = JSON.stringify({ ...JSON.parse(recorded.deviceCode), expires_in: 12 })
+    const github = githubOf([recorded.pending], device)
+    const { clock, kept, toasts } = await online($, on, {}, { github, accounts: accountsOf() })
+    expect((await run($, 'login')).text).toMatch(/enter WDJB-MJHT \(it works for 1 minute\)/)
+    await clock.advance(60_000)
+    await clock.settle()
+    // Polls at 5 and 10 seconds; the next would come at 15, after the code expired at 12.
+    expect(pollsOf(github)).toEqual([5_000, 10_000])
+    expect(toasts).toContain('The GitHub sign-in code expired: /pathofdev login gives you a new one.')
+    expect(kept.get(tokenKey)).toBeUndefined()
+  })
+
+  test("GitHub's access_denied or expired_token ends the sign-in, and a toast says so", { options: { server: 'online' } }, async ($, on) => {
+    const github = githubOf([recorded.denied])
+    const { clock, toasts } = await online($, on, {}, { github, accounts: accountsOf() })
+    await run($, 'login')
+    await clock.advance(60_000)
+    await clock.settle()
+    expect(pollsOf(github)).toEqual([5_000])
+    expect(toasts).toContain('The GitHub sign-in was cancelled: /pathofdev login starts another.')
+    github.polls = [recorded.pending, recorded.expired]
+    github.seen.length = 0
+    await run($, 'login')
+    await clock.advance(60_000)
+    await clock.settle()
+    expect(pollsOf(github)).toEqual([65_000, 70_000])
+    expect(toasts).toContain('The GitHub sign-in code expired: /pathofdev login gives you a new one.')
+  })
+
+  test('GitHub down or limiting while it polls keeps the sign-in waiting', { options: { server: 'online' } }, async ($, on) => {
+    const github = githubOf([502, 429, recorded.success])
+    const { clock, kept } = await online($, on, {}, { github, accounts: accountsOf() })
+    await run($, 'login')
+    await clock.advance(5_000)
+    await clock.advance(5_000)
+    await clock.advance(5_000)
+    await until(clock, () => kept.get(tokenKey) === 'pod_issued')
+    expect(pollsOf(github)).toEqual([5_000, 10_000, 15_000])
+  })
+
+  test(
+    'a sign-in the server turns down, or GitHub cannot check, leaves the sign-in as it was',
+    { options: { server: 'online' } },
+    async ($, on) => {
+      const github = githubOf([recorded.success])
+      const accounts = accountsOf()
+      accounts.signIn = { status: 401, body: { _tag: 'Unauthorized', message: 'not in the beta' } }
+      const { clock, kept, toasts } = await online($, on, { [tokenKey]: 'pod_old' }, { github, accounts })
+      // The token it held is one the server no longer takes: signed out, said once.
+      expect(toasts).toEqual([
+        'The Path of Dev server at https://api.pathof.dev signed you out: /pathofdev login signs you in again.',
+      ])
+      expect((await run($, 'login')).text).toMatch(/^To sign in to https:\/\/api\.pathof\.dev, open/)
+      await clock.advance(5_000)
+      await until(clock, () => toasts.length === 2)
+      expect(toasts[1]).toBe('The Path of Dev server at https://api.pathof.dev turned the sign-in down: not in the beta.')
+      expect(kept.get(tokenKey)).toBe('pod_old')
+      accounts.signIn = { status: 503, body: { _tag: 'GitHubUnavailable', message: 'GitHub is down' } }
+      await run($, 'login')
+      await clock.advance(5_000)
+      await until(clock, () => toasts.length === 3)
+      expect(toasts[2]).toBe("GitHub can't check the sign-in right now: try /pathofdev login again in a minute.")
+      expect(kept.get(tokenKey)).toBe('pod_old')
+    },
+  )
+
+  test('a new sign-in revokes the token it replaces', { options: { server: 'online' } }, async ($, on) => {
+    const github = githubOf([recorded.success])
+    const { clock, kept, sent } = await online($, on, { [tokenKey]: 'pod_old' }, { github, accounts: accountsOf() })
+    await run($, 'login')
+    await clock.advance(5_000)
+    await until(clock, () => sent.some((one) => one.path === '/v1/auth/logout'))
+    expect(kept.get(tokenKey)).toBe('pod_issued')
+    const revoked = sent.filter((one) => one.path === '/v1/auth/logout')
+    expect(revoked.map((one) => [one.method, one.authorization])).toEqual([['POST', 'Bearer pod_old']])
+  })
+
+  test('a 401 keeps every event queued, says to sign in, and knocks only once a minute', { options: { server: 'online' } }, async ($, on) => {
+    const waiting = futureEvents(3).map((event) => ({ ...event, type: 'session.cleared' }))
+    const entries = { [tokenKey]: 'pod_revoked', [queueKey]: waiting }
+    const { clock, kept, sent, toasts } = await online($, on, entries, { accounts: accountsOf() })
+    await $.session.compact({ trigger: 'manual', messages })
+    await clock.advance(120_000)
+    await clock.settle()
+    // Each flush was answered 401, and settled nothing.
+    expect(sent.some((one) => one.path === '/v1/events' && one.authorization === 'Bearer pod_revoked')).toBe(true)
+    const queued = kept.get(queueKey) as Array<{ id: string; type: string }>
+    expect(queued.slice(0, 3)).toEqual(waiting)
+    expect(queued.map((event) => event.type)).toContain('session.compacted')
+    expect(toasts.filter((text) => text.includes('signed you out'))).toHaveLength(1)
+    expect((await band($)).all).toContain('offline · sign in with /pathofdev login')
+    expect((await run($, 'server')).text).toBe(
+      'Playing on the online server at https://api.pathof.dev. Switch with /pathofdev server play, dev or online. ' +
+        "You're not signed in to https://api.pathof.dev, so the mod waits offline and keeps what you do queued for " +
+        'it: /pathofdev login signs you in.',
+    )
+    // Signed out, it opens a session once a minute, not every five seconds.
+    expect(sent.filter((one) => one.path === '/v1/sessions').length).toBeLessThanOrEqual(3)
+  })
+
+  test('logout revokes the token, forgets it, and keeps the queue', { options: { server: 'online' } }, async ($, on) => {
+    const accounts = accountsOf('pod_live')
+    const { clock, kept, sent } = await online($, on, { [tokenKey]: 'pod_live' }, { accounts })
+    await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
+    await $.session.compact({ trigger: 'manual', messages })
+    expect((await run($, 'logout')).text).toBe(
+      'Signed out of https://api.pathof.dev. What you do waits in the queue until you sign in again.',
+    )
+    const revoked = sent.filter((one) => one.path === '/v1/auth/logout')
+    expect(revoked.map((one) => [one.method, one.authorization])).toEqual([['POST', 'Bearer pod_live']])
+    expect(accounts.tokens.size).toBe(0)
+    expect(kept.has(tokenKey)).toBe(false)
+    expect(JSON.stringify(kept.get(queueKey))).toContain('session.compacted')
+    expect((await band($)).all).toContain('offline · sign in with /pathofdev login')
+    expect((await run($, 'logout')).text).toBe("You're not signed in to https://api.pathof.dev.")
+  })
+
+  test('logout forgets a token the server answers 401, and keeps one it could not revoke', { options: { server: 'online' } }, async ($, on) => {
+    const accounts = accountsOf('pod_live')
+    accounts.logout = 503
+    const { kept } = await online($, on, { [tokenKey]: 'pod_live' }, { accounts })
+    expect((await run($, 'logout')).text).toBe(
+      "The Path of Dev server at https://api.pathof.dev answered 503, so you're still signed in: try /pathofdev " +
+        'logout again later.',
+    )
+    expect(kept.get(tokenKey)).toBe('pod_live')
+    accounts.logout = 401
+    expect((await run($, 'logout')).text).toMatch(/^Signed out of https:\/\/api\.pathof\.dev\./)
+    expect(kept.has(tokenKey)).toBe(false)
+  })
+
+  test('logout stops a sign-in under way: no poll after it', { options: { server: 'online' } }, async ($, on) => {
+    const github = githubOf([recorded.pending])
+    const { clock } = await online($, on, {}, { github, accounts: accountsOf() })
+    await run($, 'login')
+    await clock.advance(5_000)
+    await clock.settle()
+    expect((await run($, 'logout')).text).toBe(
+      "The sign-in under way is stopped. You're not signed in to https://api.pathof.dev.",
+    )
+    await clock.advance(60_000)
+    await clock.settle()
+    expect(pollsOf(github)).toEqual([5_000])
+  })
+
+  test('on a local server, login and logout say sign-in is for the online server, and ask GitHub nothing', async ($, on) => {
+    const github = githubOf([recorded.success])
+    await streaming($, on, ownedOf(), false, { github })
+    const local =
+      'You play on your own save (~/.pathofdev), which needs no sign-in. /pathofdev server online switches to the ' +
+      'online server.'
+    expect((await run($, 'login')).text).toBe(local)
+    expect((await run($, 'logout')).text).toBe(local)
+    expect((await run($, 'login now')).text).toMatch(/^Sign-in: \/pathofdev login/)
+    expect(github.seen).toEqual([])
   })
 })

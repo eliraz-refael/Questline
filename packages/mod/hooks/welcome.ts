@@ -253,8 +253,15 @@ const scoreRows = (counted: ReadonlyArray<string>, width: number): Array<Row> =>
   )
 }
 
-/** The grading step's points: who grades, what leaves, quality over volume, a good prompt, the rewards, no penalty. */
-export const gradingPoints = (grading: GradingView, width: number): Array<GradingPoint> => [
+/** Where the game server is, in the player's words: this machine, or the online server's origin. */
+const serverWhere = (online: string | undefined): string =>
+  online === undefined ? 'here on your machine' : `at ${online}`
+
+/**
+ * The grading step's points: who grades, what leaves (and to which server: `online`, the online server's origin, when
+ * the mod plays there), quality over volume, a good prompt, the rewards, no penalty.
+ */
+export const gradingPoints = (grading: GradingView, width: number, online?: string): Array<GradingPoint> => [
   {
     key: 'who',
     title: heading(1, 'Haiku grades each prompt you type'),
@@ -268,8 +275,8 @@ export const gradingPoints = (grading: GradingView, width: number): Array<Gradin
     key: 'private',
     title: heading(2, 'Only the scores reach the game'),
     text: text(
-      'Haiku reads the prompt, as Claude does. The game server, here on your machine, gets its scores and a word ' +
-        "count: never the prompt, and never Haiku's note.",
+      `Haiku reads the prompt, as Claude does. The game server, ${serverWhere(online)}, gets its scores and a ` +
+        "word count: never the prompt, and never Haiku's note.",
     ),
     rows: [],
   },
@@ -321,6 +328,8 @@ export type WelcomeInput = {
   isFocused: boolean
   /** The surface draws a text field: the mobile app doesn't yet. */
   hasInput: boolean
+  /** The online server's origin, when the mod plays there rather than on this machine. */
+  online?: string
 }
 
 /** How to work the pane; `eggs` is how many egg cards carry a hotkey, on the pet step. */
@@ -357,7 +366,12 @@ export const welcomeLayout = (input: WelcomeInput): WelcomeLayout => {
             'An RPG around your work with Claude Code. Clear prompts and real work earn XP, levels and loot; a pet ' +
               'keeps you company on the band above your prompt, and missions point you at better habits.',
           ),
-          text('It all plays on this machine: no account, no sign-in, and your save is yours.'),
+          text(
+            input.online === undefined
+              ? 'It all plays on this machine: no account, no sign-in, and your save is yours.'
+              : `You play on the online server at ${input.online}, signed in with GitHub (/pathofdev logout signs ` +
+                  'you out). It never hears a repo by name, only keys made on this machine.',
+          ),
           text("Four short steps: name your character, pick your egg, see how grading works, and you're in."),
         ],
         part: { kind: 'none' },
@@ -441,7 +455,7 @@ export const welcomeLayout = (input: WelcomeInput): WelcomeLayout => {
           { text: 'How grading works', bold: true },
         ],
         paragraphs: [],
-        part: { kind: 'points', points: gradingPoints(view.grading, width) },
+        part: { kind: 'points', points: gradingPoints(view.grading, width, input.online) },
         next: 'Next',
       }
     case 'ready': {

@@ -9,10 +9,13 @@ import type { HttpInit, HttpResponse, PluginOptions } from 'claude-code'
 //                 └─ online + url ──▶ online ── https://<origin>/… + Bearer token ───┤   (token only to that origin)
 //                                                                                     ▼
 //              answer ── 2xx ───────────────────────▶ checked against the route's shape, settles what it answered
-//                     ├─ 401 ───────────────────────▶ SignedOut   ─┐
+//                     ├─ 401 ───────────────────────▶ SignedOut   ─┐  (band: "sign in with /pathofdev login")
 //                     ├─ 429 / 502 / 503 / 504 ─────▶ ServerDown  ─┼─▶ band offline; the queue keeps every event
 //                     ├─ no answer (no socket, net) ─▶ ServerDown  ─┘
 //                     └─ anything else ─────────────▶ Error: "answered something unexpected"; the queue keeps it too
+//
+// The token is the game's own, from `/pathofdev login` (login.ts), kept in $.store under `token@<origin>`; the mod
+// never logs a request's headers.
 
 export const clientVersion = '0.1.0'
 
@@ -110,16 +113,16 @@ export const headersOf = (target: Target, token: string | null): Record<string, 
 export interface Route {
   readonly path: string
   readonly body?: unknown
-  readonly method?: 'DELETE'
+  readonly method?: 'DELETE' | 'POST'
 }
 
-const sent = (body: unknown, method: 'DELETE' | undefined) => ({
+const sent = (body: unknown, method: 'DELETE' | 'POST' | undefined) => ({
   method: method ?? (body === undefined ? 'GET' : 'POST'),
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 })
 
 /** A request to a local server over `socketPath`. */
-export const initOf = (socketPath: string, body?: unknown, method?: 'DELETE'): HttpInit => ({
+export const initOf = (socketPath: string, body?: unknown, method?: 'DELETE' | 'POST'): HttpInit => ({
   ...sent(body, method),
   socketPath,
   headers: headersOf({ kind: 'local' }, null),
