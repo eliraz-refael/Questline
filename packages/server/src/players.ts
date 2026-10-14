@@ -44,11 +44,14 @@ export class Players extends Context.Service<
   {
     /** The local server's player, created on first start. */
     readonly local: (profile: LocalProfile) => Effect.Effect<PlayerType, Failure>
-    /** Makes a player, with a fresh state and roll seed. A GitHub account that already has one is a defect. */
+    /**
+     * Makes a player, with a fresh state and roll seed. A GitHub account or login that already has one is a defect.
+     */
     readonly create: (player: NewPlayer) => Effect.Effect<PlayerType, Failure>
     /**
      * The player of a GitHub account, made on its first sign-in: the same player however often it is asked for,
-     * even by two sign-ins at once.
+     * even by two sign-ins at once, under the login it signs in with now. A login names one account at a time, so a
+     * row that still holds it from before its account was renamed gives it up.
      */
     readonly findOrCreate: (
       player: NewPlayer & { readonly github: GithubIdentity },
@@ -62,6 +65,12 @@ export class Players extends Context.Service<
   static readonly layer = (kind: ServerKind) => Layer.effect(Players, Effect.suspend(() => make(kind)))
 }
 
+/** The columns of a players row, named as a `Player` reads them. */
+export const playerColumns = (sql: SqlClient.SqlClient) => sql`
+  id, github_user_id::float8 AS "githubUserId", github_login AS "githubLogin",
+  display_name AS "displayName", created_at AS "createdAt"
+`
+
 /** The id the mod keys its cursor, cache and queue on: a player's stream on a `kind` server. */
 export const serverIdOf = (kind: ServerKind, player: PlayerType): string => `${kind}-${player.id}`
 
@@ -72,21 +81,18 @@ const make = (kind: ServerKind) =>
     const devMode = yield* DevMode
     const questPacks = yield* QuestPacks
 
-    const playerColumns = sql`
-      id, github_user_id::float8 AS "githubUserId", github_login AS "githubLogin",
-      display_name AS "displayName", created_at AS "createdAt"
-    `
+    const columns = playerColumns(sql)
 
     const firstPlayer = SqlSchema.findOneOption({
       Request: Schema.Void,
       Result: Player,
-      execute: () => sql`SELECT ${playerColumns} FROM players ORDER BY created_at LIMIT 1`,
+      execute: () => sql`SELECT ${columns} FROM players ORDER BY created_at LIMIT 1`,
     })
 
     const byGithub = SqlSchema.findOneOption({
       Request: Schema.Number,
       Result: Player,
-      execute: (userId) => sql`SELECT ${playerColumns} FROM players WHERE github_user_id = ${userId}`,
+      execute: (userId) => sql`SELECT ${columns} FROM players WHERE github_user_id = ${userId}`,
     })
 
     const head = SqlSchema.findOne({
@@ -107,8 +113,9 @@ const make = (kind: ServerKind) =>
     })
 
     /**
-     * Inserts the player and their state, unless their GitHub account already has a player: then it writes nothing
-     * and answers none. A sign-in racing another waits on the unique id, then sees the row the other committed.
+     * Inserts the player and their state, unless their GitHub account or login already has a player: then it writes
+     * nothing and answers none. A sign-in racing another waits on the unique id, then sees the row the other committed.
+     * The conflict has no target, so a clash on either unique column answers none rather than failing the transaction.
      */
     const insert = (profile: NewPlayer) =>
       Effect.gen(function* () {
@@ -127,7 +134,7 @@ const make = (kind: ServerKind) =>
             ${player.id}, ${player.githubUserId}, ${player.githubLogin}, ${player.displayName}, ${rollSeed},
             ${player.createdAt}
           )
-          ON CONFLICT (github_user_id) DO NOTHING
+          ON CONFLICT DO NOTHING
           RETURNING id
         `
         if (inserted.length === 0) return Option.none<PlayerType>()
@@ -144,20 +151,36 @@ const make = (kind: ServerKind) =>
         insert(profile),
         Option.match({
           onSome: Effect.succeed,
-          onNone: () => Effect.die(new Error(`GitHub user ${profile.github?.userId} already has a player`)),
+          onNone: () => Effect.die(new Error(`GitHub user ${profile.github?.userId} or their login already has a player`)),
         }),
       ).pipe(sql.withTransaction)
 
+    /** The player, now called `login`: their row takes the login when GitHub says they were renamed. */
+    const renamed = (player: PlayerType, login: string) =>
+      player.githubLogin === login
+        ? Effect.succeed(player)
+        : Effect.as(sql`UPDATE players SET github_login = ${login} WHERE id = ${player.id}`, { ...player, githubLogin: login })
+
+    //   sign-in(userId, login)
+    //     ├─ another account's row holds `login` (any case) ─▶ it gives the login up: that account was renamed since
+    //     ├─ a player has `userId` ──────────────────────────▶ that player, under `login`
+    //     ├─ none: insert ───────────────────────────────────▶ the new player
+    //     └─ none, but the insert clashed ───────────────────▶ the player a racing sign-in just made, under `login`
     const findOrCreate = (profile: NewPlayer & { readonly github: GithubIdentity }) =>
       Effect.gen(function* () {
-        const found = yield* byGithub(profile.github.userId)
-        if (Option.isSome(found)) return found.value
+        const { userId, login } = profile.github
+        yield* sql`
+          UPDATE players SET github_login = NULL
+          WHERE lower(github_login) = lower(${login}) AND github_user_id IS DISTINCT FROM ${userId}
+        `
+        const found = yield* byGithub(userId)
+        if (Option.isSome(found)) return yield* renamed(found.value, login)
         const made = yield* insert(profile)
         if (Option.isSome(made)) return made.value
         // Another sign-in made the player between the look and the insert.
-        const raced = yield* byGithub(profile.github.userId)
-        if (Option.isSome(raced)) return raced.value
-        return yield* Effect.die(new Error(`No player for GitHub user ${profile.github.userId} after a conflict`))
+        const raced = yield* byGithub(userId)
+        if (Option.isSome(raced)) return yield* renamed(raced.value, login)
+        return yield* Effect.die(new Error(`No player for GitHub user ${userId} after a conflict`))
       }).pipe(sql.withTransaction)
 
     const local = (profile: LocalProfile) =>

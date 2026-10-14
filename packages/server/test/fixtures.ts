@@ -9,18 +9,17 @@ import type {
 } from "@pathofdev/schema"
 import type { ServerEvent } from "@pathofdev/schema"
 import { PgClient } from "@effect/sql-pg"
-import type { Authentication } from "@pathofdev/schema"
 import { PathOfDevApi } from "@pathofdev/schema"
 import type { Scope } from "effect"
 import { Effect, Layer, Redacted } from "effect"
-import { HttpEffect, HttpRouter, HttpServer, HttpServerRequest } from "effect/http"
+import { HttpEffect, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { HttpApiTest } from "effect/http-api"
 import { SqlClient } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
 import { TestClock } from "effect/testing"
 import { randomUUID } from "node:crypto"
 import type { Database, LocalProfile, Stepper } from "../src/index.ts"
-import { ApiRoutes, core, ModHandlers, Players, ServerRandom, services, sqlLayer } from "../src/index.ts"
+import { ApiRoutes, core, ModHandlers, OnlineRoutes, Players, ServerRandom, services, sqlLayer } from "../src/index.ts"
 
 // Test inputs and a server over a fresh database for every test: an in-memory PGlite, or a schema of its own in the
 // Postgres that `PATHOFDEV_TEST_DATABASE_URL` names.
@@ -173,23 +172,29 @@ export const testServices = (stepper?: Stepper, dev = false, seed?: string) =>
  * The services behind an online server's routes, over a fresh database, with the clock at `start`; `auth` decides who
  * each request acts for, from what the core holds.
  */
-export const testOnlineServices = <E>(auth: Layer.Layer<Authentication, E, SqlClient.SqlClient | Players>) =>
+export const testOnlineServices = <A, E>(auth: Layer.Layer<A, E, SqlClient.SqlClient | Players>) =>
   Layer.unwrap(
     Effect.map(freshDatabase, (database) =>
       Layer.mergeAll(auth.pipe(Layer.provideMerge(core("online", database))), HttpServer.layerServices),
     ),
   ).pipe(Layer.provideMerge(Layer.effectDiscard(TestClock.setTime(Date.parse(start)))))
 
+/** Serves `app` as a Fetch handler in the calling test's context: its clock, its database, its `Authentication`. */
+const fetchOf = <E>(app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, HttpServerRequest.HttpServerRequest | Scope.Scope>) =>
+  Effect.gen(function* () {
+    const context = yield* Effect.context<never>()
+    const handler = HttpEffect.toWebHandlerWith<never, HttpServerRequest.HttpServerRequest | Scope.Scope>(context)(app)
+    return (request: Request) => Effect.promise(() => handler(request))
+  })
+
 /**
- * A Fetch handler for the routes, built and run in the calling test's context: its clock, its database, its
- * `Authentication`. Requests go in as Web requests, headers and all, and come out as Web responses.
+ * A Fetch handler for the local server's routes, the mod's. Requests go in as Web requests, headers and all, and come
+ * out as Web responses.
  */
-export const webHandler = Effect.gen(function* () {
-  const app = yield* HttpRouter.toHttpEffect(ApiRoutes)
-  const context = yield* Effect.context<never>()
-  const handler = HttpEffect.toWebHandlerWith<never, HttpServerRequest.HttpServerRequest | Scope.Scope>(context)(app)
-  return (request: Request) => Effect.promise(() => handler(request))
-})
+export const webHandler = Effect.flatMap(HttpRouter.toHttpEffect(ApiRoutes), fetchOf)
+
+/** A Fetch handler for the public server's routes: the mod's, and signing in and out. */
+export const onlineWebHandler = Effect.flatMap(HttpRouter.toHttpEffect(OnlineRoutes), fetchOf)
 
 /** The local server's one player, whom its `Authentication` names for every request. */
 export const localPlayer = Effect.gen(function* () {
