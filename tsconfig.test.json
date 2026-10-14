@@ -6,5 +6,8 @@
     "declarationMap": false,
     "noEmit": true
   },
-  "include": ["packages/*/test", "vitest.config.ts"]
+  "include": ["packages/*/test", "vitest.config.ts"],
+  // The mod's tests import its hooks, which need the claude-code API the engine lays beside the mod: its own tsconfig
+  // checks them.
+  "exclude": ["packages/mod/test"]
 }

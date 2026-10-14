@@ -5,5 +5,7 @@
     "customConditions": ["@pathofdev/source"],
     "allowImportingTsExtensions": true,
     "exactOptionalPropertyTypes": true
-  }
+  },
+  // The engine's tsconfig takes hooks/, types/ and tests/; the properties in test/ (run by vitest) too.
+  "include": ["hooks", "types", "tests", "test"]
 }

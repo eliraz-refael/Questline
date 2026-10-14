@@ -1,6 +1,7 @@
 import type { CheckoutRef, ClientEvent, CommitRef, RepoRef, WorkRef } from '@pathofdev/schema'
 import type { CommandSource, SessionCompactTrigger } from 'claude-code'
 import { hmac } from './ids'
+import type { Target } from './server'
 
 // What the mod reads off the work around it: which repo a session is in, and what a Bash call did. It only ever
 // names a repo it can tell is on GitHub; anything else goes as opaque keys, so no path or remote leaves the machine.
@@ -17,6 +18,18 @@ export const repoOf = (remote: string | null, folder: string): Repo => {
   const name = remote === null ? null : githubName(remote)
   return name === null ? { kind: 'other', id: remote?.trim() || folder } : { kind: 'github', name }
 }
+
+/**
+ * How subjects name their repo for a target: by name to a local server, the player's own, and never online, where
+ * only opaque keys go until a verifier can tell a repo is public.
+ */
+export type SubjectForm = 'named' | 'private'
+
+export const subjectFormOf = (target: Target): SubjectForm => (target.kind === 'online' ? 'private' : 'named')
+
+/** The repo as subjects of `form` see it: the private form knows a GitHub repo only by its name, kept as a key. */
+export const repoIn = (form: SubjectForm, repo: Repo): Repo =>
+  form === 'private' && repo.kind === 'github' ? { kind: 'other', id: repo.name } : repo
 
 /** The keys a subject carries: one over the repo alone, one over the repo and the subject's own fields. */
 const keys = async (secret: string, repo: Repo, fields: string) => {
