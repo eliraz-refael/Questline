@@ -2,7 +2,8 @@ import { Context, Deferred, Effect, Layer, Scope } from "effect"
 
 // Held long-polls wait here, in memory, for the write path to say a player's stream moved. `server_events` stays
 // the truth: a wakeup only says when to look again, so a lost one delays an event until the timeout, never loses it.
-// This is the in-process hub of the local server; the public server adds LISTEN/NOTIFY between instances.
+// The hub is in-process, so it serves one instance: the local server, and the public server while it runs a single
+// replica. A hub over Postgres LISTEN/NOTIFY can stand in for it, behind the same interface, when there are more.
 
 export class StreamHub extends Context.Service<
   StreamHub,

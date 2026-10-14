@@ -8,7 +8,7 @@ import type { Admitted } from "./edge.ts"
 import { catalog, DevMode, inputSchemaVersion, rules } from "./game.ts"
 import { StreamHub } from "./hub.ts"
 import { QuestPacks } from "./quest-packs.ts"
-import { newId } from "./random.ts"
+import { ServerRandom } from "./random.ts"
 
 // Every change to a player goes through `apply`, in one transaction that holds the player's row: client events,
 // commands and, later, verified facts and rebalance grants. So there is exactly one place where state changes.
@@ -55,6 +55,7 @@ const json = (value: unknown): string => JSON.stringify(value)
 const make = (stepper: Stepper) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
+    const random = yield* ServerRandom
     const hub = yield* StreamHub
     const devMode = yield* DevMode
     const questPacks = yield* QuestPacks
@@ -229,7 +230,7 @@ const make = (stepper: Stepper) =>
         if (!questsDue(state, now)) return []
         // Keyed by the local day, so two sessions opening at once roll it once.
         const naturalKey = `quests.refresh:${localDay(now, state.timezone)}`
-        const id = yield* newId(now)
+        const id = yield* random.id(now)
         const input: Input = { kind: "system", event: { type: "quests.refresh" } }
         return yield* apply(playerId, now, [{ id, input, naturalKey }])
       })
