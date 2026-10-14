@@ -35,7 +35,8 @@ profiles at pathof.dev/u/:login, deployed on Coolify behind CI. Local PGlite pla
 
 ## Review decisions (issue -> choice)
 1A mod runs the GitHub device flow directly (client_id only); server has ONE endpoint POST /v1/auth/github
-   {githubToken, timezone}: GET /user -> allowlist -> findOrCreate -> mint game token; GitHub token discarded.
+   {githubToken, timezone}: GitHub's app token check (ours? whose?) -> allowlist -> findOrCreate -> mint game token;
+   GitHub token discarded.
 2A profiles at pathof.dev/u via Traefik PathPrefix(/u) (Coolify strip-prefix OFF), spike in PR5, fallback u.pathof.dev.
    Open: maybe move site/ into the server app later.
 3A Coolify Postgres daily backups to Cloudflare R2, keep 14.
@@ -62,7 +63,7 @@ mod (server=online, queue:online, token:online) --HTTPS+Bearer--> Cloudflare -->
   api.pathof.dev  -> public server (same build) -> Postgres 18 (Coolify) -> R2 daily
   pathof.dev/u/*  -> public server (profiles, s-maxage=60, CF cache rule)
   pathof.dev/*    -> static site/ (nginx)
-mod --device flow--> github.com (client_id only) ; server --GET /user--> api.github.com
+mod --device flow--> github.com (client_id only) ; server --POST /applications/{client_id}/token--> api.github.com
 local: mod --Unix socket--> local server (PGlite), unchanged
 ```
 ```

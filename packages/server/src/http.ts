@@ -1,7 +1,9 @@
-import type { CommandResponse, EventResult, ServerEvent } from "@pathofdev/schema"
+import type { CommandResponse, EventResult, ServerBehind, ServerEvent } from "@pathofdev/schema"
 import { clientEventTypes, CurrentPlayer, PathOfDevApi } from "@pathofdev/schema"
+import type { Schema } from "effect"
 import { Clock, Duration, Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
+import type { SqlError } from "effect/sql/SqlError"
 import type { Admitted } from "./edge.ts"
 import { admit } from "./edge.ts"
 import { minClientVersion, nowIso, rules } from "./game.ts"
@@ -12,8 +14,9 @@ import type { Applied } from "./writer.ts"
 import { PlayerWriter } from "./writer.ts"
 
 // The routes the mod uses. Database and decoding failures here are defects: the mod retries the request, and every
-// input is idempotent by id. Each handler reads the player it acts for from its own request, which the server's
-// `Authentication` provides: the services are built once and shared by every player.
+// input is idempotent by id. A write to a save that a newer build of the server wrote is answered 503, and writes
+// nothing. Each handler reads the player it acts for from its own request, which the server's `Authentication`
+// provides: the services are built once and shared by every player.
 
 /** A held stream answers with nothing after this long, under the proxies' 30-second limit. */
 export const streamTimeout = Duration.seconds(25)
@@ -21,6 +24,11 @@ export const streamTimeout = Duration.seconds(25)
 /** The mod's version from `PathOfDev-Client`, or from `Questline-Client`, which a mod from before Path of Dev sends. */
 export const clientOf = (headers: Readonly<Record<string, string | undefined>>): string | null =>
   headers["pathofdev-client"] ?? headers["questline-client"] ?? null
+
+/** Database and decoding failures as defects; what is left is the write path's `ServerBehind`. */
+const orDieButBehind = <A, R>(
+  effect: Effect.Effect<A, SqlError | Schema.SchemaError | ServerBehind, R>,
+): Effect.Effect<A, ServerBehind, R> => Effect.catchTags(effect, { SqlError: Effect.die, SchemaError: Effect.die })
 
 const resultOf = (applied: Applied): EventResult => ({
   id: applied.id,
@@ -50,13 +58,13 @@ export const ModHandlers = HttpApiBuilder.group(
           }
           const snapshot = yield* players.snapshot(player)
           return { snapshot, rules, minClientVersion, acceptedEventTypes: clientEventTypes }
-        }).pipe(Effect.orDie),
+        }).pipe(orDieButBehind),
 
       closeSession: ({ params }) =>
         Effect.gen(function* () {
           const player = yield* CurrentPlayer
           return { closed: yield* presence.close(player.id, params.id) }
-        }).pipe(Effect.orDie),
+        }).pipe(orDieButBehind),
 
       sendEvents: ({ payload }) =>
         Effect.gen(function* () {
@@ -74,7 +82,7 @@ export const ModHandlers = HttpApiBuilder.group(
           })
           const events: Array<ServerEvent> = applied.flatMap((one) => (one.status === "accepted" ? one.events : []))
           return { results, events }
-        }).pipe(Effect.orDie),
+        }).pipe(orDieButBehind),
 
       runCommand: ({ payload }) =>
         Effect.gen(function* () {
@@ -91,7 +99,7 @@ export const ModHandlers = HttpApiBuilder.group(
                 ? { status: "refused", ...done.refusal }
                 : { status: "ok", events: done.events }
           return response
-        }).pipe(Effect.orDie),
+        }).pipe(orDieButBehind),
 
       stream: ({ query }) =>
         Effect.gen(function* () {

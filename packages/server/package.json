@@ -21,7 +21,8 @@
   },
   "license": "MIT",
   "scripts": {
-    "start": "node --conditions=@pathofdev/source src/main.ts"
+    "start": "node --conditions=@pathofdev/source src/main.ts",
+    "start:public": "node --conditions=@pathofdev/source src/public-main.ts"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.0",

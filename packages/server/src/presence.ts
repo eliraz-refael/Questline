@@ -1,4 +1,4 @@
-import type { SystemEvent } from "@pathofdev/schema"
+import type { ServerBehind, SystemEvent } from "@pathofdev/schema"
 import { Context, Duration, Effect, Layer, Option, Schema, Semaphore } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
@@ -11,13 +11,15 @@ import { PlayerWriter } from "./writer.ts"
 // The `sessions` table holds the last time each was heard from, outside the log: heartbeats are never logged. What
 // reaches the engine are the changes, as inputs through the write path: `session.opened`, and `session.closed` when
 // the mod closes it (`ended`) or the sweep finds it unheard for too long (`lapsed`, stamped at its last-heard time).
+// A save that a newer build of the server wrote is left alone: the write path's guard is asked before the table
+// changes, so the session stays as it was too.
 
 /** A session not heard from for this long has gone: a killed terminal never sends its end. */
 export const lapseAfter = Duration.minutes(2)
 /** How often the sweep looks for sessions that lapsed. */
 export const sweepEvery = Duration.seconds(30)
 
-type Failure = SqlError | Schema.SchemaError
+type Failure = SqlError | Schema.SchemaError | ServerBehind
 
 const Row = Schema.Struct({
   player_id: Schema.String,
@@ -115,7 +117,8 @@ const make = Effect.gen(function* () {
     `
 
   const open = (playerId: string, sessionId: string, clientVersion: string | null) =>
-    Effect.flatMap(nowIso, (now) => lock.withPermits(1)(openAt(playerId, sessionId, clientVersion, now)))
+    Effect.flatMap(nowIso, (now) =>
+      lock.withPermits(1)(Effect.andThen(writer.guard(playerId), openAt(playerId, sessionId, clientVersion, now))))
 
   const heard = (playerId: string, sessionId: string) =>
     Effect.gen(function* () {
@@ -126,7 +129,9 @@ const make = Effect.gen(function* () {
       yield* lock.withPermits(1)(
         Effect.gen(function* () {
           const row = yield* find({ playerId, sessionId })
-          if (Option.isSome(row) && row.value.close_reason === "lapsed") yield* openAt(playerId, sessionId, null, now)
+          if (Option.isNone(row) || row.value.close_reason !== "lapsed") return
+          yield* writer.guard(playerId)
+          yield* openAt(playerId, sessionId, null, now)
         }),
       )
     })
@@ -138,6 +143,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const row = yield* find({ playerId, sessionId })
           if (Option.isNone(row) || row.value.close_reason === "ended") return false
+          yield* writer.guard(playerId)
           // A lapsed one was closed already, at its last-heard time: it is only marked ended, so it never reopens.
           yield* sql`
             UPDATE sessions
@@ -159,14 +165,19 @@ const make = Effect.gen(function* () {
         const rows = yield* lapsed(cutoff)
         let closed = 0
         for (const row of rows) {
-          if (!(yield* lapse(row).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) continue
-          closed += 1
           const event: SystemEvent = {
             type: "session.closed",
             sessionId: row.session_id,
             reason: "lapsed",
             at: row.last_heard_at,
           }
+          // A save a newer build wrote is that build's to close: the session stays open until one runs again.
+          const isNewer = yield* writer.guard(row.player_id).pipe(
+            Effect.as(false),
+            Effect.catchTag("ServerBehind", () => Effect.succeed(true)),
+          )
+          if (isNewer || !(yield* lapse(row).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) continue
+          closed += 1
           yield* record(row.player_id, now, event)
         }
         return closed
