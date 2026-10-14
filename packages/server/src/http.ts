@@ -1,6 +1,6 @@
 import type { CommandResponse, EventResult, ServerEvent } from "@pathofdev/schema"
 import { clientEventTypes, PathOfDevApi } from "@pathofdev/schema"
-import { Duration, Effect, Layer } from "effect"
+import { Clock, Duration, Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import type { Admitted } from "./edge.ts"
 import { admit } from "./edge.ts"
@@ -89,6 +89,8 @@ export const ModHandlers = HttpApiBuilder.group(
 
       stream: ({ query }) =>
         Effect.gen(function* () {
+          // The timeout runs from the poll's arrival, so the reads before the wait count against it too.
+          const arrived = yield* Clock.currentTimeMillis
           // The poll is the heartbeat: hearing from the session keeps it live, and opens a lapsed one again. A failure
           // there is presence's alone: the stream still answers, and the next poll is heard again.
           if (query.session !== undefined) {
@@ -100,7 +102,8 @@ export const ModHandlers = HttpApiBuilder.group(
           const wakeup = yield* hub.listen(player.id)
           const first = yield* players.streamAfter(player.id, query.after)
           if (first.events.length > 0 || first.resync === true) return first
-          yield* Effect.timeoutOption(wakeup, streamTimeout)
+          const waited = (yield* Clock.currentTimeMillis) - arrived
+          yield* Effect.timeoutOption(wakeup, Duration.millis(Math.max(0, Duration.toMillis(streamTimeout) - waited)))
           return yield* players.streamAfter(player.id, query.after)
         }).pipe(Effect.scoped, Effect.orDie),
     })

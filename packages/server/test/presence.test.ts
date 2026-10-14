@@ -2,13 +2,12 @@ import { it } from "@effect/vitest"
 import { initialState } from "@pathofdev/engine"
 import type { ServerEvent } from "@pathofdev/schema"
 import { PlayerState } from "@pathofdev/schema"
-import { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Schema } from "effect"
 import { Migrator, SqlClient } from "effect/sql"
 import { TestClock } from "effect/testing"
 import { describe, expect } from "vitest"
 import { CurrentPlayer, lapse, migrate, migrations, Presence } from "../src/index.ts"
-import { client, minutesLater, nextId, profile, prompt, session, start, withServer } from "./fixtures.ts"
+import { client, minutesLater, nextId, profile, prompt, session, start, testSql, withServer } from "./fixtures.ts"
 
 // Presence over the routes: a mod that keeps its session live opens it, its stream polls keep it fresh, and it closes
 // it at the end; the sweep closes one unheard for two minutes. Only the changes reach the log.
@@ -232,7 +231,7 @@ describe("the presence migration", () => {
         { ...fresh, progress: { ...fresh.progress, quests: [{ ...mission, prompts: [] }] } },
       ])
       expect(yield* sql`SELECT * FROM sessions`).toEqual([])
-    }).pipe(Effect.provide(PgliteClient.layer({}))),
+    }).pipe(Effect.provide(testSql)),
     coldStart,
   )
 })

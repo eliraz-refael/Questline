@@ -8,15 +8,21 @@ import type {
   TurnCompleted,
 } from "@pathofdev/schema"
 import type { ServerEvent } from "@pathofdev/schema"
+import { PgClient } from "@effect/sql-pg"
 import { PathOfDevApi } from "@pathofdev/schema"
-import { Effect, Layer } from "effect"
+import type { Scope } from "effect"
+import { Effect, Layer, Redacted } from "effect"
 import { HttpServer } from "effect/http"
 import { HttpApiTest } from "effect/http-api"
+import { SqlClient } from "effect/sql"
+import type { SqlError } from "effect/sql/SqlError"
 import { TestClock } from "effect/testing"
-import type { LocalProfile, Stepper } from "../src/index.ts"
-import { ModHandlers, services } from "../src/index.ts"
+import { randomUUID } from "node:crypto"
+import type { Database, LocalProfile, Stepper } from "../src/index.ts"
+import { ModHandlers, services, sqlLayer } from "../src/index.ts"
 
-// Test inputs and a server over an in-memory PGlite, fresh for every test.
+// Test inputs and a server over a fresh database for every test: an in-memory PGlite, or a schema of its own in the
+// Postgres that `PATHOFDEV_TEST_DATABASE_URL` names.
 
 export const start = "2026-10-09T08:00:00.000Z"
 export const session = "01K6ZQ8W3J5V7XKQ2M4N6P8R9T"
@@ -127,15 +133,47 @@ export const hatch = (id = nextId()): typeof PetHatch.Type => ({ id, type: "pet.
 export const withoutQuests = (events: ReadonlyArray<ServerEvent>): Array<ServerEvent> =>
   events.filter((event) => !event.type.startsWith("quest."))
 
-/** The services behind the routes, over a fresh in-memory database, with the clock at `start`; `dev`: dev mode. */
-export const testServices = (stepper?: Stepper, dev = false) =>
-  Layer.mergeAll(services({}, profile, stepper, dev), HttpServer.layerServices).pipe(
-    Layer.provideMerge(Layer.effectDiscard(TestClock.setTime(Date.parse(start)))),
+const testUrl = process.env["PATHOFDEV_TEST_DATABASE_URL"] || undefined
+
+/** Runs `f` on a one-connection client to the test Postgres, outside any test's schema. */
+const admin = <A>(url: string, f: (sql: SqlClient.SqlClient) => Effect.Effect<A, SqlError>) =>
+  Effect.scoped(Effect.flatMap(SqlClient.SqlClient, f)).pipe(
+    Effect.provide(PgClient.layer({ url: Redacted.make(url), maxConnections: 1 })),
   )
+
+/**
+ * A fresh, empty database for one test: an in-memory PGlite or, when `PATHOFDEV_TEST_DATABASE_URL` names a Postgres,
+ * a schema of its own there, dropped when the test ends. So test files run in parallel on one Postgres, and every test
+ * starts as empty as it does on PGlite.
+ */
+export const freshDatabase: Effect.Effect<Database, SqlError, Scope.Scope> =
+  testUrl === undefined ? Effect.succeed({ kind: "pglite" }) : Effect.gen(function* () {
+    const schema = `test_${randomUUID().replaceAll("-", "")}`
+    yield* Effect.acquireRelease(
+      admin(testUrl, (sql) => sql`CREATE SCHEMA ${sql(schema)}`),
+      () => Effect.orDie(admin(testUrl, (sql) => sql`DROP SCHEMA ${sql(schema)} CASCADE`)),
+    )
+    const database: Database = { kind: "postgres", url: Redacted.make(testUrl), schema, maxConnections: 4 }
+    return database
+  })
+
+/** A SQL client over a fresh database, for a test of the tables alone. */
+export const testSql = Layer.unwrap(Effect.map(freshDatabase, sqlLayer))
+
+/** The services behind the routes, over a fresh database, with the clock at `start`; `dev`: dev mode. */
+export const testServices = (stepper?: Stepper, dev = false, seed?: string) =>
+  Layer.unwrap(
+    Effect.map(freshDatabase, (database) =>
+      Layer.mergeAll(services(database, profile, { stepper, dev, seed }), HttpServer.layerServices),
+    ),
+  ).pipe(Layer.provideMerge(Layer.effectDiscard(TestClock.setTime(Date.parse(start)))))
 
 /** A typed client wired straight to the handlers, with no socket in between. */
 export const client = HttpApiTest.groups(PathOfDevApi, ["mod"])
 
-/** Runs a test against a fresh server: the handlers and the services behind them, over one database. */
-export const withServer = <A, E, R>(effect: Effect.Effect<A, E, R>, stepper?: Stepper, dev = false) =>
-  effect.pipe(Effect.provide(ModHandlers.pipe(Layer.provideMerge(testServices(stepper, dev)))))
+/**
+ * Runs a test against a fresh server: the handlers and the services behind them, over one database. `seed` seeds the
+ * server's Random; from the OS when unset.
+ */
+export const withServer = <A, E, R>(effect: Effect.Effect<A, E, R>, stepper?: Stepper, dev = false, seed?: string) =>
+  effect.pipe(Effect.provide(ModHandlers.pipe(Layer.provideMerge(testServices(stepper, dev, seed)))))

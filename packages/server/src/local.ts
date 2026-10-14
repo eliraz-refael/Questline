@@ -1,6 +1,4 @@
 import { NodeHttpServer } from "@effect/platform-node"
-import { step } from "@pathofdev/engine"
-import { PgliteClient } from "@effect/sql-pglite"
 import { Data, Effect, Layer } from "effect"
 import { HttpRouter } from "effect/http"
 import { Buffer } from "node:buffer"
@@ -20,16 +18,12 @@ import {
 import { createServer } from "node:http"
 import { homedir, userInfo } from "node:os"
 import { join } from "node:path"
-import { DevMode } from "./game.ts"
+import type { Database } from "./db.ts"
 import { ApiRoutes } from "./http.ts"
-import { StreamHub } from "./hub.ts"
-import { migrate } from "./migrations.ts"
 import type { LocalProfile } from "./players.ts"
-import { QuestPacks } from "./quest-packs.ts"
 import { CurrentPlayer, Players } from "./players.ts"
-import { Presence } from "./presence.ts"
-import type { Stepper } from "./writer.ts"
-import { PlayerWriter } from "./writer.ts"
+import type { CoreOptions } from "./services.ts"
+import { core } from "./services.ts"
 
 // The local server: one player, PGlite in ~/.pathofdev/data, HTTP on a Unix socket in a 0700 directory, so only the
 // player's own user can connect. Exactly one runs per user: two processes on one PGlite folder corrupt it. Dev mode
@@ -267,32 +261,16 @@ export const defaultProfile = (): LocalProfile => {
   return { displayName: name, characterName: name, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
 }
 
-/**
- * Everything behind the routes, over a PGlite database: migrated, with the local player in place and the presence
- * sweep running; dev mode off.
- */
-export const services = (
-  pglite: PgliteClient.PgliteClientConfig,
-  profile: LocalProfile,
-  stepper: Stepper = step,
-  dev = false,
-) => {
-  const Database = Layer.effectDiscard(migrate).pipe(Layer.provideMerge(PgliteClient.layer(pglite)))
+/** Everything behind the routes, over `database` (the core), with the local player in place. */
+export const services = (database: Database, profile: LocalProfile, options?: CoreOptions) => {
   const Player = Layer.effect(
     CurrentPlayer,
     Effect.gen(function* () {
       const players = yield* Players
       return yield* players.local(profile)
     }),
-  ).pipe(Layer.provideMerge(Players.layer))
-  const Live = Presence.sweeper.pipe(Layer.provideMerge(Presence.layer))
-  return Layer.mergeAll(Player, Live).pipe(
-    Layer.provideMerge(PlayerWriter.make(stepper)),
-    Layer.provideMerge(StreamHub.layer),
-    Layer.provideMerge(QuestPacks.layer),
-    Layer.provideMerge(Database),
-    Layer.provideMerge(DevMode.layer(dev)),
   )
+  return Player.pipe(Layer.provideMerge(core(database, options)))
 }
 
 /** The local server, listening on the socket until the scope closes. */
@@ -316,7 +294,7 @@ export const localServer = (paths: LocalPaths = localPaths(), profile: LocalProf
   )
   return HttpRouter.serve(ApiRoutes).pipe(
     Layer.provide(NodeHttpServer.layer(createServer, { path: paths.socket })),
-    Layer.provide(services({ dataDir: paths.data }, profile, step, paths.dev)),
+    Layer.provide(services({ kind: "pglite", dataDir: paths.data }, profile, { dev: paths.dev })),
     Layer.provide(Prepare),
   )
 }

@@ -1,10 +1,9 @@
-import { ulids } from "@pathofdev/engine"
 import type { SystemEvent } from "@pathofdev/schema"
 import { Context, Duration, Effect, Layer, Option, Schema, Semaphore } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
-import { randomBytes } from "node:crypto"
 import { nowIso } from "./game.ts"
+import { newId } from "./random.ts"
 import { PlayerWriter } from "./writer.ts"
 
 // Presence: which of a player's sessions are live. A mod that keeps its session live opens it with `POST /v1/sessions`,
@@ -77,9 +76,9 @@ const make = Effect.gen(function* () {
   })
 
   const record = (playerId: string, now: string, event: SystemEvent) =>
-    writer.apply(playerId, now, [
-      { id: ulids(randomBytes(16).toString("hex"), 0, now)(), input: { kind: "system", event }, naturalKey: null },
-    ])
+    Effect.flatMap(newId(now), (id) =>
+      writer.apply(playerId, now, [{ id, input: { kind: "system", event }, naturalKey: null }]),
+    )
 
   /** Opens a session from `now`, or a lapsed one again; one open or ended stays as it is, heard from now. */
   const openAt = (playerId: string, sessionId: string, clientVersion: string | null, now: string) =>
