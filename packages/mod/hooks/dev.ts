@@ -37,7 +37,8 @@ export type DevAsk =
 export const devUsage =
   'Dev mode: /pathofdev dev styles | item <id> | xp <amount> | gold <amount> | ' +
   'celebrate <common|uncommon|rare|epic|legendary|levelup|xp> | complete <mission id> | roll | session | ' +
-  'restock | mood <0-100> | shards <amount>'
+  'restock | mood <0-100> | shards <amount>. Dev mode plays on the dev sandbox: /pathofdev server dev switches ' +
+  'to it, and /pathofdev dev off back to your own save.'
 
 /** Every preview, in the order the pane offers them. */
 export const previews: ReadonlyArray<Preview> = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'levelup', 'xp']
