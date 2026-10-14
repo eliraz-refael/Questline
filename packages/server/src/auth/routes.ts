@@ -14,7 +14,8 @@ import { Tokens } from "./tokens.ts"
 // server asks GitHub whose it is, once, and keeps nothing of it.
 //
 //   POST /v1/auth/github { githubToken, timezone }
-//     └─▶ GitHub.user(githubToken) ─── not 200, or no answer ───────────────▶ 401, nothing written
+//     └─▶ GitHub.user(githubToken) ─── 401 ─────────────────────────────────▶ 401, nothing written
+//           │                       └─ down, slow, limited ────────────────────▶ 503, nothing written
 //           └─▶ Allowlist.allows(login) ─── no ──────────────────────────────▶ 401 "not in the beta", nothing written
 //                 └─▶ Players.findOrCreate(id, login, timezone) ─▶ Tokens.mint ─▶ 200 { token, player }
 //

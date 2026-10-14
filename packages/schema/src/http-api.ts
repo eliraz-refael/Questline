@@ -29,6 +29,13 @@ export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
   { httpApiStatus: 401 },
 ) {}
 
+/** GitHub couldn't say who signed in: it was down, slow or limiting the server. Nothing was decided; try again later. */
+export class GitHubUnavailable extends Schema.TaggedError<GitHubUnavailable>()(
+  "GitHubUnavailable",
+  { message: Schema.String },
+  { httpApiStatus: 503 },
+) {}
+
 /**
  * Who a request acts for, worked out before its handler runs. Each server implements it: the local server answers
  * every request as its one player, and the public server by the request's bearer token.
@@ -57,10 +64,15 @@ export class ModApi extends HttpApiGroup.make("mod", { topLevel: true })
 
 /**
  * Signing in to the public server, which needs no game token yet: the mod trades a GitHub token for one, and gives it
- * back to sign out. A token that names no player is answered 401 on either.
+ * back to sign out. A token that names no player is answered 401 on either, and a sign-in GitHub can't check right now
+ * 503, which leaves the mod's sign-in as it was.
  */
 export class AuthApi extends HttpApiGroup.make("auth", { topLevel: true }).add(
-  HttpApiEndpoint.post("signIn", "/v1/auth/github", { payload: SignInRequest, success: SignInResponse, error: Unauthorized }),
+  HttpApiEndpoint.post("signIn", "/v1/auth/github", {
+    payload: SignInRequest,
+    success: SignInResponse,
+    error: [Unauthorized, GitHubUnavailable],
+  }),
   HttpApiEndpoint.post("signOut", "/v1/auth/logout", { success: SignedOut, error: Unauthorized }),
 ) {}
 

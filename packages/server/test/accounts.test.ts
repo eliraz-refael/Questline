@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest"
-import { Name } from "@pathofdev/schema"
+import { GitHubUnavailable, Name } from "@pathofdev/schema"
 import { Effect, Layer, Option, Redacted, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
@@ -28,11 +28,19 @@ import { hatch, onlineWebHandler, prompt, session, testOnlineServices } from "./
 
 const serverRuns = { timeout: 120_000, arbitrary: { runs: 5 } }
 
+/** A token GitHub can't check: asking about it finds GitHub down. */
+const githubDown = "down"
+
 /** GitHub as the test fills it: the account each token signs in as; any other token GitHub turns down. */
 const FakeGitHub = (accounts: ReadonlyMap<string, GithubUser>) =>
   Layer.succeed(
     GitHub,
-    GitHub.of({ user: (token) => Effect.succeed(Option.fromNullishOr(accounts.get(Redacted.value(token)))) }),
+    GitHub.of({
+      user: (token) =>
+        Redacted.value(token) === githubDown
+          ? Effect.fail(new GitHubUnavailable({ message: "GitHub is down" }))
+          : Effect.succeed(Option.fromNullishOr(accounts.get(Redacted.value(token)))),
+    }),
   )
 
 /** An allowlist the test changes as it runs. */
@@ -206,13 +214,27 @@ describe("signing in", () => {
         Effect.gen(function* () {
           const handle = yield* onlineWebHandler
           const before = yield* dump
-          for (const githubToken of githubTokens.filter((token) => token !== "ada-token")) {
+          for (const githubToken of githubTokens.filter((token) => token !== "ada-token" && token !== githubDown)) {
             expect((yield* handle(signInRequest(githubToken))).status).toBe(401)
           }
           expect(yield* dump).toEqual(before)
         }),
       ),
     serverRuns,
+  )
+
+  it.effect(
+    "while GitHub is down is answered 503, and writes nothing",
+    () =>
+      withAccounts(new Map([["ada-token", ada]]), new Set(["ada"]))(
+        Effect.gen(function* () {
+          const handle = yield* onlineWebHandler
+          const before = yield* dump
+          expect((yield* handle(signInRequest(githubDown))).status).toBe(503)
+          expect(yield* dump).toEqual(before)
+        }),
+      ),
+    serverRuns.timeout,
   )
 
   it.effect.prop(
