@@ -387,6 +387,29 @@ const welcome = Effect.gen(function* () {
   yield* sql`UPDATE player_state SET engine_version = 13, rules_version = 11 WHERE engine_version < 13`
 })
 
+// Accounts on the public server. A sign-in trades a GitHub token for a game token, of which only the SHA-256 is kept,
+// so a copy of the table signs nobody in. A GitHub login names one account at a time, in any case, so the sign-in
+// clears a login from the row that held it before another account took it. `profile` holds what a player shows on
+// their public page: private until they say otherwise, and a section it has no key for shown. The partial index
+// serves a profile's XP history, by player and time, over the two event types it reads.
+const accounts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    CREATE TABLE api_tokens (
+      token_hash text PRIMARY KEY,
+      player_id text NOT NULL REFERENCES players (id),
+      created_at text NOT NULL
+    )
+  `
+  yield* sql`CREATE INDEX api_tokens_player ON api_tokens (player_id)`
+  yield* sql`ALTER TABLE players ADD COLUMN profile jsonb NOT NULL DEFAULT '{"public": false}'::jsonb`
+  yield* sql`CREATE UNIQUE INDEX players_github_login ON players (lower(github_login))`
+  yield* sql`
+    CREATE INDEX server_events_progress ON server_events (player_id, at)
+    WHERE type IN ('xp.granted', 'level.up')
+  `
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
@@ -400,6 +423,7 @@ export const migrations = {
   "0009_sigils": sigils,
   "0010_shop_pet_care": shopPetCare,
   "0011_welcome": welcome,
+  "0012_accounts": accounts,
 }
 
 /** A migration: what it needs past the database is the server's randomness, for the ids of the inputs it logs. */

@@ -244,37 +244,64 @@ describe("two players on one server", () => {
 
 // ── findOrCreate ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** Sign-ins by a few GitHub accounts, in any order and as often as they like. */
+/**
+ * Sign-ins by a few GitHub accounts, in any order and as often as they like, under a few logins in any case: so an
+ * account renames, and a login one account gave up is taken by another.
+ */
 const SignIns = Schema.Array(
   Schema.Struct({
     userId: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 4 })),
-    login: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,11}$/)),
+    login: Schema.Literals(["ada", "Ada", "ADA", "bob", "Bob", "cy"]),
   }),
 ).check(Schema.isMinLength(1), Schema.isMaxLength(10))
 
+/** Who holds which login after `signIns`: each account the login it last signed in with, unless another took it. */
+const loginsAfter = (signIns: typeof SignIns.Type): ReadonlyMap<number, string | null> =>
+  signIns.reduce(
+    (held, { userId, login }) =>
+      new Map([
+        ...[...held].map(([other, had]): [number, string | null] => [
+          other,
+          had !== null && had.toLowerCase() === login.toLowerCase() ? null : had,
+        ]),
+        [userId, login],
+      ]),
+    new Map<number, string | null>(),
+  )
+
 describe("Players.findOrCreate", () => {
-  it.effect.prop("makes one player per GitHub account, however often it signs in", [SignIns], ([signIns]) =>
-    withOnline(
-      Effect.gen(function* () {
-        const players = yield* Players
-        const found = yield* Effect.forEach(signIns, ({ userId, login }) =>
-          players.findOrCreate({
-            displayName: login,
-            characterName: login,
-            timezone: "UTC",
-            github: { userId, login },
-          }),
-        )
-        const accounts = [...new Set(signIns.map((one) => one.userId))]
-        const first = (userId: number) => found[signIns.findIndex((one) => one.userId === userId)]!
-        // Every sign-in of an account answers with its first player, as it was made.
-        signIns.forEach(({ userId }, i) => expect(found[i]).toEqual(first(userId)))
-        expect(new Set(accounts.map((userId) => first(userId).id)).size).toBe(accounts.length)
-        const sql = yield* SqlClient.SqlClient
-        const [counts] = yield* sql<{ players: number; states: number }>`
-          SELECT (SELECT count(*)::int FROM players) AS players, (SELECT count(*)::int FROM player_state) AS states
-        `
-        expect(counts).toEqual({ players: accounts.length, states: accounts.length })
-      }),
-    ), serverRuns)
+  it.effect.prop(
+    "makes one player per GitHub account, under the login it signs in with now, and a login names one account",
+    [SignIns],
+    ([signIns]) =>
+      withOnline(
+        Effect.gen(function* () {
+          const players = yield* Players
+          const found = yield* Effect.forEach(signIns, ({ userId, login }) =>
+            players.findOrCreate({ displayName: login, characterName: login, timezone: "UTC", github: { userId, login } }))
+          const first = (userId: number) => found[signIns.findIndex((one) => one.userId === userId)]!
+          // Every sign-in answers with the account's first player, renamed or not, under the login it signed in with.
+          signIns.forEach(({ userId, login }, i) =>
+            expect(found[i]).toEqual({ ...first(userId), githubUserId: userId, githubLogin: login })
+          )
+          const accounts = [...new Set(signIns.map((one) => one.userId))]
+          expect(new Set(accounts.map((userId) => first(userId).id)).size).toBe(accounts.length)
+          const sql = yield* SqlClient.SqlClient
+          const rows = yield* sql<{ id: string; github_user_id: number; github_login: string | null }>`
+            SELECT id, github_user_id::float8 AS github_user_id, github_login FROM players ORDER BY github_user_id
+          `
+          const [states] = yield* sql<{ count: number }>`SELECT count(*)::int AS count FROM player_state`
+          expect(states!.count).toBe(accounts.length)
+          const held = loginsAfter(signIns)
+          expect(rows).toEqual(
+            [...accounts].sort((a, b) => a - b).map((userId) => ({
+              id: first(userId).id,
+              github_user_id: userId,
+              github_login: held.get(userId) ?? null,
+            })),
+          )
+        }),
+      ),
+    serverRuns,
+  )
 })

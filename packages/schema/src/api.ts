@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 import { EventResult } from "./client-events.ts"
 import { CommandRefusal } from "./commands.ts"
-import { Snapshot } from "./domain.ts"
+import { Player, Snapshot } from "./domain.ts"
 import { Count, Ulid } from "./primitives.ts"
 import { RulesConfig } from "./rules.ts"
 import { ServerEvent } from "./server-events.ts"
@@ -61,6 +61,38 @@ export const CommandResponse = Schema.Union([
   Schema.Struct({ status: Schema.Literal("refused"), ...CommandRefusal.fields }),
 ])
 export type CommandResponse = typeof CommandResponse.Type
+
+/** Whether `zone` is an IANA time zone this runtime knows, as the mod reads its own from `Intl`. */
+export const isTimeZone = (zone: string): boolean => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** An IANA time zone, for a player's local days. */
+export const TimeZone = Schema.String.pipe(Schema.check(Schema.makeFilter((zone) => isTimeZone(zone) || "an IANA time zone")))
+
+/**
+ * `POST /v1/auth/github`: a GitHub token from the device flow, traded for a game token. The server asks GitHub once
+ * whose token it is, then keeps it nowhere; it never leaves a `Redacted`, so no log or error prints it. `timezone` is
+ * a new player's, for their local days.
+ */
+export const SignInRequest = Schema.Struct({
+  githubToken: Schema.RedactedFromValue(Schema.String),
+  timezone: TimeZone,
+})
+export interface SignInRequest extends Schema.Schema.Type<typeof SignInRequest> {}
+
+/** The game token the mod sends as `Authorization: Bearer <token>` from now on, and the player it acts for. */
+export const SignInResponse = Schema.Struct({ token: Schema.String, player: Player })
+export interface SignInResponse extends Schema.Schema.Type<typeof SignInResponse> {}
+
+/** `POST /v1/auth/logout`: the request's token is revoked, for good. */
+export const SignedOut = Schema.Struct({ signedOut: Schema.Literal(true) })
+export interface SignedOut extends Schema.Schema.Type<typeof SignedOut> {}
 
 /** The one error shape every route uses; `429` carries `retryAfterMs`. */
 export const ApiError = Schema.Struct({
