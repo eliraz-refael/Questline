@@ -270,7 +270,7 @@
 <span class="t-unc">✦ Loot: Knit Scarf</span> <span class="t-dim">[uncommon]</span></pre>
           <div class="band">
             <pre id="band"><span class="t-edge">╡</span> ⚔ <span class="t-title">Lv 7 · Apprentice</span> <span class="t-edge">╞════════════◇═══</span>
- <span class="t-full">█████████</span><span class="t-empty">░░░░░░░░░░░</span> <span class="t-dim">2,477 / 2,785</span>  <span class="t-gold">●</span> 412</pre>
+ <span class="t-full">█████████</span><span class="t-empty">░░░░░░░░░░░</span> <span class="t-dim">2,797 / 3,155</span>  <span class="t-gold">●</span> 412</pre>
             <canvas id="pet" width="14" height="12" role="img" aria-label="Pixel pet"></canvas>
           </div>
         </div>
@@ -376,11 +376,11 @@
       </div>
       <div class="path">
         <div class="stop here"><div class="node">1</div><h3>Apprentice</h3><span class="need">100 XP</span></div>
-        <div class="stop"><div class="node">10</div><h3>Adept</h3><span class="need">3,981 XP</span><span class="evolve">Pet evolves</span></div>
-        <div class="stop"><div class="node">25</div><h3>Artisan</h3><span class="need">17,246 XP</span><span class="evolve">Pet evolves</span></div>
-        <div class="stop"><div class="node">50</div><h3>Master</h3><span class="need">52,281 XP</span><span class="evolve">Pet evolves</span></div>
-        <div class="stop"><div class="node">75</div><h3>Grandmaster</h3><span class="need">100,022 XP</span></div>
-        <div class="stop"><div class="node">100</div><h3>Legend</h3><span class="need">158,489 XP</span></div>
+        <div class="stop"><div class="node">10</div><h3>Adept</h3><span class="need">4,570 XP</span><span class="evolve">Pet evolves</span></div>
+        <div class="stop"><div class="node">25</div><h3>Artisan</h3><span class="need">20,920 XP</span><span class="evolve">Pet evolves</span></div>
+        <div class="stop"><div class="node">50</div><h3>Master</h3><span class="need">66,113 XP</span><span class="evolve">Pet evolves</span></div>
+        <div class="stop"><div class="node">75</div><h3>Grandmaster</h3><span class="need">129,599 XP</span></div>
+        <div class="stop"><div class="node">100</div><h3>Legend</h3><span class="need">208,929 XP</span></div>
       </div>
       <div class="pet-facts">
         <div class="fact"><b>+5%</b><span>XP while your pet is happy. Keep its mood above 70.</span></div>
@@ -455,7 +455,7 @@
   // --- the session: a prompt goes in, the grade comes back, the band fills
   const log = document.getElementById("log");
   const band = document.getElementById("band");
-  const lv = { from: 2249, to: 2785 };
+  const lv = { from: 2528, to: 3155 };
   const cells = 20;
   const fmt = (n) => n.toLocaleString("en-US");
   const bandAt = (xp) => {
@@ -487,10 +487,10 @@
   const run = async () => {
     for (;;) {
       await sleep(4200);
-      band.innerHTML = bandAt(2460);
+      band.innerHTML = bandAt(2780);
       for (let n = 1; n <= prompt.length; n++) { render(prompt.slice(0, n), 1); await sleep(520); }
       render([...prompt, "", grading], 1); await sleep(1100);
-      render([...prompt, ...grade], 3); await animateXp(2460, 2477); await sleep(1300);
+      render([...prompt, ...grade], 3); await animateXp(2780, 2797); await sleep(1300);
       render([...prompt, ...grade, ...loot], 1);
     }
   };
