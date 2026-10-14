@@ -1,0 +1,135 @@
+name: Restore drill
+
+# Once a month, proves the public server's backups restore: the newest Postgres dump Coolify put in Cloudflare R2 goes
+# into a fresh Postgres 18, today's server image boots on it (which runs the migrations it hasn't seen), and the rows
+# are counted before and after. Until the R2 secrets are set, it says so and passes.
+#
+#   R2 (newest dump) ─▶ pg_restore into postgres:18 ─▶ count rows ─▶ server image boots: migrate, /healthz 200
+#     ─▶ count rows again: none lost, every player with a state
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 1 * *"
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - name: Check the R2 secrets are set
+        id: secrets
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT" ] || [ -z "$R2_BUCKET" ]; then
+            echo "::notice::R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT or R2_BUCKET is not set: skipping the drill (see docs/deploy.md)"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.secrets.outputs.ready == 'true'
+
+      - name: Download the newest dump
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          key=$(aws s3api list-objects-v2 --endpoint-url "$R2_ENDPOINT" --bucket "$R2_BUCKET" --output text \
+            --query "sort_by(Contents[?ends_with(Key, '.dmp') || ends_with(Key, '.gz') || ends_with(Key, '.sql')], &LastModified)[-1].Key")
+          if [ -z "$key" ] || [ "$key" = None ]; then echo "::error::No dump in the bucket"; exit 1; fi
+          echo "Newest dump: $key"
+          echo "Restored \`$key\`" >> "$GITHUB_STEP_SUMMARY"
+          aws s3 cp --endpoint-url "$R2_ENDPOINT" "s3://$R2_BUCKET/$key" dump --no-progress
+
+      # Coolify writes pg_dump's custom format (.dmp); a gzipped or plain SQL dump restores too. The client is
+      # Postgres 18's, from its image, to match the server.
+      - name: Restore it into a fresh database
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          psql --quiet --command 'CREATE DATABASE restored'
+          pg() { docker run --rm --network host --volume "$PWD:/work" --workdir /work \
+            --env PGHOST --env PGUSER --env PGPASSWORD postgres:18 "$@"; }
+          if [ "$(head -c 5 dump)" = PGDMP ]; then
+            pg pg_restore --no-owner --no-privileges --exit-on-error --dbname restored dump
+          elif [ "$(head -c 2 dump | od -An -tx1 | tr -d ' ')" = 1f8b ]; then
+            gunzip --stdout dump | pg psql --quiet --set ON_ERROR_STOP=1 --dbname restored
+          else
+            pg psql --quiet --set ON_ERROR_STOP=1 --dbname restored --file dump
+          fi
+
+      - name: Count the rows the dump holds
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          cat > counts.sql <<'SQL'
+          SELECT 'players', count(*) FROM players
+          UNION ALL SELECT 'player_state', count(*) FROM player_state
+          UNION ALL SELECT 'event_log', count(*) FROM event_log
+          UNION ALL SELECT 'server_events', count(*) FROM server_events
+          UNION ALL SELECT 'api_tokens', count(*) FROM api_tokens
+          ORDER BY 1
+          SQL
+          psql --dbname restored --no-align --tuples-only --field-separator ' ' --file counts.sql > before.txt
+          cat before.txt
+
+      - name: Boot today's server on it, which migrates it
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          docker build --tag pathofdev-server .
+          docker run --detach --name server --network host \
+            --env DATABASE_URL=postgres://postgres:postgres@localhost:5432/restored \
+            --env ALLOWED_LOGINS=nobody --env GITHUB_CLIENT_SECRET=restore-drill --env PORT=3000 \
+            pathofdev-server
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail http://127.0.0.1:3000/healthz; then echo; exit 0; fi
+            sleep 2
+          done
+          docker logs server
+          echo "::error::The server never answered its health check on the restored database"
+          exit 1
+
+      - name: Check the rows after the migrations
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          psql --dbname restored --no-align --tuples-only --field-separator ' ' --file counts.sql > after.txt
+          # One query, so both files list the tables in the same order: side by side, each line is one table.
+          paste -d ' ' before.txt after.txt > rows.txt
+          {
+            echo
+            echo "| table | in the dump | after migrating |"
+            echo "| --- | --- | --- |"
+            awk '{ print "| " $1 " | " $2 " | " $4 " |" }' rows.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+          while read -r table before _ after; do
+            if [ "$after" -lt "$before" ]; then echo "::error::$table lost rows: $before before, $after after"; exit 1; fi
+          done < rows.txt
+          players=$(awk '$1 == "players" { print $2 }' after.txt)
+          states=$(awk '$1 == "player_state" { print $2 }' after.txt)
+          if [ "$players" != "$states" ]; then echo "::error::$players players, but $states states"; exit 1; fi
+          if [ "$players" = 0 ]; then echo "::warning::The dump holds no players: the restore ran, but proves little"; fi
+
+      - name: The server's log
+        if: always() && steps.secrets.outputs.ready == 'true'
+        run: docker logs server || true
