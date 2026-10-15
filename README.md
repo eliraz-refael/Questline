@@ -5,7 +5,35 @@ clarity to done criteria, and the grade earns XP, levels and loot. A pixel-art p
 and quests point you at better habits. Real outcomes pay the big bonuses: a merged pull request is worth 250 XP, an
 opened one nothing, and only work confirmed on GitHub ranks.
 
-> **Status:** early development. Nothing is playable yet.
+> **Status:** closed beta. The online server at `api.pathof.dev` lets in GitHub accounts on its beta list.
+
+## Play
+
+In Claude Code:
+
+```
+/plugin install questline --marketplace eliraz-refael/path-of-dev
+```
+
+Restart Claude Code, then:
+
+```
+/pathofdev server online
+/pathofdev login
+```
+
+`/pathofdev login` shows a code to enter on github.com. The server lets you in once your GitHub login is on the beta
+list: ask an admin to run `/pathofdev beta add <your-login>`. `/pathofdev logout` signs you out.
+
+On older Claude Code, add the marketplace first, then install from it:
+
+```
+/plugin marketplace add eliraz-refael/path-of-dev
+/plugin install questline@path-of-dev
+```
+
+Playing locally instead, on a save in `~/.pathofdev`, needs a clone running the server: see
+[Development](#development).
 
 ## How it fits together
 
@@ -39,6 +67,12 @@ pnpm install
 pnpm typecheck   # packages and tests
 pnpm test
 pnpm build       # emits dist/ for each package
+```
+
+To play on a local save, start the local server and leave it running (`/pathofdev server play` points the mod at it):
+
+```sh
+pnpm --filter @pathofdev/server start
 ```
 
 The public server deploys from the [`Dockerfile`](Dockerfile) through Coolify: see [docs/deploy.md](docs/deploy.md).
