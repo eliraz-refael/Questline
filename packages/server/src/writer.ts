@@ -1,6 +1,12 @@
 import { engineVersion, localDay, questsDue, step } from "@pathofdev/engine"
 import type { CommandRefusal, Context as StepContext, Input, PlayerState, ServerEvent, Step } from "@pathofdev/schema"
-import { CommandRefusal as CommandRefusalSchema, Count, PlayerState as PlayerStateSchema, ServerEvent as ServerEventSchema } from "@pathofdev/schema"
+import {
+  CommandRefusal as CommandRefusalSchema,
+  Count,
+  PlayerState as PlayerStateSchema,
+  ServerBehind,
+  ServerEvent as ServerEventSchema,
+} from "@pathofdev/schema"
 import { Context, Effect, Layer, Option, Result, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
@@ -12,6 +18,16 @@ import { ServerRandom } from "./random.ts"
 
 // Every change to a player goes through `apply`, in one transaction that holds the player's row: client events,
 // commands and, later, verified facts and rebalance grants. So there is exactly one place where state changes.
+//
+//   apply(player, now, inputs) ─ one transaction, the player's row held
+//     ├─ last saved by a newer engine than this build's ──▶ ServerBehind (503), nothing written: a deploy is rolling
+//     │                                                      out or back, and this build may not read that shape
+//     └─ each input, in order
+//          ├─ its id is logged ──────────────────────────▶ answered as it was the first time
+//          ├─ its natural key is logged ─────────────────▶ duplicate of the first
+//          ├─ the engine fails on it ────────────────────▶ rejected: logged, and kept in quarantine
+//          └─ stepped ───────────────────────────────────▶ accepted: logged, its server events and rolls written
+//     └─▶ player_state moves ─▶ commit ─▶ StreamHub.notify, when there are new events
 
 /** What happened to one input. */
 export interface Applied {
@@ -30,7 +46,24 @@ export interface Applied {
 /** The engine's step, swappable so tests can make it fail. */
 export type Stepper = (state: PlayerState, input: Input, context: StepContext) => Step
 
-const Head = Schema.Struct({ state: PlayerStateSchema, log_seq: Count, server_seq: Count, roll_seed: Schema.String })
+/** The state is read only once the guard lets the request through: a newer engine's shape may not decode here. */
+const Head = Schema.Struct({
+  state: Schema.Unknown,
+  log_seq: Count,
+  server_seq: Count,
+  engine_version: Count,
+  roll_seed: Schema.String,
+})
+
+/** Whether a save last written by engine `saved` is newer than this build's engine, which must then leave it alone. */
+const isBehind = (saved: number): boolean => saved > engineVersion
+
+const behind = "This server is older than the one that last saved this game: try again in a minute"
+
+/** Fails when the save is newer than this build: nothing may be written over it. */
+const guard = (saved: number) => (isBehind(saved) ? Effect.fail(new ServerBehind({ message: behind })) : Effect.void)
+
+const decodeState = (state: unknown) => Effect.orDie(Schema.decodeUnknownEffect(PlayerStateSchema)(state))
 
 const Logged = Schema.Struct({
   input_id: Schema.String,
@@ -64,7 +97,7 @@ const make = (stepper: Stepper) =>
       Request: Schema.String,
       Result: Head,
       execute: (playerId) => sql`
-        SELECT s.state, s.log_seq, s.server_seq, p.roll_seed
+        SELECT s.state, s.log_seq, s.server_seq, s.engine_version, p.roll_seed
         FROM player_state s JOIN players p ON p.id = s.player_id
         WHERE s.player_id = ${playerId}
         FOR UPDATE OF s
@@ -127,7 +160,8 @@ const make = (stepper: Stepper) =>
     const apply = (playerId: string, now: string, inputs: ReadonlyArray<Admitted>) =>
       Effect.gen(function* () {
         const head = yield* lock(playerId).pipe(Effect.orDie)
-        let state = head.state
+        yield* guard(head.engine_version)
+        let state = yield* decodeState(head.state)
         let logSeq = head.log_seq
         let serverSeq = head.server_seq
         const applied: Array<Applied> = []
@@ -220,13 +254,15 @@ const make = (stepper: Stepper) =>
 
     const current = SqlSchema.findOne({
       Request: Schema.String,
-      Result: Schema.Struct({ state: PlayerStateSchema }),
-      execute: (playerId) => sql`SELECT state FROM player_state WHERE player_id = ${playerId}`,
+      Result: Schema.Struct({ state: Schema.Unknown, engine_version: Count }),
+      execute: (playerId) => sql`SELECT state, engine_version FROM player_state WHERE player_id = ${playerId}`,
     })
 
     const refreshQuests = (playerId: string, now: string) =>
       Effect.gen(function* () {
-        const { state } = yield* current(playerId).pipe(Effect.orDie)
+        const row = yield* current(playerId).pipe(Effect.orDie)
+        yield* guard(row.engine_version)
+        const state = yield* decodeState(row.state)
         if (!questsDue(state, now)) return []
         // Keyed by the local day, so two sessions opening at once roll it once.
         const naturalKey = `quests.refresh:${localDay(now, state.timezone)}`
@@ -235,18 +271,29 @@ const make = (stepper: Stepper) =>
         return yield* apply(playerId, now, [{ id, input, naturalKey }])
       })
 
-    return PlayerWriter.of({ apply, refreshQuests })
+    const savedBy = SqlSchema.findOne({
+      Request: Schema.String,
+      Result: Schema.Struct({ engine_version: Count }),
+      execute: (playerId) => sql`SELECT engine_version FROM player_state WHERE player_id = ${playerId}`,
+    })
+
+    const check = (playerId: string) => Effect.flatMap(Effect.orDie(savedBy(playerId)), (row) => guard(row.engine_version))
+
+    return PlayerWriter.of({ apply, refreshQuests, guard: check })
   })
 
 export class PlayerWriter extends Context.Service<
   PlayerWriter,
   {
-    /** Applies the inputs in order, as received at `now`, and answers for each one. */
+    /**
+     * Applies the inputs in order, as received at `now`, and answers for each one. Fails with `ServerBehind`, having
+     * written nothing, when a newer build of the server last saved the player.
+     */
     readonly apply: (
       playerId: string,
       now: string,
       inputs: ReadonlyArray<Admitted>,
-    ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError>
+    ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError | ServerBehind>
     /**
      * Rolls the missions of a local day or week begun since the player's last step, as `now`, so a session opened on
      * a new day shows its missions before any event arrives. Does nothing when none is due.
@@ -254,7 +301,12 @@ export class PlayerWriter extends Context.Service<
     readonly refreshQuests: (
       playerId: string,
       now: string,
-    ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError>
+    ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError | ServerBehind>
+    /**
+     * Fails with `ServerBehind` when a newer build of the server last saved the player, as `apply` would: for a write
+     * outside the log, such as a session's row, made before the input it goes with.
+     */
+    readonly guard: (playerId: string) => Effect.Effect<void, SqlError | Schema.SchemaError | ServerBehind>
   }
 >()("pathofdev/PlayerWriter") {
   static readonly make = (stepper: Stepper) => Layer.effect(PlayerWriter, make(stepper))

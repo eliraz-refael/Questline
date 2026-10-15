@@ -18,8 +18,19 @@ import { SqlClient } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
 import { TestClock } from "effect/testing"
 import { randomUUID } from "node:crypto"
-import type { Database, LocalProfile, Stepper } from "../src/index.ts"
-import { ApiRoutes, core, ModHandlers, OnlineRoutes, Players, ServerRandom, services, sqlLayer } from "../src/index.ts"
+import type { Database, GitHub, LocalProfile, Stepper } from "../src/index.ts"
+import {
+  ApiRoutes,
+  core,
+  ModHandlers,
+  OnlineRoutes,
+  Players,
+  PublicRoutes,
+  publicServices,
+  ServerRandom,
+  services,
+  sqlLayer,
+} from "../src/index.ts"
 
 // Test inputs and a server over a fresh database for every test: an in-memory PGlite, or a schema of its own in the
 // Postgres that `PATHOFDEV_TEST_DATABASE_URL` names.
@@ -179,6 +190,17 @@ export const testOnlineServices = <A, E>(auth: Layer.Layer<A, E, SqlClient.SqlCl
     ),
   ).pipe(Layer.provideMerge(Layer.effectDiscard(TestClock.setTime(Date.parse(start)))))
 
+/**
+ * The public server's services over a fresh database, as its entry wires them, with the clock at `start`: the beta's
+ * `allowlist`, and `github` answering for GitHub.
+ */
+export const testPublicServices = <E>(allowlist: string, github: Layer.Layer<GitHub, E>) =>
+  Layer.unwrap(
+    Effect.map(freshDatabase, (database) =>
+      Layer.mergeAll(publicServices(database, allowlist, github), HttpServer.layerServices),
+    ),
+  ).pipe(Layer.provideMerge(Layer.effectDiscard(TestClock.setTime(Date.parse(start)))))
+
 /** Serves `app` as a Fetch handler in the calling test's context: its clock, its database, its `Authentication`. */
 const fetchOf = <E>(app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, HttpServerRequest.HttpServerRequest | Scope.Scope>) =>
   Effect.gen(function* () {
@@ -196,10 +218,31 @@ export const webHandler = Effect.flatMap(HttpRouter.toHttpEffect(ApiRoutes), fet
 /** A Fetch handler for the public server's routes: the mod's, and signing in and out. */
 export const onlineWebHandler = Effect.flatMap(HttpRouter.toHttpEffect(OnlineRoutes), fetchOf)
 
+/** A Fetch handler for the public server's routes as its entry serves them: the online ones, and the health check. */
+export const publicWebHandler = Effect.flatMap(HttpRouter.toHttpEffect(PublicRoutes), fetchOf)
+
 /** The local server's one player, whom its `Authentication` names for every request. */
 export const localPlayer = Effect.gen(function* () {
   const players = yield* Players
   return yield* players.local(profile)
+})
+
+/** Every table a sign-in or a player's play writes, as rows in a fixed order. */
+const tables = [
+  "players",
+  "player_state",
+  "event_log",
+  "server_events",
+  "rolls",
+  "quarantine",
+  "sessions",
+  "api_tokens",
+] as const
+
+/** Every row of every table a sign-in or a player's play writes, to see that a request wrote nothing. */
+export const dump = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  return yield* Effect.forEach(tables, (table) => sql`SELECT * FROM ${sql(table)} ORDER BY 1, 2`)
 })
 
 /** A typed client wired straight to the handlers, with no socket in between. */

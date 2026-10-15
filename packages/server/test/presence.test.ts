@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest"
-import { initialState } from "@pathofdev/engine"
+import { engineVersion, initialState } from "@pathofdev/engine"
 import type { ServerEvent } from "@pathofdev/schema"
 import { PlayerState } from "@pathofdev/schema"
 import { Effect, Schema } from "effect"
@@ -104,6 +104,26 @@ describe("presence", () => {
         expect(yield* spans).toEqual([
           { sessionId: session, openedAt: start, closedAt: start },
           { sessionId: session, openedAt: minutesLater(2.5), closedAt: null },
+        ])
+      }),
+    ),
+  )
+
+  it.effect("leaves a session of a save a newer build wrote open, until a build that may write it sweeps again", () =>
+    withServer(
+      Effect.gen(function* () {
+        const api = yield* client
+        yield* api.openSession({ payload: { sessionId: session, presence: true } })
+        const sql = yield* SqlClient.SqlClient
+        yield* sql`UPDATE player_state SET engine_version = ${engineVersion + 1}`
+        yield* sweepFor(300)
+        expect(yield* presenceLog).toEqual([{ type: "session.opened", sessionId: session }])
+        expect(yield* sql`SELECT close_reason FROM sessions`).toEqual([{ close_reason: null }])
+        yield* sql`UPDATE player_state SET engine_version = ${engineVersion}`
+        yield* sweepFor(30)
+        expect(yield* presenceLog).toEqual([
+          { type: "session.opened", sessionId: session },
+          { type: "session.closed", sessionId: session, reason: "lapsed", at: start },
         ])
       }),
     ),

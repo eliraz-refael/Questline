@@ -41,6 +41,8 @@ pnpm test
 pnpm build       # emits dist/ for each package
 ```
 
+The public server deploys from the [`Dockerfile`](Dockerfile) through Coolify: see [docs/deploy.md](docs/deploy.md).
+
 ## License
 
 [MIT](LICENSE)

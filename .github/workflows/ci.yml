@@ -75,3 +75,84 @@ jobs:
       - run: npm install -g @anthropic-ai/claude-code && claude --version
       - run: claude plugin validate packages/mod
       - run: claude plugin test packages/mod
+
+  # The public server's image, as Coolify builds it, booted against Postgres 18 as the public server runs: it must
+  # migrate and answer its health check, and turn away a request with no token.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build --tag pathofdev-server .
+      # Host networking, so the container reaches the service's port on localhost. The settings are a smoke test's:
+      # nobody is on the list, and the secret is GitHub's to turn down.
+      - name: Start the image
+        run: >-
+          docker run --detach --name server --network host
+          --env DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres
+          --env ALLOWED_LOGINS=nobody
+          --env GITHUB_CLIENT_SECRET=smoke-test
+          --env PORT=3000
+          pathofdev-server
+      - name: The health check answers 200
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:3000/healthz; then echo; exit 0; fi
+            sleep 2
+          done
+          echo "::error::/healthz never answered 200"
+          exit 1
+      - name: An event with no token is answered 401
+        run: |
+          status=$(curl --silent --output /dev/stderr --write-out '%{http_code}' --request POST \
+            --header 'content-type: application/json' --data '{"events":[]}' http://127.0.0.1:3000/v1/events)
+          echo
+          test "$status" = 401 || { echo "::error::POST /v1/events with no token answered $status"; exit 1; }
+      - name: The image's own health check passes
+        run: |
+          # Docker runs the first check one interval (30 seconds) after the start.
+          for attempt in $(seq 1 45); do
+            health=$(docker inspect --format '{{.State.Health.Status}}' server)
+            if [ "$health" = healthy ]; then exit 0; fi
+            sleep 2
+          done
+          echo "::error::the container is $health"
+          exit 1
+      - name: The server's log
+        if: always()
+        run: docker logs server
+
+  # A push to main that passed the server's checks deploys it: Coolify's auto-deploy is off, so this webhook is what
+  # starts a deploy, and only after CI. Until COOLIFY_WEBHOOK and COOLIFY_TOKEN are set, it says so and passes.
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [ci, postgres, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    steps:
+      - name: Ask Coolify to deploy main
+        env:
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [ -z "$COOLIFY_WEBHOOK" ] || [ -z "$COOLIFY_TOKEN" ]; then
+            echo "::notice::COOLIFY_WEBHOOK or COOLIFY_TOKEN is not set: skipping the deploy (see docs/deploy.md)"
+            exit 0
+          fi
+          curl --silent --show-error --fail-with-body --max-time 60 \
+            --header "Authorization: Bearer $COOLIFY_TOKEN" "$COOLIFY_WEBHOOK"

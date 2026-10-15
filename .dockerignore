@@ -1,0 +1,17 @@
+# Only the workspace's sources and manifests go into the image's build; it installs and builds its own.
+.git
+.github
+.claude
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.env
+.env.*
+*.pem
+*.log
+coverage
+docs
+site
+packages/*/test
+Dockerfile
+.dockerignore

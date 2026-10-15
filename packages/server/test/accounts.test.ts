@@ -18,7 +18,7 @@ import {
   tokenPrefix,
   Tokens,
 } from "../src/index.ts"
-import { hatch, onlineWebHandler, prompt, session, testOnlineServices } from "./fixtures.ts"
+import { dump, hatch, onlineWebHandler, prompt, session, testOnlineServices } from "./fixtures.ts"
 
 // Accounts on the public server, end to end through its routes. GitHub is a table the test fills, and the beta's
 // allowlist a set it changes mid-test, so a test can take a player off the list after they signed in:
@@ -83,22 +83,6 @@ const signIn = (handle: (request: Request) => Effect.Effect<Response>, githubTok
     const body = (yield* Effect.promise(() => response.json())) as { token: string; player: { id: string } }
     return body
   })
-
-/** Every table a sign-in or a player's play writes, as rows in a fixed order. */
-const tables = [
-  "players",
-  "player_state",
-  "event_log",
-  "server_events",
-  "rolls",
-  "quarantine",
-  "sessions",
-  "api_tokens",
-] as const
-const dump = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
-  return yield* Effect.forEach(tables, (table) => sql`SELECT * FROM ${sql(table)} ORDER BY 1, 2`)
-})
 
 // ── tokens ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 

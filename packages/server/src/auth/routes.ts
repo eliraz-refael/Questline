@@ -11,10 +11,10 @@ import { notInBeta, signInAgain } from "./middleware.ts"
 import { Tokens } from "./tokens.ts"
 
 // Signing in to the public server. The mod runs GitHub's device flow itself and sends the GitHub token it got; the
-// server asks GitHub whose it is, once, and keeps nothing of it.
+// server asks GitHub, once, whose it is and whether it was issued to Path of Dev's app, and keeps nothing of it.
 //
 //   POST /v1/auth/github { githubToken, timezone }
-//     └─▶ GitHub.user(githubToken) ─── 401 ─────────────────────────────────▶ 401, nothing written
+//     └─▶ GitHub.user(githubToken) ─── not ours, or no token ───────────────▶ 401, nothing written
 //           │                       └─ down, slow, limited ────────────────────▶ 503, nothing written
 //           └─▶ Allowlist.allows(login) ─── no ──────────────────────────────▶ 401 "not in the beta", nothing written
 //                 └─▶ Players.findOrCreate(id, login, timezone) ─▶ Tokens.mint ─▶ 200 { token, player }

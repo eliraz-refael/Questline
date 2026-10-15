@@ -37,6 +37,17 @@ export class GitHubUnavailable extends Schema.TaggedError<GitHubUnavailable>()(
 ) {}
 
 /**
+ * The player's save was last written by a newer build of the server than the one that answered: a deploy is rolling
+ * out, or was rolled back. Nothing was written, so the save never goes back to a shape this build can't read; the mod
+ * keeps its queue and tries again later.
+ */
+export class ServerBehind extends Schema.TaggedError<ServerBehind>()(
+  "ServerBehind",
+  { message: Schema.String },
+  { httpApiStatus: 503 },
+) {}
+
+/**
  * Who a request acts for, worked out before its handler runs. Each server implements it: the local server answers
  * every request as its one player, and the public server by the request's bearer token.
  *
@@ -51,10 +62,26 @@ export class Authentication extends HttpApiMiddleware.Service<Authentication, { 
 
 export class ModApi extends HttpApiGroup.make("mod", { topLevel: true })
   .add(
-    HttpApiEndpoint.post("openSession", "/v1/sessions", { payload: SessionRequest, success: SessionResponse }),
-    HttpApiEndpoint.delete("closeSession", "/v1/sessions/:id", { params: { id: Ulid }, success: SessionClosed }),
-    HttpApiEndpoint.post("sendEvents", "/v1/events", { payload: EventsRequest, success: EventsResponse }),
-    HttpApiEndpoint.post("runCommand", "/v1/commands", { payload: Command, success: CommandResponse }),
+    HttpApiEndpoint.post("openSession", "/v1/sessions", {
+      payload: SessionRequest,
+      success: SessionResponse,
+      error: ServerBehind,
+    }),
+    HttpApiEndpoint.delete("closeSession", "/v1/sessions/:id", {
+      params: { id: Ulid },
+      success: SessionClosed,
+      error: ServerBehind,
+    }),
+    HttpApiEndpoint.post("sendEvents", "/v1/events", {
+      payload: EventsRequest,
+      success: EventsResponse,
+      error: ServerBehind,
+    }),
+    HttpApiEndpoint.post("runCommand", "/v1/commands", {
+      payload: Command,
+      success: CommandResponse,
+      error: ServerBehind,
+    }),
     HttpApiEndpoint.get("stream", "/v1/stream", {
       query: { after: Count, session: Schema.optionalKey(Ulid) },
       success: StreamResponse,
