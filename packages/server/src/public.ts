@@ -5,6 +5,8 @@ import { SqlClient } from "effect/sql"
 import { createServer } from "node:http"
 import type { GitHubApp } from "./auth/github.ts"
 import { GitHub, publicClientId } from "./auth/github.ts"
+import type { BetaConfig } from "./auth/allowlist.ts"
+import { adminIdsOf } from "./auth/allowlist.ts"
 import { accounts } from "./auth/middleware.ts"
 import { OnlineRoutes } from "./auth/routes.ts"
 import type { Database } from "./db.ts"
@@ -17,7 +19,8 @@ import { core } from "./services.ts"
 //
 //   env ─▶ publicConfigOf ─▶ PublicConfig (a var missing or bad stops the boot, named)
 //     DATABASE_URL ──────────────▶ core("online"), dev mode off: Postgres, migrated; Players, PlayerWriter, Presence
-//     ALLOWED_LOGINS ────────────▶ accounts: Tokens, Allowlist, BearerAuth
+//     ALLOWED_LOGINS ────────────▶ accounts: Tokens, Allowlist (beside the beta_logins table), BearerAuth
+//     ADMIN_GITHUB_IDS ──────────▶   the admins, by GitHub user id: always in, and they keep the beta list
 //     GITHUB_CLIENT_ID, _SECRET ─▶ GitHub: the token check, asked as the app
 //       └─▶ publicServices ─▶ PublicRoutes (OnlineRoutes, Healthz, RetryAfter) ─▶ node http on PORT
 //
@@ -27,6 +30,7 @@ import { core } from "./services.ts"
 //     ├─ GET  /healthz ─────────────▶ SELECT 1 ─▶ 200, or 503 while the database doesn't answer
 //     ├─ POST /v1/auth/github ──────▶ GitHub.user ─▶ Allowlist ─▶ Players.findOrCreate ─▶ Tokens.mint
 //     ├─ POST /v1/auth/logout ──────▶ Tokens.revoke
+//     ├─ /v1/beta ──────────────────▶ BearerAuth ─▶ an admin? ─▶ Allowlist: the table, and its copy in memory
 //     └─ /v1/sessions, /v1/events, /v1/commands, /v1/stream
 //          └─▶ BearerAuth (token ─▶ player ─▶ allowlist) ─▶ ModHandlers ─▶ PlayerWriter (version guard) ─▶ Postgres
 //   every 503 leaves with Retry-After
@@ -40,15 +44,23 @@ import { core } from "./services.ts"
 export interface PublicConfig {
   /** The Postgres the game lives in. */
   readonly databaseUrl: Redacted.Redacted<string>
-  /** The beta's GitHub logins, as `ALLOWED_LOGINS` writes them. */
+  /** The beta's GitHub logins to start from, as `ALLOWED_LOGINS` writes them; the admins add more from the mod. */
   readonly allowedLogins: string
+  /** The GitHub user ids of the server's admins, from `ADMIN_GITHUB_IDS`: always in, and they keep the beta list. */
+  readonly adminGithubIds: ReadonlyArray<number>
   readonly port: number
   /** Path of Dev's OAuth app, which the server checks every GitHub token was issued to. */
   readonly github: GitHubApp
 }
 
 /** The env vars the public server reads, by name. */
-export type PublicVar = "DATABASE_URL" | "ALLOWED_LOGINS" | "PORT" | "GITHUB_CLIENT_ID" | "GITHUB_CLIENT_SECRET"
+export type PublicVar =
+  | "DATABASE_URL"
+  | "ALLOWED_LOGINS"
+  | "ADMIN_GITHUB_IDS"
+  | "PORT"
+  | "GITHUB_CLIENT_ID"
+  | "GITHUB_CLIENT_SECRET"
 
 export const defaultPort = 3000
 
@@ -56,6 +68,8 @@ export const defaultPort = 3000
 const vars = {
   DATABASE_URL: Config.Redacted("DATABASE_URL"),
   ALLOWED_LOGINS: Config.NonEmptyString("ALLOWED_LOGINS"),
+  // Read as text, then as ids by `adminIdsOf`: unset, there are none.
+  ADMIN_GITHUB_IDS: Config.String("ADMIN_GITHUB_IDS").pipe(Config.withDefault("")),
   PORT: Config.Port("PORT").pipe(Config.withDefault(defaultPort)),
   GITHUB_CLIENT_ID: Config.NonEmptyString("GITHUB_CLIENT_ID").pipe(Config.withDefault(publicClientId)),
   GITHUB_CLIENT_SECRET: Config.Redacted("GITHUB_CLIENT_SECRET"),
@@ -83,9 +97,14 @@ export const publicConfigOf = (env: Readonly<Record<string, string | undefined>>
       Effect.mapError(() => new BadConfig({ variable, isMissing: (env[variable] ?? "") === "" })),
     )
   return Effect.gen(function* () {
+    const databaseUrl = yield* read("DATABASE_URL", vars.DATABASE_URL)
+    const allowedLogins = yield* read("ALLOWED_LOGINS", vars.ALLOWED_LOGINS)
+    const adminGithubIds = adminIdsOf(yield* read("ADMIN_GITHUB_IDS", vars.ADMIN_GITHUB_IDS))
+    if (adminGithubIds === null) return yield* new BadConfig({ variable: "ADMIN_GITHUB_IDS", isMissing: false })
     const config: PublicConfig = {
-      databaseUrl: yield* read("DATABASE_URL", vars.DATABASE_URL),
-      allowedLogins: yield* read("ALLOWED_LOGINS", vars.ALLOWED_LOGINS),
+      databaseUrl,
+      allowedLogins,
+      adminGithubIds,
       port: yield* read("PORT", vars.PORT),
       github: {
         clientId: yield* read("GITHUB_CLIENT_ID", vars.GITHUB_CLIENT_ID),
@@ -100,6 +119,7 @@ export const publicConfigOf = (env: Readonly<Record<string, string | undefined>>
 export const publicEnvOf = (config: PublicConfig): Record<PublicVar, string> => ({
   DATABASE_URL: Redacted.value(config.databaseUrl),
   ALLOWED_LOGINS: config.allowedLogins,
+  ADMIN_GITHUB_IDS: config.adminGithubIds.join(","),
   PORT: String(config.port),
   GITHUB_CLIENT_ID: config.github.clientId,
   GITHUB_CLIENT_SECRET: Redacted.value(config.github.clientSecret),
@@ -148,21 +168,19 @@ export const RetryAfter = HttpRouter.middleware(
   { global: true },
 )
 
-/** The public server's routes: the mod's, signing in and out, and the health check. */
+/** The public server's routes: the mod's, signing in and out, the beta list, and the health check. */
 export const PublicRoutes = Layer.mergeAll(OnlineRoutes, Healthz, RetryAfter)
 
 /**
  * Everything behind the public server's routes, over `database`: the core, online and never in dev mode; the beta's
- * accounts on the logins `allowlist` names; and `github`, which checks a sign-in.
+ * accounts, on the logins and admins `beta` names and the table; and `github`, which checks a sign-in.
  */
-export const publicServices = <E>(database: Database, allowlist: string, github: Layer.Layer<GitHub, E>) =>
-  Layer.mergeAll(accounts(allowlist), github).pipe(Layer.provideMerge(core("online", database)))
+export const publicServices = <E>(database: Database, beta: BetaConfig, github: Layer.Layer<GitHub, E>) =>
+  Layer.mergeAll(accounts(beta), github).pipe(Layer.provideMerge(core("online", database)))
 
 /** The public server, listening on `config.port` until the scope closes. */
 export const publicServer = (config: PublicConfig) =>
   HttpRouter.serve(PublicRoutes).pipe(
     Layer.provide(NodeHttpServer.layer(createServer, { port: config.port })),
-    Layer.provide(
-      publicServices({ kind: "postgres", url: config.databaseUrl }, config.allowedLogins, GitHub.layer(config.github)),
-    ),
+    Layer.provide(publicServices({ kind: "postgres", url: config.databaseUrl }, config, GitHub.layer(config.github))),
   )

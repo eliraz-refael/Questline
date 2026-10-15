@@ -35,6 +35,8 @@ import {
   scoresOf,
   wordsOf,
 } from './grade'
+import type { BetaAsk } from './beta'
+import { betaAskOf, betaRouteOf, betaTextOf } from './beta'
 import { isSecret, newSecret, ulid } from './ids'
 import type { Poll, DeviceCode } from './login'
 import {
@@ -1090,6 +1092,25 @@ const logout = async ($: EngineInterface): Promise<string> => {
   return `${stopped}Signed out of ${to.origin}. What you do waits in the queue until you sign in again.`
 }
 
+/**
+ * `/pathofdev beta list|add|remove`: the online server's beta list, which only its admins keep. The ask goes to the
+ * origin the mod plays on, with the game token, and the server's answer is shown as it comes.
+ */
+const keepBeta = async ($: EngineInterface, ask: BetaAsk): Promise<string> => {
+  if (target.kind !== 'online')
+    return (
+      `You play on ${placeOf(target, named)}, which has no beta list. /pathofdev server online switches to the ` +
+      'online server.'
+    )
+  const to = target
+  const token = tokenOf(await $.store.get(storeKey(to, 'token')))
+  if (token === null) return `You're not signed in to ${to.origin}: /pathofdev login signs you in.`
+  const { url, init } = requestOf(to, betaRouteOf(ask), { socketPath: '', token })
+  const response = await $.http.fetch(url, init).catch(() => null)
+  if (response !== null && failureOf(response) === 'signedOut') noteSignedOut($, to, true)
+  return betaTextOf(ask, response, to.origin)
+}
+
 /** A dev button in the pane: a toast says why, when it did nothing. */
 const pressDev = async ($: EngineInterface, ask: DevAsk) => {
   const ran = await runDev($, ask)
@@ -1242,13 +1263,15 @@ const draftStep = async ($: EngineInterface, change: Partial<Pick<Wizard, 'name'
 }
 
 /**
- * What `/pathofdev <args>` answers: the pane opened, the welcome, a sign-in or out, the servers' answer, or dev mode's
- * to `dev …`.
+ * What `/pathofdev <args>` answers: the pane opened, the welcome, a sign-in or out, the beta list, the servers' answer,
+ * or dev mode's to `dev …`.
  */
 const runCommandLine = async ($: EngineInterface, args: string): Promise<string> => {
   if (args.trim() === 'welcome') return openWelcome($)
   const account = accountAskOf(args)
   if (account !== null) return typeof account === 'string' ? account : account.kind === 'login' ? login($) : logout($)
+  const beta = betaAskOf(args)
+  if (beta !== null) return typeof beta === 'string' ? beta : keepBeta($, beta)
   const servers = serverAskOf(args)
   if (servers !== null) {
     if (typeof servers === 'string') return servers
@@ -1384,7 +1407,7 @@ export const register: Register = (on, options) => {
         description:
           'Open the Path of Dev pane: your inventory, the shop, stats and missions (`welcome` for the first-run ' +
           'guide, `server` to say or switch which server you play on, `login` and `logout` for the online server, ' +
-          '`dev …` on the dev server)',
+          '`beta list|add|remove` for its admins, `dev …` on the dev server)',
       })
       .catch(() => undefined)
     await $.command

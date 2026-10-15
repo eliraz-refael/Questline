@@ -17,10 +17,47 @@ The server reads its settings from the environment at boot, and stops naming the
 | Variable | Required | What it is |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | The Postgres URL. Migrations run at every boot. |
-| `ALLOWED_LOGINS` | yes | The beta's GitHub logins, separated by commas or spaces, in any case. |
+| `ALLOWED_LOGINS` | yes | The beta's GitHub logins to start from, separated by commas or spaces, in any case. Admins add more from the mod (below). |
+| `ADMIN_GITHUB_IDS` | no | The GitHub user ids (numbers, not logins) of the server's admins, separated by commas or spaces; none by default. Admins are always let in, and keep the beta list. |
 | `GITHUB_CLIENT_SECRET` | yes | The OAuth app's client secret: the server checks every sign-in's token was issued to the app. |
 | `GITHUB_CLIENT_ID` | no | The OAuth app's client id; defaults to Path of Dev's, `Ov23liaxznq5Qln0tRis`. |
 | `PORT` | no | Defaults to 3000. |
+
+## The beta list
+
+Who plays on the public server is the union of three lists, checked at sign-in and on every request:
+
+- `ALLOWED_LOGINS`, the logins the server starts with. Only a redeploy changes it.
+- The `beta_logins` table, which the admins keep from the mod. A change takes effect at once, with no redeploy.
+- `ADMIN_GITHUB_IDS`, the admins, matched by GitHub user id, never by login: a login can be taken by someone else
+  after a rename, an id can't. Admins are always let in.
+
+An admin is a player whose GitHub user id is in `ADMIN_GITHUB_IDS`. To find an account's id:
+
+```sh
+gh api users/<login> --jq .id
+```
+
+Set the variable in Coolify (the app → Environment Variables, not a build variable) and redeploy. Then, with the mod on
+the online server (`/pathofdev server online`) and signed in (`/pathofdev login`), an admin keeps the list:
+
+```text
+/pathofdev beta list               # who is in: logins added, ALLOWED_LOGINS, and the admins
+/pathofdev beta add <login>        # lets them sign in now
+/pathofdev beta remove <login>     # turns their next request away (401 "not in the beta")
+```
+
+Adding a login already on the list, or removing one not on it, changes nothing and says so. A login `ALLOWED_LOGINS`
+lists, or an admin, can't be removed this way; the answer says so, and only a redeploy changes them. Any other player
+who tries is answered "Only the server's admins can change the beta list."
+
+The server keeps the table in memory and reads it again every 30 seconds, so a row written straight into
+`beta_logins` (with `psql`, say) takes effect within 30 seconds:
+
+```sql
+INSERT INTO beta_logins (login, added_by, added_at)
+VALUES ('octocat', <your id>, to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+```
 
 ## What is left to do by hand
 
@@ -46,6 +83,7 @@ on the `coolify` network) already exists.
 7. Environment variables, none of them build variables (untick "Build Variable", so they never reach the image):
    - `DATABASE_URL`: `pathofdev-db`'s **internal** URL, from its page in Coolify.
    - `ALLOWED_LOGINS`: for example `eliraz-refael`.
+   - `ADMIN_GITHUB_IDS`: your own GitHub user id (see "The beta list" below).
    - `GITHUB_CLIENT_SECRET`: the secret from step 1.
 8. Deploy once by hand, then check `https://api.pathof.dev/healthz` answers `ok` (after the DNS step).
 9. Copy the app's deploy webhook URL (Webhooks), and create an API token with deploy permission (Keys & Tokens →

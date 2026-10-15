@@ -410,6 +410,20 @@ const accounts = Effect.gen(function* () {
   `
 })
 
+// The beta list the public server's admins keep from the mod, beside the logins `ALLOWED_LOGINS` lists: a login as the
+// admin typed it, one row whatever its case, with the GitHub user id of the admin who added it and when.
+const beta = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`
+    CREATE TABLE beta_logins (
+      login text NOT NULL,
+      added_by bigint NOT NULL,
+      added_at text NOT NULL
+    )
+  `
+  yield* sql`CREATE UNIQUE INDEX beta_logins_login ON beta_logins (lower(login))`
+})
+
 /** Every migration, by the name the migrator records it under. */
 export const migrations = {
   "0001_initial": initial,
@@ -424,6 +438,7 @@ export const migrations = {
   "0010_shop_pet_care": shopPetCare,
   "0011_welcome": welcome,
   "0012_accounts": accounts,
+  "0013_beta": beta,
 }
 
 /** A migration: what it needs past the database is the server's randomness, for the ids of the inputs it logs. */
