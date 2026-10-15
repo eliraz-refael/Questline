@@ -12,7 +12,7 @@ opened one nothing, and only work confirmed on GitHub ranks.
 In Claude Code:
 
 ```
-/plugin install questline --marketplace eliraz-refael/path-of-dev
+/plugin install pathofdev --marketplace eliraz-refael/path-of-dev
 ```
 
 Restart Claude Code, then:
@@ -29,7 +29,7 @@ On older Claude Code, add the marketplace first, then install from it:
 
 ```
 /plugin marketplace add eliraz-refael/path-of-dev
-/plugin install questline@path-of-dev
+/plugin install pathofdev@path-of-dev
 ```
 
 Playing locally instead, on a save in `~/.pathofdev`, needs a clone running the server: see
