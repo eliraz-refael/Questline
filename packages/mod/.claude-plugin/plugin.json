@@ -29,14 +29,14 @@
     "server": {
       "type": "string",
       "title": "Server",
-      "description": "Which server the mod plays on: your own local save (default), the local dev sandbox in ~/.pathofdev-dev for trying out band styles, XP and celebrations (start it with PATHOFDEV_DEV=1 pnpm --filter @pathofdev/server start), or online, the public server at the Online server URL (closed beta). PATHOFDEV_HOME, when set, picks the home for either local one. Each server keeps its own queue of events. /pathofdev server says which one you play on, and /pathofdev server play, dev or online switches it here.",
+      "description": "Which server the mod plays on: your own local save (default), the local dev sandbox in ~/.pathofdev-dev for trying out band styles, XP and celebrations (start it with PATHOFDEV_DEV=1 pnpm --filter @pathofdev/server start), or online, the public server at the Online server URL (closed beta: /pathofdev login signs you in with GitHub). PATHOFDEV_HOME, when set, picks the home for either local one. Each server keeps its own queue of events. /pathofdev server says which one you play on, and /pathofdev server play, dev or online switches it here.",
       "options": ["default", "dev", "online"],
       "default": "default"
     },
     "serverUrl": {
       "type": "string",
       "title": "Online server URL",
-      "description": "The https address of the online server, used when Server is online. Anything but a plain https origin plays on https://api.pathof.dev. Online, the mod never sends a repo's name, only opaque keys.",
+      "description": "The https address of the online server, used when Server is online. Anything but a plain https origin plays on https://api.pathof.dev. Online, the mod never sends a repo's name, only opaque keys. /pathofdev login keeps the game token it gets in the mod's own store and sends it to this origin alone, over https; /pathofdev logout revokes it.",
       "default": "https://api.pathof.dev"
     }
   }

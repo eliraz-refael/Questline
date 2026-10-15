@@ -36,6 +36,19 @@ import {
   wordsOf,
 } from './grade'
 import { isSecret, newSecret, ulid } from './ids'
+import type { Poll, DeviceCode } from './login'
+import {
+  accessTokenRequest,
+  accountAskOf,
+  deviceCodeOf,
+  deviceCodeRequest,
+  firstPoll,
+  nextPoll,
+  pollAnswerOf,
+  signInOf,
+  signInRequestOf,
+  timeZoneOf,
+} from './login'
 import {
   checkoutRef,
   commandNameOf,
@@ -52,6 +65,7 @@ import {
 import type { Repo } from './observe'
 import {
   answerOf,
+  failureOf,
   idOf,
   isClosed,
   isCommand,
@@ -152,6 +166,8 @@ const maxQueued = 5000
 const batchSize = 100
 const flushEveryMs = 30_000
 const retryMs = 5_000
+/** Signed out, the mod knocks less often: a sign-in reconnects at once anyway. */
+const signedOutRetryMs = 60_000
 /** The most of the exit's short bound closing the session may take: the exit goes on without it past that. */
 const closeMs = 500
 
@@ -171,6 +187,14 @@ let named: string | undefined
 let generation = 0
 /** A switch of server is under way: a second one meanwhile is turned away. */
 let isSwitching = false
+/** The online server said the player is signed out (a 401, or no token to send): the band says to sign in. */
+let isSignedOut = false
+/**
+ * The GitHub sign-in under way, for an online origin: its code, where the device flow stands, and the timer of its
+ * next poll. A logout, or a new sign-in, stops it; a reload of the mod lets it go.
+ */
+type SigningIn = { readonly origin: string; readonly code: DeviceCode; poll: Poll; timer: Timer | null }
+let signingIn: SigningIn | null = null
 /** The `minWords` option, which the welcome's grading step says. */
 let gradeWords = 6
 /** Takes the gain's line down once it has stood a minute. */
@@ -227,7 +251,10 @@ async function call<A>(
   const to = target
   const token = to.kind === 'online' ? tokenOf(await $.store.get(storeKey(to, 'token'))) : null
   // With no token the online server can only answer 401: don't knock every few seconds to hear it.
-  if (to.kind === 'online' && token === null) throw new SignedOut(`${path}: not signed in to ${to.origin}`)
+  if (to.kind === 'online' && token === null) {
+    noteSignedOut($, to, false)
+    throw new SignedOut(`${path}: not signed in to ${to.origin}`)
+  }
   let failure: unknown = null
   const tried = to.kind === 'online' ? [to.origin] : [socket, ...sockets.filter((other) => other !== socket)]
   for (const at of tried) {
@@ -241,18 +268,38 @@ async function call<A>(
     }
     // An answer from the last server's socket, after a switch, leaves the new server's first in line.
     if (target.kind === 'local' && sockets.includes(at)) socket = at
+    const answered = failureOf(response)
+    if (answered === 'signedOut') noteSignedOut($, to, true)
+    else if (answered === null && to === target) isSignedOut = false
     return answerOf(path, response, is)
   }
   throw new ServerDown(`The Path of Dev server does not answer on ${tried.join(' or ')}`, { cause: failure })
 }
 
-/** What to do when the target doesn't answer: start the local server, or wait on the online one. */
+/**
+ * The online server answered 401, or there was no token to send: the player is signed out there, and every event
+ * stays queued for them. A token the server turned away is toasted once, as the band alone may go unnoticed.
+ */
+const noteSignedOut = ($: EngineInterface, to: Target, hadToken: boolean) => {
+  if (to !== target) return
+  if (hadToken && !isSignedOut && to.kind === 'online')
+    $.ui.toast(`The Path of Dev server at ${to.origin} signed you out: /pathofdev login signs you in again.`)
+  isSignedOut = true
+}
+
+/** What to do when the target doesn't answer: start the local server, sign in, or wait on the online one. */
 const offlineHint = (): string =>
-  target.kind === 'online' ? `the server at ${target.origin} is not answering` : `start the server: ${startHint(server)}`
+  target.kind === 'online'
+    ? isSignedOut
+      ? 'sign in with /pathofdev login'
+      : `the server at ${target.origin} is not answering`
+    : `start the server: ${startHint(server)}`
 
 const notAnswering = (): string =>
   target.kind === 'online'
-    ? `The Path of Dev server at ${target.origin} is not answering.`
+    ? isSignedOut
+      ? `You're not signed in to the Path of Dev server at ${target.origin}: /pathofdev login signs you in.`
+      : `The Path of Dev server at ${target.origin} is not answering.`
     : `The Path of Dev server is not answering. Start it: ${startHint(server)}`
 
 /** Opens the session, or says it is still here; `presence` asks the server to count it live while this mod polls. */
@@ -562,7 +609,7 @@ const poll = async ($: EngineInterface): Promise<void> => {
 /** One reconnect waits at a time: a /clear that connects again while one waits replaces it, not adds to it. */
 const retryLater = ($: EngineInterface) => {
   reconnect?.cancel()
-  reconnect = $.clock.after(retryMs, () => void connect($))
+  reconnect = $.clock.after(isSignedOut ? signedOutRetryMs : retryMs, () => void connect($))
 }
 
 const connect = async ($: EngineInterface): Promise<void> => {
@@ -782,7 +829,8 @@ const runDev = async ($: EngineInterface, ask: DevAsk): Promise<{ text: string; 
 
 /** Why the server the mod plays on does not answer, as the player can act on it: online with no token, sign in. */
 const signedOutText = (origin: string): string =>
-  ` You're not signed in to ${origin}, so the mod waits offline and keeps what you do queued for it.`
+  ` You're not signed in to ${origin}, so the mod waits offline and keeps what you do queued for it: ` +
+  '/pathofdev login signs you in.'
 
 const downText = (): string =>
   target.kind === 'online' ? ' It is not answering now.' : ` It isn't running: start it with ${startHint(server)}`
@@ -801,8 +849,9 @@ const reachText = (error: unknown): string =>
 const whereNow = async ($: EngineInterface): Promise<string> => {
   const where = whereText(target, named)
   if ((await read($, link)) !== 'offline') return where
-  const token = target.kind === 'online' ? tokenOf(await $.store.get(storeKey(target, 'token'))) : null
-  return `${where}${target.kind === 'online' && token === null ? signedOutText(target.origin) : downText()}`
+  if (target.kind !== 'online') return `${where}${downText()}`
+  const token = tokenOf(await $.store.get(storeKey(target, 'token')))
+  return `${where}${token === null || isSignedOut ? signedOutText(target.origin) : downText()}`
 }
 
 /** Takes down what the mod showed of the last server, so none of it (its dev controls, say) stays on show. */
@@ -864,6 +913,8 @@ const switchServer = async ($: EngineInterface, to: ServerName): Promise<string>
     given = { ...given, server: to }
     server = serverOf(given)
     target = targetOf(given)
+    isSignedOut = false
+    stopSignIn()
     // The repo as the new server's subjects name it, at once: none goes online by name before begin finds it again.
     if (repo !== null) repo = repoIn(subjectFormOf(target), repo)
     await forget($)
@@ -874,6 +925,169 @@ const switchServer = async ($: EngineInterface, to: ServerName): Promise<string>
   } finally {
     isSwitching = false
   }
+}
+
+/** Stops the GitHub sign-in under way, if any: true when there was one. */
+const stopSignIn = (): boolean => {
+  const was = signingIn
+  was?.timer?.cancel()
+  signingIn = null
+  return was !== null
+}
+
+/** Why sign-in is for the online server alone. */
+const noSignIn = (): string =>
+  `You play on ${placeOf(target, named)}, which needs no sign-in. /pathofdev server online switches to the online ` +
+  'server.'
+
+/**
+ * `/pathofdev login`: starts GitHub's device flow and says where to enter the code. The mod polls GitHub as it asks,
+ * trades the GitHub token for a game token at the online server, and toasts how it went; the player plays on meanwhile.
+ */
+const login = async ($: EngineInterface): Promise<string> => {
+  if (target.kind !== 'online') return noSignIn()
+  const to = target
+  const under = signingIn
+  if (under !== null && under.origin === to.origin)
+    return `A sign-in is under way: open ${under.code.verificationUri} and enter ${under.code.userCode}.`
+  stopSignIn()
+  const token = tokenOf(await $.store.get(storeKey(to, 'token')))
+  if (token !== null && !isSignedOut) return `You're signed in to ${to.origin}. /pathofdev logout signs you out.`
+  const asked = deviceCodeRequest()
+  const response = await $.http.fetch(asked.url, asked.init).catch(() => null)
+  if (response === null) return 'GitHub is not answering: try /pathofdev login again in a minute.'
+  const code = response.ok ? deviceCodeOf(response.text) : null
+  if (code === null) return `GitHub did not start a sign-in (it answered ${response.status}): try again in a minute.`
+  // A switch of server while GitHub answered: this sign-in was for the last one.
+  if (target !== to) return noSignIn()
+  const flow: SigningIn = { origin: to.origin, code, poll: firstPoll(code, await $.clock.now()), timer: null }
+  // A code that expires before its first poll could come: kept, it would stand as "under way" with nothing polling.
+  if (flow.poll.kind !== 'waiting') return 'GitHub gave a sign-in code that expires at once: try /pathofdev login again.'
+  signingIn = flow
+  waitToPoll($, flow)
+  const minutes = Math.max(1, Math.round(code.expiresIn / 60))
+  return (
+    `To sign in to ${to.origin}, open ${code.verificationUri} and enter ${code.userCode} ` +
+    `(it works for ${minutes} minute${minutes === 1 ? '' : 's'}). GitHub tells the server only who you are; the mod ` +
+    "says when you're in, and what you do meanwhile waits in the queue."
+  )
+}
+
+/** Sets the flow's next poll, while it waits: only ever before its code expires, as `nextPoll` sees to. */
+const waitToPoll = ($: EngineInterface, flow: SigningIn) => {
+  if (flow.poll.kind !== 'waiting') return
+  flow.timer = $.clock.after(flow.poll.intervalMs, () => void pollGitHub($, flow).catch(() => undefined))
+}
+
+/** One poll of GitHub, and what the flow comes to: another wait, or its end, which a toast says. */
+const pollGitHub = async ($: EngineInterface, flow: SigningIn) => {
+  flow.timer = null
+  if (signingIn !== flow) return
+  const asked = accessTokenRequest(flow.code.deviceCode)
+  const answer = await $.http.fetch(asked.url, asked.init).then(pollAnswerOf, () => null)
+  // A logout or a new sign-in while GitHub answered stopped this one.
+  if (signingIn !== flow) return
+  flow.poll = nextPoll(flow.poll, answer, await $.clock.now())
+  const poll = flow.poll
+  if (poll.kind === 'waiting') {
+    waitToPoll($, flow)
+    return
+  }
+  if (poll.kind === 'signedIn') {
+    // The flow stays under way through the trade, so a logout or a switch meanwhile still stops it.
+    try {
+      await trade($, flow, poll.githubToken)
+    } finally {
+      if (signingIn === flow) signingIn = null
+    }
+    return
+  }
+  signingIn = null
+  if (poll.kind === 'expired') $.ui.toast('The GitHub sign-in code expired: /pathofdev login gives you a new one.')
+  else if (poll.kind === 'denied') $.ui.toast('The GitHub sign-in was cancelled: /pathofdev login starts another.')
+  else $.ui.toast(`GitHub turned the sign-in down (${poll.error}): /pathofdev login starts another.`)
+}
+
+/** The request that revokes `token` at an online target. */
+const revokeOf = (to: Target, token: string) =>
+  requestOf(to, { path: '/v1/auth/logout', method: 'POST' }, { socketPath: '', token })
+
+/**
+ * Trades the GitHub token for a game token at `origin`, the server the sign-in was started for, and drops it: kept
+ * nowhere, sent nowhere else. The game token goes in the store; a sign-in turned down or unchecked leaves the sign-in
+ * as it was. A token it replaces is revoked, so none is left working that nobody holds.
+ */
+const trade = async ($: EngineInterface, flow: SigningIn, githubToken: string) => {
+  const { origin } = flow
+  const to: Target = { kind: 'online', origin }
+  const asked = signInRequestOf(to, githubToken, timeZoneOf())
+  if (asked === null) return
+  const response = await $.http.fetch(asked.url, asked.init).catch(() => null)
+  // A logout or a switch of server while the server answered stopped this sign-in: its token is not kept.
+  if (signingIn !== flow) return
+  if (response === null) {
+    $.ui.toast(`The Path of Dev server at ${origin} is not answering: try /pathofdev login again later.`)
+    return
+  }
+  const signIn = signInOf(response)
+  if (signIn.kind === 'refused') {
+    const why = signIn.message === null ? '' : `: ${signIn.message}`
+    $.ui.toast(`The Path of Dev server at ${origin} turned the sign-in down${why}.`)
+    return
+  }
+  if (signIn.kind === 'unavailable') {
+    $.ui.toast("The sign-in can't be checked right now (GitHub or the server is busy): try /pathofdev login again in a minute.")
+    return
+  }
+  if (signIn.kind === 'unexpected') {
+    $.ui.toast(`The Path of Dev server at ${origin} answered the sign-in with ${signIn.status}.`)
+    return
+  }
+  signingIn = null
+  const key = storeKey(to, 'token')
+  const replaced = tokenOf(await $.store.get(key))
+  await $.store.set(key, signIn.token)
+  if (replaced !== null && replaced !== signIn.token) {
+    const revoke = revokeOf(to, replaced)
+    later($, () => $.http.fetch(revoke.url, revoke.init))
+  }
+  $.ui.toast(`Signed in to ${origin}${signIn.login === null ? '' : ` as ${signIn.login}`}.`)
+  // Still playing there: the band comes online now, and what waited in the queue goes.
+  if (target.kind === 'online' && target.origin === origin) {
+    isSignedOut = false
+    await connect($)
+  }
+}
+
+/**
+ * `/pathofdev logout`: the server revokes the game token and the mod forgets it; a 401 means it was gone already, so
+ * the mod forgets it then too. A server that doesn't answer leaves the player signed in, to try again, rather than
+ * leave a token working that nobody holds to revoke. What waits in the queue stays for the next sign-in.
+ */
+const logout = async ($: EngineInterface): Promise<string> => {
+  const stopped = stopSignIn() ? 'The sign-in under way is stopped. ' : ''
+  if (target.kind !== 'online') return `${stopped}${noSignIn()}`
+  const to = target
+  const key = storeKey(to, 'token')
+  const token = tokenOf(await $.store.get(key))
+  if (token === null) return `${stopped}You're not signed in to ${to.origin}.`
+  const { url, init } = revokeOf(to, token)
+  const response = await $.http.fetch(url, init).catch(() => null)
+  const failure = response === null ? 'unavailable' : failureOf(response)
+  if (failure !== null && failure !== 'signedOut') {
+    const why = response === null ? 'is not answering' : `answered ${response.status}`
+    return (
+      `${stopped}The Path of Dev server at ${to.origin} ${why}, so you're still signed in: try /pathofdev logout ` +
+      'again later.'
+    )
+  }
+  // Only the token this logout revoked: a sign-in that landed meanwhile stays.
+  if (tokenOf(await $.store.get(key)) === token) await $.store.delete(key)
+  if (target === to) {
+    isSignedOut = true
+    await update($, link, () => 'offline')
+  }
+  return `${stopped}Signed out of ${to.origin}. What you do waits in the queue until you sign in again.`
 }
 
 /** A dev button in the pane: a toast says why, when it did nothing. */
@@ -1027,9 +1241,14 @@ const draftStep = async ($: EngineInterface, change: Partial<Pick<Wizard, 'name'
   await update($, wizard, (at) => ({ ...(at ?? freshWizard), ...change, error: null }))
 }
 
-/** What `/pathofdev <args>` answers: the pane opened, the welcome, the servers' answer, or dev mode's to `dev …`. */
+/**
+ * What `/pathofdev <args>` answers: the pane opened, the welcome, a sign-in or out, the servers' answer, or dev mode's
+ * to `dev …`.
+ */
 const runCommandLine = async ($: EngineInterface, args: string): Promise<string> => {
   if (args.trim() === 'welcome') return openWelcome($)
+  const account = accountAskOf(args)
+  if (account !== null) return typeof account === 'string' ? account : account.kind === 'login' ? login($) : logout($)
   const servers = serverAskOf(args)
   if (servers !== null) {
     if (typeof servers === 'string') return servers
@@ -1164,7 +1383,8 @@ export const register: Register = (on, options) => {
         name: 'pathofdev',
         description:
           'Open the Path of Dev pane: your inventory, the shop, stats and missions (`welcome` for the first-run ' +
-          'guide, `server` to say or switch which server you play on, `dev …` on the dev server)',
+          'guide, `server` to say or switch which server you play on, `login` and `logout` for the online server, ' +
+          '`dev …` on the dev server)',
       })
       .catch(() => undefined)
     await $.command
@@ -1514,6 +1734,7 @@ export const register: Register = (on, options) => {
         columns,
         isFocused: e.props.isFocused,
         hasInput: Input !== null,
+        ...(target.kind === 'online' ? { online: target.origin } : {}),
       })
       const { part } = layout
       // The ready step draws the player's own band, by the band's own code, in the looks they wear.
