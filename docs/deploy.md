@@ -49,7 +49,7 @@ the online server (`/pathofdev server online`) and signed in (`/pathofdev login`
 
 Adding a login already on the list, or removing one not on it, changes nothing and says so. A login `ALLOWED_LOGINS`
 lists, or an admin, can't be removed this way; the answer says so, and only a redeploy changes them. Any other player
-who tries is answered "Only the server's admins can change the beta list."
+who tries is answered "Only the server's admins can see or change the beta list."
 
 The server keeps the table in memory and reads it again every 30 seconds, so a row written straight into
 `beta_logins` (with `psql`, say) takes effect within 30 seconds:
@@ -83,7 +83,7 @@ on the `coolify` network) already exists.
 7. Environment variables, none of them build variables (untick "Build Variable", so they never reach the image):
    - `DATABASE_URL`: `pathofdev-db`'s **internal** URL, from its page in Coolify.
    - `ALLOWED_LOGINS`: for example `eliraz-refael`.
-   - `ADMIN_GITHUB_IDS`: your own GitHub user id (see "The beta list" below).
+   - `ADMIN_GITHUB_IDS`: your own GitHub user id (see "The beta list" above).
    - `GITHUB_CLIENT_SECRET`: the secret from step 1.
 8. Deploy once by hand, then check `https://api.pathof.dev/healthz` answers `ok` (after the DNS step).
 9. Copy the app's deploy webhook URL (Webhooks), and create an API token with deploy permission (Keys & Tokens →

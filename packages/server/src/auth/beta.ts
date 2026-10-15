@@ -18,7 +18,7 @@ import { Allowlist } from "./allowlist.ts"
 
 export const onlyAdmins = "Only the server's admins can see or change the beta list"
 export const notALogin =
-  "That is not a GitHub login: 1 to 39 letters, digits and hyphens, with no hyphen first, last or beside another"
+  "That is not a GitHub login: 1 to 39 letters, digits and hyphens, not starting with a hyphen"
 
 /** What still lets a login in that the API can't take off, or null when nothing does. */
 const stillIn = (standing: Standing): string | null =>

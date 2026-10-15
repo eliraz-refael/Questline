@@ -119,11 +119,9 @@ describe("a GitHub login", () => {
     text.length >= 1 &&
     text.length <= 39 &&
     [...text].every((char) => /[A-Za-z0-9-]/.test(char)) &&
-    !text.startsWith("-") &&
-    !text.endsWith("-") &&
-    !text.includes("--")
+    !text.startsWith("-")
 
-  it.prop("is 1 to 39 letters, digits and single hyphens, with none first or last", [Schema.String], ([text]) => {
+  it.prop("is 1 to 39 letters, digits and hyphens, with none first", [Schema.String], ([text]) => {
     expect(isGithubLogin(text)).toBe(isLoginSpelled(text))
   })
 

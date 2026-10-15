@@ -4225,7 +4225,7 @@ describe('the beta list', () => {
   test('a player who is no admin hears that only admins change the list', { options: { server: 'online' } }, async ($, on) => {
     const { accounts, asked } = await online($, on, 'pod_player', ['pod_admin'])
     for (const args of ['beta list', 'beta add mona', 'beta remove bob'])
-      expect((await run($, args)).text).toBe("Only the server's admins can change the beta list.")
+      expect((await run($, args)).text).toBe("Only the server's admins can see or change the beta list.")
     expect(asked()).toHaveLength(3)
     expect(accounts.beta?.logins.size).toBe(0)
   })

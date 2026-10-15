@@ -95,10 +95,10 @@ export const SignedOut = Schema.Struct({ signedOut: Schema.Literal(true) })
 export interface SignedOut extends Schema.Schema.Type<typeof SignedOut> {}
 
 /**
- * Whether `text` is a GitHub login as GitHub makes them: 1 to 39 letters, digits and hyphens, with no hyphen first,
- * last or beside another.
+ * Whether `text` is a GitHub login: 1 to 39 letters, digits and hyphens, with no hyphen first. GitHub makes new logins
+ * with no hyphen last or doubled either, but older accounts still have them, so those pass too.
  */
-export const isGithubLogin = (text: string): boolean => /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(text)
+export const isGithubLogin = (text: string): boolean => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(text)
 
 /** `POST /v1/beta`: a GitHub login to let into the beta. The handler checks it, once it has checked who asks. */
 export const BetaAddRequest = Schema.Struct({ login: Schema.String })

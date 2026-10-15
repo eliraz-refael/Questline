@@ -11,7 +11,7 @@ import { failureOf, isRecord, parsed } from './server'
 //   /pathofdev beta add <login> ────▶ POST   <origin>/v1/beta {login}   ─┼─▶ Bearer <game token>, the online origin only
 //   /pathofdev beta remove <login> ─▶ DELETE <origin>/v1/beta/<login>   ─┘
 //     answer ── 200 ────────────────▶ the list, or the server's line on what changed
-//            ├─ 403 ────────────────▶ "Only the server's admins can change the beta list."
+//            ├─ 403 ────────────────▶ "Only the server's admins can see or change the beta list."
 //            ├─ 400 ────────────────▶ the server's line: not a GitHub login
 //            ├─ 401 ────────────────▶ signed out: /pathofdev login
 //            └─ none, 429, 5xx, … ──▶ not answering, or what it answered
@@ -27,10 +27,10 @@ export type BetaAsk =
 export const betaUsage =
   'Beta list, for the online server\'s admins: /pathofdev beta list | add <github-login> | remove <github-login>.'
 
-export const onlyAdmins = "Only the server's admins can change the beta list."
+export const onlyAdmins = "Only the server's admins can see or change the beta list."
 
-/** A GitHub login as GitHub makes them: 1 to 39 letters, digits and hyphens, no hyphen first, last or doubled. */
-export const isGithubLogin = (text: string): boolean => /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(text)
+/** A GitHub login: 1 to 39 letters, digits and hyphens, no hyphen first; older accounts may end in or double one. */
+export const isGithubLogin = (text: string): boolean => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(text)
 
 /** What `/pathofdev <args>` asks of the beta list: null when the args are not `beta …`, the usage when they don't parse. */
 export const betaAskOf = (args: string): BetaAsk | string | null => {
