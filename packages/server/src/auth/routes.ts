@@ -5,6 +5,7 @@ import { ModHandlers } from "../http.ts"
 import type { GithubIdentity, NewPlayer } from "../players.ts"
 import { Players } from "../players.ts"
 import { Allowlist } from "./allowlist.ts"
+import { BetaHandlers } from "./beta.ts"
 import type { GithubUser } from "./github.ts"
 import { GitHub } from "./github.ts"
 import { notInBeta, signInAgain } from "./middleware.ts"
@@ -16,7 +17,7 @@ import { Tokens } from "./tokens.ts"
 //   POST /v1/auth/github { githubToken, timezone }
 //     └─▶ GitHub.user(githubToken) ─── not ours, or no token ───────────────▶ 401, nothing written
 //           │                       └─ down, slow, limited ────────────────────▶ 503, nothing written
-//           └─▶ Allowlist.allows(login) ─── no ──────────────────────────────▶ 401 "not in the beta", nothing written
+//           └─▶ Allowlist.allows(id, login) ── no ───────────────────────────▶ 401 "not in the beta", nothing written
 //                 └─▶ Players.findOrCreate(id, login, timezone) ─▶ Tokens.mint ─▶ 200 { token, player }
 //
 //   POST /v1/auth/logout   Authorization: Bearer <token>
@@ -50,7 +51,8 @@ export const AuthHandlers = HttpApiBuilder.group(
         Effect.gen(function* () {
           const user = yield* github.user(payload.githubToken)
           if (Option.isNone(user)) return yield* new Unauthorized({ message: gitHubSaidNo })
-          if (!allowlist.allows(user.value.login)) return yield* new Unauthorized({ message: notInBeta })
+          const account = { githubUserId: user.value.id, githubLogin: user.value.login }
+          if (!(yield* allowlist.allows(account))) return yield* new Unauthorized({ message: notInBeta })
           // The time zone names a new player's local days; a returning player keeps theirs.
           const player = yield* Effect.orDie(players.findOrCreate(newPlayerOf(user.value, payload.timezone)))
           return { token: yield* Effect.orDie(tokens.mint(player.id)), player }
@@ -67,5 +69,7 @@ export const AuthHandlers = HttpApiBuilder.group(
   }),
 )
 
-/** The public server's routes with their handlers: the mod's, and signing in and out. */
-export const OnlineRoutes = HttpApiBuilder.layer(OnlineApi).pipe(Layer.provide([ModHandlers, AuthHandlers]))
+/** The public server's routes with their handlers: the mod's, signing in and out, and the beta list. */
+export const OnlineRoutes = HttpApiBuilder.layer(OnlineApi).pipe(
+  Layer.provide([ModHandlers, AuthHandlers, BetaHandlers]),
+)

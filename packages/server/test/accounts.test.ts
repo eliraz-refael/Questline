@@ -21,7 +21,7 @@ import {
 import { dump, hatch, onlineWebHandler, prompt, session, testOnlineServices } from "./fixtures.ts"
 
 // Accounts on the public server, end to end through its routes. GitHub is a table the test fills, and the beta's
-// allowlist a set it changes mid-test, so a test can take a player off the list after they signed in:
+// allowlist the real one over the test's database, which a test changes to take a player off after they signed in:
 //
 //   POST /v1/auth/github ─▶ FakeGitHub(token → user) ─▶ allowlist ─▶ findOrCreate ─▶ mint ─▶ { token, player }
 //   any route + Bearer ──▶ BearerAuth ─▶ Tokens.playerOf(hash) ─▶ allowlist ─▶ handler
@@ -43,19 +43,18 @@ const FakeGitHub = (accounts: ReadonlyMap<string, GithubUser>) =>
     }),
   )
 
-/** An allowlist the test changes as it runs. */
-const LiveAllowlist = (allowed: Set<string>) =>
-  Layer.succeed(Allowlist, Allowlist.of({ allows: (login) => isAllowed(allowed, login) }))
-
-/** The public server's routes and accounts over a fresh database, with GitHub's `accounts` and the list `allowed`. */
-const withAccounts = (accounts: ReadonlyMap<string, GithubUser>, allowed: Set<string>) =>
+/**
+ * The public server's routes and accounts over a fresh database, with GitHub's `accounts`, and `allowed` as
+ * `ALLOWED_LOGINS` writes them.
+ */
+const withAccounts = (accounts: ReadonlyMap<string, GithubUser>, allowed: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.provide(
         testOnlineServices(
           BearerAuth.pipe(
             Layer.provideMerge(Tokens.layer),
-            Layer.provideMerge(LiveAllowlist(allowed)),
+            Layer.provideMerge(Allowlist.layer({ allowedLogins: allowed, adminGithubIds: [] })),
             Layer.provideMerge(FakeGitHub(accounts)),
           ),
         ),
@@ -109,7 +108,7 @@ describe("Tokens", () => {
     "names the player each was minted for, keeps no token whole, and a revoked one never again",
     [Schema.Array(Schema.Literals([0, 1, 2])).check(Schema.isMinLength(1), Schema.isMaxLength(6))],
     ([owners]) =>
-      withAccounts(new Map(), new Set())(
+      withAccounts(new Map(), "")(
         Effect.gen(function* () {
           const players = yield* Players
           const tokens = yield* Tokens
@@ -194,7 +193,7 @@ describe("signing in", () => {
     "with a token GitHub turns down is answered 401, and writes nothing",
     [Schema.Array(Schema.String).check(Schema.isMinLength(1), Schema.isMaxLength(5))],
     ([githubTokens]) =>
-      withAccounts(new Map([["ada-token", ada]]), new Set(["ada"]))(
+      withAccounts(new Map([["ada-token", ada]]), "ada")(
         Effect.gen(function* () {
           const handle = yield* onlineWebHandler
           const before = yield* dump
@@ -210,7 +209,7 @@ describe("signing in", () => {
   it.effect(
     "while GitHub is down is answered 503, and writes nothing",
     () =>
-      withAccounts(new Map([["ada-token", ada]]), new Set(["ada"]))(
+      withAccounts(new Map([["ada-token", ada]]), "ada")(
         Effect.gen(function* () {
           const handle = yield* onlineWebHandler
           const before = yield* dump
@@ -225,8 +224,8 @@ describe("signing in", () => {
     "lets in a login on the list in any case, and nobody off it, whose sign-in writes nothing",
     [Schema.Array(Schema.Boolean)],
     ([flips]) => {
-      const allowed = new Set([recase("ada", flips).toLowerCase()])
-      return withAccounts(new Map([["ada-token", { ...ada, login: recase("Ada", flips) }], ["bob-token", bob]]), allowed)(
+      const accounts = new Map([["ada-token", { ...ada, login: recase("Ada", flips) }], ["bob-token", bob]])
+      return withAccounts(accounts, recase("ada", flips))(
         Effect.gen(function* () {
           const handle = yield* onlineWebHandler
           const before = yield* dump
@@ -243,7 +242,7 @@ describe("signing in", () => {
   )
 
   it.effect("signs a player in again as the same player, under a new token each time", () =>
-    withAccounts(new Map([["ada-token", ada]]), new Set(["ada"]))(
+    withAccounts(new Map([["ada-token", ada]]), "ada")(
       Effect.gen(function* () {
         const handle = yield* onlineWebHandler
         const first = yield* signIn(handle, "ada-token")
@@ -258,7 +257,7 @@ describe("signing in", () => {
 
   // The race this guards is Postgres's: PGlite runs one transaction at a time, so there it passes trivially.
   it.effect("by the same account several times at once makes one player", () =>
-    withAccounts(new Map([["ada-token", ada]]), new Set(["ada"]))(
+    withAccounts(new Map([["ada-token", ada]]), "ada")(
       Effect.gen(function* () {
         const handle = yield* onlineWebHandler
         const answers = yield* Effect.all(Array.from({ length: 6 }, () => signIn(handle, "ada-token")), {
@@ -307,7 +306,7 @@ describe("a request on the public server", () => {
     "that names no signed-in player is answered 401 on every route, and writes nothing",
     [Schema.Array(Schema.Tuple([Endpoint, BadIdentity])).check(Schema.isMaxLength(10))],
     ([tries]) =>
-      withAccounts(new Map([["ada-token", ada]]), new Set(["ada"]))(
+      withAccounts(new Map([["ada-token", ada]]), "ada")(
         Effect.gen(function* () {
           const handle = yield* onlineWebHandler
           // A signed-in player, so a write would have someone to land on, and a token they gave up.
@@ -344,26 +343,26 @@ describe("a request on the public server", () => {
     serverRuns,
   )
 
-  it.effect("from a player taken off the list is answered 401, until they are on it again", () => {
-    const allowed = new Set(["ada"])
-    return withAccounts(new Map([["ada-token", ada]]), allowed)(
+  it.effect("from a player taken off the list is answered 401, until they are on it again", () =>
+    withAccounts(new Map([["ada-token", ada]]), "")(
       Effect.gen(function* () {
+        const allowlist = yield* Allowlist
+        yield* allowlist.add("ada", 99)
         const handle = yield* onlineWebHandler
         const { token } = yield* signIn(handle, "ada-token")
         const open = () => handle(request("/v1/sessions", "POST", `Bearer ${token}`, { sessionId: session }))
         expect((yield* open()).status).toBe(200)
-        allowed.delete("ada")
+        yield* allowlist.remove("ADA")
         const refused = yield* open()
         expect(refused.status).toBe(401)
         expect(yield* Effect.promise(() => refused.json())).toMatchObject({ message: notInBeta })
-        allowed.add("ada")
+        yield* allowlist.add("Ada", 99)
         expect((yield* open()).status).toBe(200)
       }),
-    )
-  })
+    ))
 
   it.effect("after signing out is answered 401 for good, and signing out again too", () =>
-    withAccounts(new Map([["ada-token", ada]]), new Set(["ada"]))(
+    withAccounts(new Map([["ada-token", ada]]), "ada")(
       Effect.gen(function* () {
         const handle = yield* onlineWebHandler
         const { token } = yield* signIn(handle, "ada-token")

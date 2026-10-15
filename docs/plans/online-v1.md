@@ -9,8 +9,10 @@ SAME server build as local), reached by the mod over HTTPS after GitHub device-f
 profiles at pathof.dev/u/:login, deployed on Coolify behind CI. Local PGlite play stays unchanged.
 
 ## Confirmed product decisions
-- Closed beta: ALLOWED_LOGINS allowlist, checked at sign-in AND on every request (BearerAuth). One Cloudflare rate rule
-  on api.pathof.dev/v1/auth/*. Server-side limiter deferred (TODOS).
+- Closed beta: an allowlist, checked at sign-in AND on every request (BearerAuth). One Cloudflare rate rule
+  on api.pathof.dev/v1/auth/*. Server-side limiter deferred (TODOS). (Since the beta list: ALLOWED_LOGINS ∪ the
+  beta_logins table the admins keep with `/pathofdev beta` ∪ the admins of ADMIN_GITHUB_IDS, by GitHub user id;
+  see docs/deploy.md.)
 - Online starts fresh at level 0; no local-save linking (TODOS).
 - Profiles private by default (`/pathofdev profile public|private|hide <section>`); a missing section key = shown.
 - Export + delete ship in v1.

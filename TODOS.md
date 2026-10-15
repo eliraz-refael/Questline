@@ -9,9 +9,9 @@ the work is, why it matters, where things stand and what it waits on.
 
 - **What:** a token-bucket limiter in the public server, keyed per client IP on `/v1/auth/*` and `/u/*`, and per
   player token on `/v1/events` and `/v1/commands`, answering 429 with the existing `ApiError.retryAfterMs`.
-- **Why:** the closed beta leans on the `ALLOWED_LOGINS` allowlist and one Cloudflare rate rule on
-  `api.pathof.dev/v1/auth/*`. With open signup anyone can create a player and flood writes or profile renders, and one
-  Cloudflare rule can't tell players apart.
+- **Why:** the closed beta leans on its allowlist (`ALLOWED_LOGINS`, the beta list, the admins) and one Cloudflare
+  rate rule on `api.pathof.dev/v1/auth/*`. With open signup anyone can create a player and flood writes or profile
+  renders, and one Cloudflare rule can't tell players apart.
 - **Context:** keep the decision pure: `take(rule, bucket, now) => { allowed, bucket, retryAfterMs }` plus
   `prune(buckets, now, rule)`, held in a `Ref` and wrapped by a `RateLimiter.check(key, rule)` service. The client IP
   comes from a pure `clientIpOf(trust, headers, remote)`: trust `CF-Connecting-IP` only when the peer is in
@@ -22,8 +22,9 @@ the work is, why it matters, where things stand and what it waits on.
 
 ### Open signup
 
-- **What:** drop the `ALLOWED_LOGINS` check from sign-in and from `BearerAuth`, and add a per-player cap on events per
-  minute.
+- **What:** drop the allowlist check (`Allowlist.allows`: `ALLOWED_LOGINS`, the `beta_logins` table and the admins)
+  from sign-in and from `BearerAuth`, and add a per-player cap on events per minute. Keep `ADMIN_GITHUB_IDS` for what
+  admins do next.
 - **Why:** to let anyone play once abuse and growth are bounded.
 - **Context:** the allowlist is checked in two places on purpose (sign-in and every request), so removing someone locks
   them out at once. Opening up removes both checks. Publish the privacy note (what's stored, export, delete, the game

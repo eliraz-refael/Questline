@@ -23,6 +23,9 @@ const Text = Schema.String.check(Schema.isPattern(/^[\x21-\x7e][\x20-\x7e]{0,40}
 const Config = Schema.Struct({
   databaseUrl: Text,
   allowedLogins: Text,
+  adminGithubIds: Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 999_999_999_999 }))).check(
+    Schema.isMaxLength(4),
+  ),
   port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
   clientId: Text,
   clientSecret: Text,
@@ -31,6 +34,7 @@ const Config = Schema.Struct({
 const configOf = (drawn: typeof Config.Type): PublicConfig => ({
   databaseUrl: Redacted.make(drawn.databaseUrl),
   allowedLogins: drawn.allowedLogins,
+  adminGithubIds: drawn.adminGithubIds,
   port: drawn.port,
   github: { clientId: drawn.clientId, clientSecret: Redacted.make(drawn.clientSecret) },
 })
@@ -78,15 +82,31 @@ describe("the public server's settings", () => {
       }),
   )
 
-  it.effect.prop("take the port and the public client id by default", [Config], ([drawn]) =>
+  it.effect.prop("take the port, the public client id and no admins by default", [Config], ([drawn]) =>
     Effect.gen(function* () {
       const env: Partial<Record<PublicVar, string>> = { ...publicEnvOf(configOf(drawn)) }
       delete env.PORT
       delete env.GITHUB_CLIENT_ID
+      delete env.ADMIN_GITHUB_IDS
       const config = yield* publicConfigOf(env)
       expect(config.port).toBe(defaultPort)
       expect(config.github.clientId).toBe(publicClientId)
+      expect(config.adminGithubIds).toEqual([])
     }))
+
+  it.effect.prop(
+    "read admins separated by commas or spaces, and stop the boot on one that is no GitHub user id, naming it",
+    [Config, Schema.Literals([",", " ", ", ", "\n"]), Schema.Literals(["ada", "-1", "0", "1.5", "0x10", "12a"])],
+    ([drawn, separator, bad]) =>
+      Effect.gen(function* () {
+        const env = publicEnvOf(configOf(drawn))
+        const spaced = { ...env, ADMIN_GITHUB_IDS: ` ${drawn.adminGithubIds.join(separator)} ` }
+        expect((yield* publicConfigOf(spaced)).adminGithubIds).toEqual(drawn.adminGithubIds)
+        const listed = [...drawn.adminGithubIds.map(String), bad].join(separator)
+        const exit = yield* Effect.exit(publicConfigOf({ ...env, ADMIN_GITHUB_IDS: listed }))
+        expect(exit).toEqual(Exit.fail(new BadConfig({ variable: "ADMIN_GITHUB_IDS", isMissing: false })))
+      }),
+  )
 })
 
 // ── the routes ───────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -102,7 +122,11 @@ const FakeGitHub = (accounts: ReadonlyMap<string, GithubUser>) =>
 
 /** The public build, as its entry wires it, over a fresh database: Ada, signed in with `ada-token`, is on the list. */
 const withPublic = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.provide(testPublicServices("ada", FakeGitHub(new Map([["ada-token", ada]])))))
+  effect.pipe(
+    Effect.provide(
+      testPublicServices({ allowedLogins: "ada", adminGithubIds: [] }, FakeGitHub(new Map([["ada-token", ada]]))),
+    ),
+  )
 
 const request = (path: string, method: string, authorization: string | null, body?: unknown) =>
   new Request(`http://pathofdev.test${path}`, {

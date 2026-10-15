@@ -50,6 +50,8 @@ type Accounts = {
   login: string
   signIn?: { status: number; body: unknown }
   logout?: number
+  /** The beta list: the tokens of the server's admins, and the logins added, by their lower case. */
+  beta?: { admins: Set<string>; logins: Map<string, string> }
 }
 
 /** What the player owns in the fake server: entries, their definitions, and what is equipped where. */
@@ -344,6 +346,22 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
         return reply(200, { signedOut: true })
       }
       if (!accounts.tokens.has(token)) return reply(401, signInAgain)
+      const beta = accounts.beta
+      if (beta !== undefined && path.startsWith('/v1/beta')) {
+        if (!beta.admins.has(token))
+          return reply(403, { _tag: 'Forbidden', message: "Only the server's admins can see or change the beta list" })
+        if (method === 'GET') {
+          const entries = [...beta.logins.values()].map((login) => ({ source: 'added', login, addedAt: '2026-10-09T08:00:00.000Z', addedBy: 7 }))
+          return reply(200, { entries: [...entries, { source: 'env', login: 'bob' }, { source: 'admin', githubUserId: 7, login: 'root' }] })
+        }
+        const login = method === 'DELETE' ? decodeURIComponent(path.slice('/v1/beta/'.length)) : isRecord(body) ? String(body['login']) : ''
+        const changed = method === 'DELETE' ? beta.logins.delete(login.toLowerCase()) : !beta.logins.has(login.toLowerCase())
+        if (method === 'POST' && changed) beta.logins.set(login.toLowerCase(), login)
+        const message = method === 'DELETE'
+          ? changed ? `${login} is off the beta list: their next request is turned away.` : `${login} was not on the beta list, so nothing changed.`
+          : changed ? `${login} is on the beta list now: they can sign in.` : `${login} was on the beta list already: nothing changed.`
+        return reply(200, { login, changed, message })
+      }
     }
     if (method === 'DELETE' && path.startsWith('/v1/sessions/')) {
       if (options.closeTakes !== undefined) await clock.sleep(options.closeTakes)
@@ -4141,5 +4159,110 @@ describe('signing in', () => {
     expect((await run($, 'logout')).text).toBe(local)
     expect((await run($, 'login now')).text).toMatch(/^Sign-in: \/pathofdev login/)
     expect(github.seen).toEqual([])
+  })
+})
+
+describe('the beta list', () => {
+  const run = ($: Parameters<TestBody>[0], args: string) =>
+    $.command.run({ command: 'pathofdev', args, origin: composer, presentation })
+  const origin = 'https://api.pathof.dev'
+  const t0 = Date.parse('2026-10-09T08:00:00Z')
+
+  /** A session on the online server, holding `token` (none when null), whose admins hold `admins`. */
+  const online = async ($: Parameters<TestBody>[0], on: On, token: string | null, admins: Array<string>) => {
+    const clock = mock.clock(on, { now: t0 })
+    const kept = new Map<string, unknown>([[`explored@${origin}`, ['acme/widgets']]])
+    if (token !== null) kept.set(`token@${origin}`, token)
+    on('store.get', ($, e) => ({ value: kept.get(e.key) }))
+    on('store.set', ($, e) => {
+      kept.set(e.key, e.value)
+      return { value: undefined }
+    })
+    on('store.delete', ($, e) => {
+      kept.delete(e.key)
+      return { value: undefined }
+    })
+    mock.env(on, { HOME: '/home/player' })
+    const accounts: Accounts = {
+      tokens: new Set(['pod_admin', 'pod_player']),
+      githubToken: 'gho_unused',
+      issue: 'pod_issued',
+      login: 'octocat',
+      beta: { admins: new Set(admins), logins: new Map() },
+    }
+    const server = fakeServer(on, clock, { level: 4, accounts })
+    await $.session.start(start)
+    await until(clock, async () => /offline|Lv 4/.test((await band($).catch(() => ({ all: '' }))).all))
+    const asked = () => server.sent.filter((one) => one.path.startsWith('/v1/beta'))
+    return { clock, accounts, asked, ...server }
+  }
+
+  test("an admin adds, lists and removes logins, and sees the server's answer", { options: { server: 'online' } }, async ($, on) => {
+    const { accounts, asked } = await online($, on, 'pod_admin', ['pod_admin'])
+    expect((await run($, 'beta add Octo-Cat')).text).toBe('Octo-Cat is on the beta list now: they can sign in.')
+    expect((await run($, 'beta add octo-cat')).text).toBe('octo-cat was on the beta list already: nothing changed.')
+    expect((await run($, 'beta list')).text).toBe(
+      [
+        'The beta list on https://api.pathof.dev:',
+        '- added from the mod: Octo-Cat (2026-10-09)',
+        '- ALLOWED_LOGINS (a redeploy changes these): bob',
+        '- admins, always in (ADMIN_GITHUB_IDS): root (id 7)',
+      ].join('\n'),
+    )
+    expect((await run($, 'beta remove OCTO-cat')).text).toBe(
+      'OCTO-cat is off the beta list: their next request is turned away.',
+    )
+    expect(accounts.beta?.logins.size).toBe(0)
+    // Each ask went to the online origin with the game token, on its own route.
+    expect(asked().map((one) => [one.method, one.path, one.body, one.authorization])).toEqual([
+      ['POST', '/v1/beta', { login: 'Octo-Cat' }, 'Bearer pod_admin'],
+      ['POST', '/v1/beta', { login: 'octo-cat' }, 'Bearer pod_admin'],
+      ['GET', '/v1/beta', undefined, 'Bearer pod_admin'],
+      ['DELETE', '/v1/beta/OCTO-cat', undefined, 'Bearer pod_admin'],
+    ])
+  })
+
+  test('a player who is no admin hears that only admins change the list', { options: { server: 'online' } }, async ($, on) => {
+    const { accounts, asked } = await online($, on, 'pod_player', ['pod_admin'])
+    for (const args of ['beta list', 'beta add mona', 'beta remove bob'])
+      expect((await run($, args)).text).toBe("Only the server's admins can see or change the beta list.")
+    expect(asked()).toHaveLength(3)
+    expect(accounts.beta?.logins.size).toBe(0)
+  })
+
+  test('signed out, it says to sign in, and asks the server nothing', { options: { server: 'online' } }, async ($, on) => {
+    const { asked } = await online($, on, null, ['pod_admin'])
+    expect((await run($, 'beta list')).text).toBe(
+      "You're not signed in to https://api.pathof.dev: /pathofdev login signs you in.",
+    )
+    expect(asked()).toEqual([])
+  })
+
+  test('a token the server turned away is a sign-out, said as one', { options: { server: 'online' } }, async ($, on) => {
+    const { asked } = await online($, on, 'pod_revoked', ['pod_admin'])
+    expect((await run($, 'beta add mona')).text).toBe(
+      "You're not signed in to https://api.pathof.dev: /pathofdev login signs you in.",
+    )
+    expect(asked()).toHaveLength(1)
+  })
+
+  test('a login that is none, or args that do not parse, are answered here, and nothing is sent', { options: { server: 'online' } }, async ($, on) => {
+    const { asked } = await online($, on, 'pod_admin', ['pod_admin'])
+    const usage = "Beta list, for the online server's admins: /pathofdev beta list | add <github-login> | remove <github-login>."
+    expect((await run($, 'beta')).text).toBe(usage)
+    expect((await run($, 'beta list all')).text).toBe(usage)
+    expect((await run($, 'beta add')).text).toBe(usage)
+    expect((await run($, 'beta add mona lisa')).text).toBe(usage)
+    expect((await run($, 'beta add -mona')).text).toBe(`-mona is not a GitHub login. ${usage}`)
+    expect((await run($, 'beta remove ../sessions')).text).toBe(`../sessions is not a GitHub login. ${usage}`)
+    expect(asked()).toEqual([])
+  })
+
+  test('on a local server, there is no beta list to keep', async ($, on) => {
+    await streaming($, on, ownedOf())
+    expect((await run($, 'beta list')).text).toBe(
+      'You play on your own save (~/.pathofdev), which has no beta list. /pathofdev server online switches to the ' +
+        'online server.',
+    )
   })
 })

@@ -27,6 +27,9 @@ interface Issued {
 
 const ada: GithubUser = { id: 1, login: "Ada", name: null }
 
+/** The beta with Ada alone on it, and no admins. */
+const adaOnly = { allowedLogins: "ada", adminGithubIds: [] }
+
 /** The tokens the fake GitHub has issued: one for Ada to our app, and one for Ada to another app. */
 const issued = new Map<string, Issued>([
   ["gho_ours_ada", { clientId: ours.clientId, user: ada }],
@@ -174,7 +177,7 @@ describe("signing in to the public build", () => {
     })
 
   const withGitHub = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.provide(testPublicServices("ada", GitHub.layer(ours, fakeGitHub().fetch))))
+    effect.pipe(Effect.provide(testPublicServices(adaOnly, GitHub.layer(ours, fakeGitHub().fetch))))
 
   it.effect("with a token another app got for a player on the list is answered 401, and writes nothing", () =>
     withGitHub(
@@ -201,7 +204,7 @@ describe("signing in to the public build", () => {
         expect(response.status).toBe(503)
         expect(response.headers.get("retry-after")).toBe("60")
         expect(yield* dump).toEqual(before)
-      }).pipe(Effect.provide(testPublicServices("ada", GitHub.layer(wrong, fakeGitHub().fetch))))
+      }).pipe(Effect.provide(testPublicServices(adaOnly, GitHub.layer(wrong, fakeGitHub().fetch))))
     }))
 })
 

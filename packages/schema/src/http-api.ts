@@ -1,6 +1,9 @@
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSecurity } from "effect/http-api"
 import { Context, Schema } from "effect"
 import {
+  BetaAddRequest,
+  BetaChange,
+  BetaList,
   CommandResponse,
   EventsResponse,
   SessionClosed,
@@ -34,6 +37,20 @@ export class GitHubUnavailable extends Schema.TaggedError<GitHubUnavailable>()(
   "GitHubUnavailable",
   { message: Schema.String },
   { httpApiStatus: 503 },
+) {}
+
+/** The request's player may not do this: the beta list is the server's admins' alone. Nothing was written. */
+export class Forbidden extends Schema.TaggedError<Forbidden>()(
+  "Forbidden",
+  { message: Schema.String },
+  { httpApiStatus: 403 },
+) {}
+
+/** The request named something that is not a GitHub login. Nothing was written. */
+export class InvalidLogin extends Schema.TaggedError<InvalidLogin>()(
+  "InvalidLogin",
+  { message: Schema.String },
+  { httpApiStatus: 400 },
 ) {}
 
 /**
@@ -103,8 +120,28 @@ export class AuthApi extends HttpApiGroup.make("auth", { topLevel: true }).add(
   HttpApiEndpoint.post("signOut", "/v1/auth/logout", { success: SignedOut, error: Unauthorized }),
 ) {}
 
+/**
+ * The beta list, which the public server's admins keep from the mod: who it lets in, and adding or removing a login.
+ * A signed-in player who is no admin is answered 403 on each, before the login is even read; never on the local server.
+ */
+export class BetaApi extends HttpApiGroup.make("beta", { topLevel: true })
+  .add(
+    HttpApiEndpoint.get("listBeta", "/v1/beta", { success: BetaList, error: Forbidden }),
+    HttpApiEndpoint.post("addToBeta", "/v1/beta", {
+      payload: BetaAddRequest,
+      success: BetaChange,
+      error: [Forbidden, InvalidLogin],
+    }),
+    HttpApiEndpoint.delete("removeFromBeta", "/v1/beta/:login", {
+      params: { login: Schema.String },
+      success: BetaChange,
+      error: [Forbidden, InvalidLogin],
+    }),
+  )
+  .middleware(Authentication) {}
+
 /** The local server's routes: the mod's alone. */
 export class PathOfDevApi extends HttpApi.make("pathofdev").add(ModApi) {}
 
-/** The public server's routes: the mod's, and the sign-in that gives it a game token. */
-export class OnlineApi extends HttpApi.make("pathofdev").add(ModApi).add(AuthApi) {}
+/** The public server's routes: the mod's, the sign-in that gives it a game token, and the beta list. */
+export class OnlineApi extends HttpApi.make("pathofdev").add(ModApi).add(AuthApi).add(BetaApi) {}

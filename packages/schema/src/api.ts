@@ -94,6 +94,46 @@ export interface SignInResponse extends Schema.Schema.Type<typeof SignInResponse
 export const SignedOut = Schema.Struct({ signedOut: Schema.Literal(true) })
 export interface SignedOut extends Schema.Schema.Type<typeof SignedOut> {}
 
+/**
+ * Whether `text` is a GitHub login: 1 to 39 letters, digits and hyphens, with no hyphen first. GitHub makes new logins
+ * with no hyphen last or doubled either, but older accounts still have them, so those pass too.
+ */
+export const isGithubLogin = (text: string): boolean => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(text)
+
+/** `POST /v1/beta`: a GitHub login to let into the beta. The handler checks it, once it has checked who asks. */
+export const BetaAddRequest = Schema.Struct({ login: Schema.String })
+export interface BetaAddRequest extends Schema.Schema.Type<typeof BetaAddRequest> {}
+
+/**
+ * Who the beta lets in, by where it comes from: a login an admin added (the table, which the API changes), a login
+ * `ALLOWED_LOGINS` lists, or an admin of `ADMIN_GITHUB_IDS`, by GitHub user id, with the login their player last signed
+ * in with (null before their first sign-in). The last two change only with a redeploy.
+ */
+export const BetaEntry = Schema.Union([
+  Schema.Struct({
+    source: Schema.Literal("added"),
+    login: Schema.String,
+    addedAt: Schema.String,
+    /** The GitHub user id of the admin who added it. */
+    addedBy: Schema.Int,
+  }),
+  Schema.Struct({ source: Schema.Literal("env"), login: Schema.String }),
+  Schema.Struct({ source: Schema.Literal("admin"), githubUserId: Schema.Int, login: Schema.NullOr(Schema.String) }),
+])
+export type BetaEntry = typeof BetaEntry.Type
+
+/** `GET /v1/beta`: the logins added, oldest first, then those `ALLOWED_LOGINS` lists, then the admins. */
+export const BetaList = Schema.Struct({ entries: Schema.Array(BetaEntry) })
+export interface BetaList extends Schema.Schema.Type<typeof BetaList> {}
+
+/**
+ * `POST /v1/beta` and `DELETE /v1/beta/{login}`: what the change did. Adding a login already on the list, or removing
+ * one not on it, changes nothing and says so; `message` says it in a line, and names what still lets a login in when
+ * the API can't take it off (`ALLOWED_LOGINS`, or an admin's account).
+ */
+export const BetaChange = Schema.Struct({ login: Schema.String, changed: Schema.Boolean, message: Schema.String })
+export interface BetaChange extends Schema.Schema.Type<typeof BetaChange> {}
+
 /** The one error shape every route uses; `429` carries `retryAfterMs`. */
 export const ApiError = Schema.Struct({
   code: Schema.String,
