@@ -163,7 +163,7 @@ const engineBeneath = (on: On, isPaneUp = false) => {
     return { value: { command: e.name } }
   })
   on('ui.panes', () => ({
-    value: isPaneUp ? [{ id: 'questline', title: 'Path of Dev', isShown: true, isFocused: false, isPlaced: true }] : [],
+    value: isPaneUp ? [{ id: 'pathofdev', title: 'Path of Dev', isShown: true, isFocused: false, isPlaced: true }] : [],
   }))
   on('ui.open', ($, e) => {
     opened.push(e.focus === true ? `${e.id}+focus` : e.id)
@@ -455,7 +455,7 @@ describe('the band', () => {
     fakeServer(on, clock, { isDown: true })
     await $.session.start(start)
     await until(clock, async () => {
-      const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() }).catch(() => null)
+      const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'AbovePrompt', props: bandOf() }).catch(() => null)
       if (ui === null) return false
       const hint = await ui.find({ type: 'Text', text: /pnpm --filter @pathofdev\/server start/ })
       await ui.unmount()
@@ -472,7 +472,7 @@ describe('the band', () => {
     // The stream is held once the snapshot is in.
     await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
     for (const surface of surfaces) {
-      const ui = await $.ui.mount({ plugin: 'questline', surface, component: 'AbovePrompt', props: bandOf() })
+      const ui = await $.ui.mount({ plugin: 'pathofdev', surface, component: 'AbovePrompt', props: bandOf() })
       expect(await ui.find({ type: 'Text', text: /Lv 1/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /30\/203 xp/ })).toBeDefined()
       await ui.press({ key: 'hatch' })
@@ -497,7 +497,7 @@ describe('the band', () => {
     await $.session.end({ reason: 'clear', sessionId: 'first', resume: { id: 'first' } })
     await until(clock, () => opened().length === 2)
     expect(opened()[1]?.body).not.toEqual(opened()[0]?.body)
-    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
+    const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
     expect(await ui.find({ type: 'Text', text: /Lv 2/ })).toBeDefined()
     await ui.unmount()
   })
@@ -811,7 +811,7 @@ const xpGranted = (amount: number) => serverEvent('xp.granted', { amount, tier: 
 
 /** What the band draws now: every text, and how many rows the celebration grew it by. */
 const band = async ($: Parameters<TestBody>[0], maxRows = 20) => {
-  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: { ...bandOf(), maxRows } })
+  const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'AbovePrompt', props: { ...bandOf(), maxRows } })
   // The gain's own line names the latest drop the whole time; what plays is the rest.
   const texts = (await ui.findAll({ type: 'Text' }))
     .map((one) => one.text)
@@ -882,7 +882,7 @@ describe('the level glyph', () => {
     const { sent } = fakeServer(on, clock, { level: 1 })
     await $.session.start(start)
     await until(clock, () => sent.some((one) => one.path === '/v1/stream'))
-    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
+    const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
     const barRow = await ui.find({ type: 'Text', text: /^[▰▱]+ 30\/203 xp$/ })
     expect(cellsOf(barRow?.text ?? '')).toBe(bandOf().bodyColumns - 4)
     expect(await ui.find({ type: 'Text', text: /^ $/ })).toBeDefined()
@@ -1352,9 +1352,9 @@ describe('the /pathofdev pane', () => {
     expect(registered).toEqual(['pathofdev', 'questline', 'pet'])
     const answer = await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
     expect(answer.text).toBe('Path of Dev pane opened.')
-    expect(opened).toEqual(['questline'])
+    expect(opened).toEqual(['pathofdev'])
     for (const surface of surfaces) {
-      const ui = await $.ui.mount({ plugin: 'questline', surface, component: 'Pane', requestId: 'questline', props: paneProps() })
+      const ui = await $.ui.mount({ plugin: 'pathofdev', surface, component: 'Pane', requestId: 'pathofdev', props: paneProps() })
       const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')
       for (const shown of ['◆ Inventory', 'XP bar', 'Top edge', 'Solid Bar', 'Starlit Edge', 'Plain Cap']) {
         expect(texts).toContain(shown)
@@ -1375,7 +1375,7 @@ describe('the /pathofdev pane', () => {
   test('Equip sends the command and the band wears it at once; Unequip puts the band back', async ($, on) => {
     const { sent } = await streaming($, on, ownedOf())
     await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
-    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+    const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'Pane', requestId: 'pathofdev', props: paneProps() })
     expect((await band($)).all).toMatch(/^▰+▱+ 30\/203 xp$/m)
     await ui.press({ key: 'equip:xpBar:solid-bar' })
     const commands = sent.filter((one) => one.path === '/v1/commands').map((one) => one.body)
@@ -1394,7 +1394,7 @@ describe('review fixes: the pane', () => {
     const { sent } = await streaming($, on, owned)
     await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
     const props = paneProps()
-    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props })
+    const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'Pane', requestId: 'pathofdev', props })
     expect((await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')).toContain('Unknown style')
     await ui.press({ key: 'unequip:xpBar' })
     expect(sent.filter((one) => one.path === '/v1/commands').at(-1)?.body).toMatchObject({ type: 'item.unequip' })
@@ -1407,7 +1407,7 @@ const grant = (amount: number, reason: string, more: Record<string, unknown> = {
 const goldChanged = (delta: number, reason = 'drop') => serverEvent('gold.changed', { delta, totalAfter: 25 + delta, reason })
 /** The gain's line at the end of the band, if one shows. */
 const gainLine = async ($: Parameters<TestBody>[0]) => {
-  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
+  const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
   const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
   await ui.unmount()
   return texts.find((text) => / · |!$/.test(text) && !text.includes('PATH OF DEV')) ?? null
@@ -1526,7 +1526,7 @@ describe('reward toasts', () => {
 
 /** The pane's texts at `columns` across its body. */
 const paneTexts = async ($: Parameters<TestBody>[0], bodyColumns: number) => {
-  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: { ...paneProps(), bodyColumns } })
+  const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'Pane', requestId: 'pathofdev', props: { ...paneProps(), bodyColumns } })
   const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
   const tabs = await ui.find({ type: 'Box', key: 'tabs' })
   await ui.unmount()
@@ -1637,7 +1637,7 @@ describe('dev mode', () => {
   test('the pane shows the dev controls on a dev server, and they send the same commands', async ($, on) => {
     const { sent, clock } = await streaming($, on, ownedOf(), true)
     await run($, '')
-    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+    const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'Pane', requestId: 'pathofdev', props: paneProps() })
     expect((await ui.findAll({ type: 'Text' })).map((one) => one.text)).toContain('Dev')
     await ui.press({ key: 'dev:styles' })
     await ui.press({ key: 'dev:level' })
@@ -1720,7 +1720,7 @@ describe('the rename from Questline', () => {
   test('/questline does what /pathofdev does, and says once that it was renamed', async ($, on) => {
     const { opened, sent } = await streaming($, on, ownedOf())
     expect((await run($, 'questline', '')).text).toBe(`Path of Dev pane opened.\n${renamedNote}`)
-    expect(opened).toEqual(['questline'])
+    expect(opened).toEqual(['pathofdev'])
     expect((await run($, 'questline', '')).text).toBe('Path of Dev pane opened.')
     expect((await run($, 'questline', 'dev xp 50')).text).toBe((await run($, 'pathofdev', 'dev xp 50')).text)
     expect(sent.filter((one) => one.path === '/v1/commands')).toEqual([])
@@ -1831,7 +1831,7 @@ const newPlayer: Counted = {
 /** Opens the pane and switches it to its Stats tab with the tab bar's button. */
 const openStats = async ($: Parameters<TestBody>[0]) => {
   await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
-  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+  const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'Pane', requestId: 'pathofdev', props: paneProps() })
   await ui.press({ key: 'tab:stats' })
   await ui.unmount()
 }
@@ -1840,7 +1840,7 @@ describe('the Stats tab', () => {
   test('switches from the tab bar and back, and draws every section from the snapshot', async ($, on) => {
     await streaming($, on, ownedOf(wearing), false, { counted: playing })
     await openStats($)
-    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+    const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'Pane', requestId: 'pathofdev', props: paneProps() })
     const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')
     expect(texts).toContain('◆ Stats')
     expect(texts).not.toContain('Band styles')
@@ -1902,7 +1902,7 @@ describe('the Stats tab', () => {
     // The tip that fits: the weakest score's, without its name.
     expect(narrow.texts).toContain('  ▼ say how to know it is done')
 
-    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: { ...paneProps(), bodyColumns: 120 } })
+    const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'Pane', requestId: 'pathofdev', props: { ...paneProps(), bodyColumns: 120 } })
     const cards = await ui.find({ type: 'Box', key: 'stats' })
     expect(cards?.children).toHaveLength(2)
     const left = await ui.find({ type: 'Box', key: 'stats:column:0' })
@@ -2028,16 +2028,16 @@ const completed = (questId: string, title: string, tier: string, rewards: Record
 /** Opens the pane on its Missions tab with the tab bar's button. */
 const openMissions = async ($: Parameters<TestBody>[0]) => {
   await $.command.run({ command: 'pathofdev', args: '', origin: composer, presentation })
-  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+  const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'Pane', requestId: 'pathofdev', props: paneProps() })
   await ui.press({ key: 'tab:missions' })
   await ui.unmount()
 }
 const mountPane = ($: Parameters<TestBody>[0]) =>
-  $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'Pane', requestId: 'questline', props: paneProps() })
+  $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'Pane', requestId: 'pathofdev', props: paneProps() })
 const textsOf = async (ui: Awaited<ReturnType<typeof mountPane>>) => (await ui.findAll({ type: 'Text' })).map((one) => one.text).join('\n')
 /** Row 2 of the band at `bodyColumns`, as one line of its texts. */
 const bandAt = async ($: Parameters<TestBody>[0], bodyColumns: number) => {
-  const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: { ...bandOf(), bodyColumns } })
+  const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'AbovePrompt', props: { ...bandOf(), bodyColumns } })
   const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
   await ui.unmount()
   return texts
@@ -3026,7 +3026,7 @@ describe('caring for the pet', () => {
   test("the band's hearts follow the rules' happy line, and a click on the pet gives it a pat", async ($, on) => {
     const rules = { pet: { ...careRules.pet, happyAbove: 80 } }
     const { sent } = await streaming($, on, withFood, false, { rules, kept: { pet: ember(75) } })
-    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
+    const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
     const texts = (await ui.findAll({ type: 'Text' })).map((one) => one.text)
     expect(texts).toContain('♥♥')
     await ui.press({ key: 'band:pet' })
@@ -3214,7 +3214,7 @@ describe('the welcome', () => {
   test('opens on its own the first time the mod meets a server that runs it, without the keys', async ($, on) => {
     const { opened } = await welcoming($, on, fresh())
     // Opened unasked, without the keyboard: a prompt being typed keeps its keys.
-    expect(opened).toEqual(['questline'])
+    expect(opened).toEqual(['pathofdev'])
     const { ui, texts, all } = await look($)
     expect(texts).toContain('◆ Welcome')
     expect(texts).toContain('Welcome to Path of Dev')
@@ -3509,7 +3509,7 @@ describe('the welcome', () => {
     expect((await run($, 'pathofdev', 'welcome')).text).toBe('The Path of Dev welcome is open.')
     expect((await run($, 'questline', ' welcome ')).text).toMatch(/^The Path of Dev welcome is open\./)
     // Asked for, so it asks for the keyboard.
-    expect(opened).toEqual(['questline+focus', 'questline+focus'])
+    expect(opened).toEqual(['pathofdev+focus', 'pathofdev+focus'])
     let shown = await look($)
     expect(await shown.ui.find({ type: 'Button', key: 'welcome:skip', text: 'Close' })).toBeDefined()
     await shown.ui.press({ key: 'welcome:next' })
@@ -3561,7 +3561,7 @@ describe('the welcome', () => {
 
   test('the band hatches the egg as picked; an older server hatches the fox Ember, as before', async ($, on) => {
     const { sent } = await welcoming($, on, { ...fresh(), done: true, egg: { species: 'robot', name: 'Bolt' } })
-    const ui = await $.ui.mount({ plugin: 'questline', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
+    const ui = await $.ui.mount({ plugin: 'pathofdev', surface: 'terminal', component: 'AbovePrompt', props: bandOf() })
     await ui.press({ key: 'hatch' })
     await ui.unmount()
     expect(commandsOf(sent)).toMatchObject([{ type: 'pet.hatch', data: { species: 'robot', name: 'Bolt' } }])
@@ -3628,7 +3628,7 @@ describe('switching servers', () => {
       kind: 'choice',
       value: 'default',
       options: ['default', 'dev', 'online'],
-      provider: { plugin: 'questline', tier: 'user' },
+      provider: { plugin: 'pathofdev', tier: 'user' },
       isLocked,
     }
     on('config.list', () => ({ value: [theme, server] }))
@@ -3856,7 +3856,7 @@ describe('switching servers', () => {
           kind: 'choice',
           value: 'default',
           options: ['default', 'dev', 'online'],
-          provider: { plugin: 'questline', tier: 'user' },
+          provider: { plugin: 'pathofdev', tier: 'user' },
           isLocked: false,
         } satisfies ConfigRow,
       ],

@@ -323,9 +323,8 @@ export type Wizard = {
 
 declare module 'claude-code' {
   interface PluginState {
-    // Under the mod's plugin id, which keeps the game's name from before Path of Dev: the engine keys the mod's state,
-    // its store and the player's options by it.
-    questline: {
+    // Under the mod's plugin id: the engine keys the mod's state, its store and the player's options by it.
+    pathofdev: {
       view: BandView | null
       link: Link
       gain: Gain | null

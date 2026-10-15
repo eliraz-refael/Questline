@@ -6,7 +6,7 @@
   },
   "plugins": [
     {
-      "name": "questline",
+      "name": "pathofdev",
       "source": "./packages/mod",
       "description": "Path of Dev: an RPG around your Claude Code work: XP, levels, loot and a pixel pet, drawn in a band above the prompt.",
       "homepage": "https://pathof.dev",

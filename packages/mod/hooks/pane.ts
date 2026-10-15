@@ -7,10 +7,10 @@ import { bandSlots, equippedIn, loops } from './looks'
 // inventory lists; register.tsx draws them. A later tab is one more entry here and one more body there.
 
 /**
- * The pane's id, which `$.ui.open` and the `ui.render` matcher share. It keeps the game's name from before Path of Dev:
- * the engine keeps an open pane's record under its id across a reload of the mod.
+ * The pane's id, which `$.ui.open` and the `ui.render` matcher share: the engine keeps an open pane's record under its
+ * id across a reload of the mod.
  */
-export const paneId = 'questline'
+export const paneId = 'pathofdev'
 
 /** What `/questline`, the command's name from before Path of Dev, says the first time it runs. */
 export const renamedNote = 'Questline is now Path of Dev: /questline is /pathofdev, and the old name goes away later.'

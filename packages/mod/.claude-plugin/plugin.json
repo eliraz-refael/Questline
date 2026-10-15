@@ -1,6 +1,6 @@
 {
-  "name": "questline",
-  "version": "0.1.0",
+  "name": "pathofdev",
+  "version": "0.2.0",
   "description": "Path of Dev: an RPG around your Claude Code work: XP, levels, loot and a pixel pet, drawn in a band above the prompt.",
   "types": "./types/index.d.ts",
   "author": { "name": "eliraz-refael" },
