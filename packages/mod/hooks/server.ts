@@ -33,6 +33,9 @@ export type Target =
   | { readonly kind: 'local'; readonly dev?: true }
   | { readonly kind: 'online'; readonly origin: string }
 
+/** An online target. */
+export type Online = Extract<Target, { readonly kind: 'online' }>
+
 /** The public server, when the `serverUrl` option names none. */
 export const publicOrigin = 'https://api.pathof.dev'
 
@@ -153,6 +156,34 @@ export const failureOf = (response: Pick<HttpResponse, 'ok' | 'status'>): Failur
       : [429, 502, 503, 504].includes(response.status)
         ? 'unavailable'
         : 'unexpected'
+
+/** The words of a command's args, as the player typed them: `[""]` for none. */
+export const argsOf = (args: string): Array<string> => args.trim().split(/\s+/)
+
+/** Text from the server, as the player sees it: printable ASCII only, cut to `max` characters; '' for no string. */
+export const printable = (value: unknown, max: number): string =>
+  typeof value === 'string' ? value.replace(/[^ -~]/g, '').slice(0, max) : ''
+
+/** The `message` of an error the server answered with, printable, or '' when it has none. */
+export const messageOf = (text: string, max: number): string => {
+  const body = parsed(text)
+  return isRecord(body) ? printable(body['message'], max) : ''
+}
+
+/**
+ * What an online ask is answered when the answer settles nothing of the ask's own: no answer, a sign-out, or a server
+ * that can't take it now. Null when the ask reads the answer itself: a 2xx, or a status only that ask knows.
+ */
+export const commonTextOf = (response: Pick<HttpResponse, 'ok' | 'status'> | null, origin: string): string | null => {
+  if (response === null) return `The Path of Dev server at ${origin} is not answering: try again in a minute.`
+  const failure = failureOf(response)
+  if (failure === 'signedOut') return notSignedIn(origin)
+  if (failure === 'unavailable') return `The Path of Dev server at ${origin} answered ${response.status}: try again in a minute.`
+  return null
+}
+
+/** The player has no token for `origin`, or it turned theirs away. */
+export const notSignedIn = (origin: string): string => `You're not signed in to ${origin}: /pathofdev login signs you in.`
 
 export const parsed = (text: string): unknown => {
   try {

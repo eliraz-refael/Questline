@@ -1,6 +1,14 @@
 import type { ClientEvent, Command, ServerEvent, Slot } from '@pathofdev/schema'
 import { atom, read, update } from 'claude-code'
-import type { ElementConstructor, EngineInterface, PluginOptions, Register, TextProps, Timer } from 'claude-code'
+import type {
+  ElementConstructor,
+  EngineInterface,
+  HttpResponse,
+  PluginOptions,
+  Register,
+  TextProps,
+  Timer,
+} from 'claude-code'
 import type {
   BandLook,
   BandSlot,
@@ -74,6 +82,7 @@ import {
   isEvents,
   isSession,
   isStream,
+  notSignedIn,
   queueAfter,
   requestOf,
   ServerDown,
@@ -85,7 +94,7 @@ import {
   targetOf,
   tokenOf,
 } from './server'
-import type { Route, Target } from './server'
+import type { Online, Route, Target } from './server'
 import { loops as isLooping, ownedLooks, ratesOf, wornLooks } from './looks'
 import type { MissionEntry } from './missions'
 import { knowsTogether, missionChip, missionsLayout, missionsViewOf, roomBeside } from './missions'
@@ -1093,23 +1102,37 @@ const logout = async ($: EngineInterface): Promise<string> => {
 }
 
 /**
- * `/pathofdev beta list|add|remove`: the online server's beta list, which only its admins keep. The ask goes to the
- * origin the mod plays on, with the game token, and the server's answer is shown as it comes.
+ * An ask of the online server's alone, from the prompt: on any other server the player hears that it `has` none of
+ * it; signed out, that they are, with nothing sent. Else the ask goes to the origin the mod plays on, with the game
+ * token, and `textOf` reads the answer (null: none came); a 401 there signs the band out, as any request's does.
  */
-const keepBeta = async ($: EngineInterface, ask: BetaAsk): Promise<string> => {
-  if (target.kind !== 'online')
-    return (
-      `You play on ${placeOf(target, named)}, which has no beta list. /pathofdev server online switches to the ` +
-      'online server.'
-    )
-  const to = target
-  const token = tokenOf(await $.store.get(storeKey(to, 'token')))
-  if (token === null) return `You're not signed in to ${to.origin}: /pathofdev login signs you in.`
-  const { url, init } = requestOf(to, betaRouteOf(ask), { socketPath: '', token })
+const askOnline = async (
+  $: EngineInterface,
+  has: string,
+  route: Route,
+  textOf: (response: HttpResponse | null, to: Online) => string | Promise<string>,
+): Promise<string> => {
+  const online = await signedInOnline($, has)
+  if (typeof online === 'string') return online
+  const { to, token } = online
+  const { url, init } = requestOf(to, route, { socketPath: '', token })
   const response = await $.http.fetch(url, init).catch(() => null)
   if (response !== null && failureOf(response) === 'signedOut') noteSignedOut($, to, true)
-  return betaTextOf(ask, response, to.origin)
+  return textOf(response, to)
 }
+
+/** The online target and the game token held for it, or what the player hears instead (see `askOnline`). */
+const signedInOnline = async ($: EngineInterface, has: string): Promise<{ to: Online; token: string } | string> => {
+  if (target.kind !== 'online')
+    return `You play on ${placeOf(target, named)}, which has ${has}. /pathofdev server online switches to the online server.`
+  const to = target
+  const token = tokenOf(await $.store.get(storeKey(to, 'token')))
+  return token === null ? notSignedIn(to.origin) : { to, token }
+}
+
+/** `/pathofdev beta list|add|remove`: the online server's beta list, which only its admins keep. */
+const keepBeta = ($: EngineInterface, ask: BetaAsk): Promise<string> =>
+  askOnline($, 'no beta list', betaRouteOf(ask), (response, to) => betaTextOf(ask, response, to.origin))
 
 /** A dev button in the pane: a toast says why, when it did nothing. */
 const pressDev = async ($: EngineInterface, ask: DevAsk) => {
