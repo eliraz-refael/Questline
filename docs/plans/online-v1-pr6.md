@@ -456,4 +456,15 @@ same id keeps the queue; another id (another account, or the account deleted and
 delete forgets `player@<origin>` too (only the owner it was sent for, like the token), so the next sign-in there is a
 first one, with an empty queue. Another machine's old queue meets the same check when that machine signs in again: its
 stored owner is the deleted account's id.
+
+From the review of #37:
+- A mod from before 0.3.1 kept no owner. Each snapshot now teaches the mod its player when none is stored
+  (`learnOwner`, from `character.playerId`), so a machine signed in on 0.3.0 learns its owner at its first connect.
+- A flush reads its batch before its token. A sign-in that drops the queue moves `ownerEpoch` on, and `call` refuses
+  to send a batch read before it, so the last player's events never go with the new player's token. A server switch
+  doesn't count (`generation` is separate): a batch that set out for a server still goes there.
+- `/pathofdev login` refuses while a token the server takes is held, so a queue is dropped only once the last
+  player's token is dead: none of it could have gone anyway.
+- Mods older than 0.3.1 lose the server's `before_account` check. In the closed beta that is only the owner's own
+  machines.
 - Plugin version 0.3.1.

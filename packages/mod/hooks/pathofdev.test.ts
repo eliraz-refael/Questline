@@ -137,6 +137,9 @@ const snapshot = (
   items: owned?.items ?? [],
 })
 
+/** A snapshot as the server sends it for `playerId`. */
+const withPlayer = (playerId: string, shot: ReturnType<typeof snapshot>) => ({ ...shot, character: { ...shot.character, playerId } })
+
 const reply = (status: number, body: unknown) => ({ value: { status, ok: status < 300, headers: {}, text: JSON.stringify(body) } })
 const ran = (exitCode: number, stdout: string) => ({
   value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -407,7 +410,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
     }
     if (path === '/v1/sessions')
       return reply(200, {
-        snapshot: snapshot(
+        snapshot: withPlayer(options.accounts?.player ?? '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', snapshot(
           options.level ?? 0,
           null,
           0,
@@ -417,7 +420,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
           options.counted,
           options.quests,
           options.kept,
-        ),
+        )),
         rules: options.rules ?? {},
         minClientVersion: '0.0.0',
         acceptedEventTypes: [],
@@ -4199,6 +4202,30 @@ describe('signing in', () => {
       await $.session.compact({ trigger: 'manual', messages })
       await clock.advance(30_000)
       await until(clock, () => eventsOf(sent).some((event) => event['type'] === 'session.compacted'))
+    },
+  )
+
+  test(
+    'a mod from before owners learns its player from the server, so a later sign-in as another drops their queue',
+    { options: { server: 'online' } },
+    async ($, on) => {
+      const github = githubOf([recorded.success])
+      const accounts = accountsOf('pod_live')
+      accounts.player = '01K6ZQ8W3J5V7XKQ2M4N6P8OLD'
+      const { clock, kept, sent, toasts } = await online($, on, { [tokenKey]: 'pod_live' }, { github, accounts })
+      await until(clock, () => kept.get(playerKey) === '01K6ZQ8W3J5V7XKQ2M4N6P8OLD')
+      await run($, 'logout')
+      await $.session.compact({ trigger: 'manual', messages })
+      expect(JSON.stringify(kept.get(queueKey))).toContain('session.compacted')
+      accounts.player = '01K6ZQ8W3J5V7XKQ2M4N6P8NEW'
+      await run($, 'login')
+      await clock.advance(5_000)
+      await until(clock, () => toasts.some((text) => text.startsWith('Signed in to')))
+      // The poll the last token held answers at 25 seconds; the next goes with the new one, past a flush.
+      await clock.advance(30_000)
+      await until(clock, () => sent.some((one) => one.path === '/v1/stream' && one.authorization === 'Bearer pod_issued'))
+      expect(eventsOf(sent.filter((one) => one.authorization === 'Bearer pod_issued'))).toEqual([])
+      expect(kept.get(playerKey)).toBe('01K6ZQ8W3J5V7XKQ2M4N6P8NEW')
     },
   )
 

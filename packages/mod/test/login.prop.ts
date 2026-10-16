@@ -141,11 +141,24 @@ describe('a sign-in', () => {
 
   prop.prop(
     'keeps the queue when nobody signed in before or the same player did, and drops it for anyone else',
-    [Schema.Unknown, Schema.String],
-    ([stored, playerId]) => {
-      expect(queueAfterSignIn(stored, playerId)).toBe(typeof stored !== 'string' || stored === playerId ? 'keep' : 'drop')
-      // The player signed in as is stored from here, so the next sign-in as them keeps what they queue.
-      expect(queueAfterSignIn(playerId, playerId)).toBe('keep')
+    [Schema.String, Schema.String, Schema.Union([Schema.Undefined, Schema.Null, Schema.Number, Schema.Boolean])],
+    ([one, other, nobody]) => {
+      // Nobody before: a first sign-in here, or a store from before owners.
+      expect(queueAfterSignIn(nobody, one)).toBe('keep')
+      expect(queueAfterSignIn(one, one)).toBe('keep')
+      if (one !== other) expect(queueAfterSignIn(other, one)).toBe('drop')
+    },
+  )
+
+  prop.prop(
+    'over any run of sign-ins, keeps a queue only for the player who left it',
+    [Schema.Array(Schema.Literals(['a', 'b', 'c'])).check(Schema.isMinLength(1), Schema.isMaxLength(8))],
+    ([players]) => {
+      // Each sign-in stores its player as the owner; the queue survives a sign-in only within a run of one player.
+      players.reduce<string | undefined>((owner, player) => {
+        expect(queueAfterSignIn(owner, player)).toBe(owner === undefined || owner === player ? 'keep' : 'drop')
+        return player
+      }, undefined)
     },
   )
 })
