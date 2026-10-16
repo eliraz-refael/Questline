@@ -421,3 +421,23 @@ Also: mark "Decide where the landing page lives" decided (separate).
 - `server/html.ts` (new): the `Html` brand (strings escaped, `Html` passes, `raw` only for constants).
 - `docs/plans/online-v1.md`: cache line and decision 2A.
 Stale already (fix when touched): `players.ts` ~16, `local.ts` single-player comments, `hub.ts` ~5.
+
+## As built (6a)
+Where the code differs from the plan above, and why:
+- `POST /v1/account/profile` takes `{kind, section?}` flat (`ProfileChangeRequest`), and `changeOf` checks the section
+  in the handler, so an unknown one gets a 400 (`InvalidSection`) whose message lists the sections, not the HttpApi's
+  generic decode error.
+- `before_account` applies only to GitHub accounts (`githubUserId !== null`), with the same 5-minute slack as a future
+  event. The local save is never deleted, so a queue filled before its first start still counts. Without the slack, a
+  client clock a minute behind would lose its first minute of play after sign-in.
+- `Presence.close` runs the guard before it looks for the session, so a close for a deleted player is a 401 like every
+  other route (it used to answer `closed: false` for an unknown session before any read of the player).
+- `Players.snapshot` and `streamAfter` answer `PlayerGone` too, not only the writer's reads: the held poll a delete
+  wakes reads the stream next.
+- A 401 on delete makes the mod forget the token only. A 5xx (a gateway's 502/504 may follow a commit) or no answer
+  keeps everything, and says "not sure".
+- The export's head lists each part with its `rows` and `upto` (null for `sessions`), so the mod's `exportStep` sends
+  back whatever the head says, without knowing which counter bounds which part. Page cursors are strings
+  (`next`), and the server reads them by the part's key type (`cursorOf`, 400 `InvalidCursor` otherwise).
+- Delete's statement timeout is `SET LOCAL statement_timeout = '60s'`, and covers lock waits.
+- Plugin version 0.3.0.

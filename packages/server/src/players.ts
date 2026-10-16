@@ -10,8 +10,9 @@ import { ServerRandom } from "./random.ts"
 import { PlayerGone } from "./writer.ts"
 
 // Who the players are, and reads of a player that never change one: the snapshot the mod draws, and the stream after
-// a cursor. A player is made here, with their state; every later write goes through the PlayerWriter. Which player a
-// request acts for is the server's `Authentication`: the local server's one player, or the public server's by token.
+// a cursor. A player is made here, with their state; every later write goes through the PlayerWriter, and the delete
+// through AccountData (account.ts), after which these reads answer `PlayerGone`. Which player a request acts for is
+// the server's `Authentication`: the local server's one player, or the public server's by token.
 
 /** How the game names and times a new player. The local server plays as one, from the OS account. */
 export interface LocalProfile {
