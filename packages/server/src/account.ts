@@ -206,8 +206,11 @@ export const pageOf = <R extends { readonly key: string; readonly size: number }
   budget: number,
   limit: number,
 ): { readonly rows: ReadonlyArray<R>; readonly next: string | null } => {
-  const totals = rows.reduce<ReadonlyArray<number>>((sums, row) => [...sums, (sums.at(-1) ?? 0) + row.size], [])
-  const over = totals.findIndex((total, i) => i >= limit || total > budget)
+  let total = 0
+  const over = rows.findIndex((row, i) => {
+    total += row.size
+    return i >= limit || total > budget
+  })
   const count = over === -1 ? rows.length : Math.max(1, over)
   const taken = rows.slice(0, count)
   return { rows: taken, next: count < rows.length ? (taken.at(-1)?.key ?? null) : null }
@@ -222,11 +225,14 @@ export const confirmed = (player: Player, login: string): Effect.Effect<void, Co
     ? Effect.void
     : Effect.fail(new ConfirmMismatch({ message: confirmText }))
 
+/** The largest value the int key and bound columns (Postgres `integer`) hold. */
+export const maxInt = 2_147_483_647
+
 /** A page's cursor as its key column reads it, or none for a cursor that column can't hold. */
 export const cursorOf = (keyIs: "int" | "text", after: string | undefined): Option.Option<number | string> => {
   if (keyIs === "text") return Option.some(after ?? "")
   if (after === undefined) return Option.some(-1)
-  return /^(0|[1-9][0-9]{0,14})$/.test(after) ? Option.some(Number(after)) : Option.none()
+  return /^(0|[1-9][0-9]{0,9})$/.test(after) && Number(after) <= maxInt ? Option.some(Number(after)) : Option.none()
 }
 
 type Failure = SqlError | Schema.SchemaError | PlayerGone
@@ -422,7 +428,9 @@ export const AccountHandlers = HttpApiBuilder.group(
           if (Option.isNone(after)) {
             return yield* new InvalidCursor({ message: `A ${params.part} page starts after a whole number` })
           }
-          return yield* asAccountErrors(data.page(player.id, params.part, after.value, query.upto))
+          // An `upto` past what the column holds bounds nothing more than its largest value does.
+          const upto = query.upto === undefined ? undefined : Math.min(query.upto, maxInt)
+          return yield* asAccountErrors(data.page(player.id, params.part, after.value, upto))
         }),
 
       deleteAccount: ({ payload }) =>

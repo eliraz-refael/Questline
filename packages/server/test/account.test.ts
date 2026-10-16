@@ -22,6 +22,7 @@ import {
   AccountData,
   Allowlist,
   cursorOf,
+  maxInt,
   GitHub,
   isForeignKeyViolation,
   notInBeta,
@@ -197,7 +198,7 @@ describe("pageOf", () => {
 })
 
 describe("an export page's cursor", () => {
-  it.prop("reads back any key a page names", [Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1e12 })), Schema.String], ([n, text]) => {
+  it.prop("reads back any key a page names", [Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: maxInt })), Schema.String], ([n, text]) => {
     expect(cursorOf("int", String(n))).toEqual(Option.some(n))
     expect(cursorOf("text", text)).toEqual(Option.some(text))
     expect(cursorOf("int", undefined)).toEqual(Option.some(-1))
@@ -207,6 +208,11 @@ describe("an export page's cursor", () => {
   it.prop("names no whole-number key for anything else", [Schema.String], ([text]) => {
     const read = cursorOf("int", text)
     if (Option.isSome(read)) expect(String(read.value)).toBe(text)
+  })
+
+  it("names none past what an integer column holds", () => {
+    expect(cursorOf("int", String(maxInt + 1))).toEqual(Option.none())
+    expect(cursorOf("int", "99999999999")).toEqual(Option.none())
   })
 })
 

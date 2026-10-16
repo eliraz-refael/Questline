@@ -1130,11 +1130,19 @@ const askOnline = async (
 ): Promise<string> => {
   const online = await signedInOnline($, has)
   if (typeof online === 'string') return online
-  const { to, token } = online
+  return textOf(await sendOnline($, online, route), online.to)
+}
+
+/** Sends `route` to the online target with its token: null when no answer came; a 401 signs the band out. */
+const sendOnline = async (
+  $: EngineInterface,
+  { to, token }: { to: Online; token: string },
+  route: Route,
+): Promise<HttpResponse | null> => {
   const { url, init } = requestOf(to, route, { socketPath: '', token })
   const response = await $.http.fetch(url, init).catch(() => null)
   if (response !== null && failureOf(response) === 'signedOut') noteSignedOut($, to, true)
-  return textOf(response, to)
+  return response
 }
 
 /** The online target and the game token held for it, or what the player hears instead (see `askOnline`). */
@@ -1164,7 +1172,6 @@ const noAccount = 'no account to export or delete: its save is on your own disk'
 const exportAccount = async ($: EngineInterface): Promise<string> => {
   const online = await signedInOnline($, noAccount)
   if (typeof online === 'string') return online
-  const { to, token } = online
   const base = exportsDirOf(named, await $.env.get('HOME'))
   if (base === null) return 'There is no home folder to export to: set PATHOFDEV_HOME to the folder exports go under.'
   const run = async (step: ExportStep): Promise<string> => {
@@ -1173,10 +1180,7 @@ const exportAccount = async ($: EngineInterface): Promise<string> => {
       if (!isWritten) return `The export stopped part way: ${path} could not be written, so complete.json is missing.`
     }
     if (step.ask === null) return exportTextOf(step.state)
-    const { url, init } = requestOf(to, step.ask, { socketPath: '', token })
-    const response = await $.http.fetch(url, init).catch(() => null)
-    if (response !== null && failureOf(response) === 'signedOut') noteSignedOut($, to, true)
-    return run(exportStep(step.state, response, to.origin))
+    return run(exportStep(step.state, await sendOnline($, online, step.ask), online.to.origin))
   }
   return run(exportStart(base, stampOf(await $.clock.now())))
 }
@@ -1191,18 +1195,29 @@ const deleteAccount = async ($: EngineInterface, ask: Extract<DataAsk, { kind: '
   if (typeof online === 'string') return online
   const { login } = ask
   if (login === null) return deleteWarning
-  return askOnline($, noAccount, deleteRouteOf(login), async (response, to) => {
-    if (response !== null && response.ok) {
-      for (const key of keysAfterDelete(to.origin)) await $.store.delete(key)
-      if (target === to) {
-        isSignedOut = true
-        await update($, link, () => 'offline')
-      }
-    } else if (response?.status === 401) {
-      await $.store.delete(storeKey(to, 'token'))
+  const { to, token } = online
+  const response = await sendOnline($, online, deleteRouteOf(login))
+  // Only the token this delete was sent with: a sign-in that landed meanwhile stays.
+  const forgetToken = async () => {
+    const key = storeKey(to, 'token')
+    if (tokenOf(await $.store.get(key)) === token) await $.store.delete(key)
+  }
+  if (response !== null && response.ok) {
+    const queueKey = storeKey(to, 'queue')
+    for (const key of keysAfterDelete(to.origin)) {
+      if (key === storeKey(to, 'token')) await forgetToken()
+      // Through the queue's own lock, so an enqueue in flight never writes the old queue back.
+      else if (key === queueKey) await changeQueue(() => $.store.delete(key))
+      else await $.store.delete(key)
     }
-    return deleteTextOf(response, to.origin)
-  })
+    if (target === to) {
+      isSignedOut = true
+      await update($, link, () => 'offline')
+    }
+  } else if (response?.status === 401) {
+    await forgetToken()
+  }
+  return deleteTextOf(response, to.origin)
 }
 
 /** A dev button in the pane: a toast says why, when it did nothing. */
