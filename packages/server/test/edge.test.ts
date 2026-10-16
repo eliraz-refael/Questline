@@ -1,6 +1,8 @@
+import { it as prop } from "@effect/vitest"
 import type { ClientEvent } from "@pathofdev/schema"
+import { Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { admit, naturalKey } from "../src/index.ts"
+import { admit, maxAhead, maxAge, naturalKey } from "../src/index.ts"
 import { commit, merged, minutesLater, start, turn } from "./fixtures.ts"
 
 const hex = (char: string): string => char.repeat(64)
@@ -43,6 +45,30 @@ describe("admit", () => {
     const near = admit(commit("a", minutesLater(4)), start)
     expect(near.kind === "admitted" && near.admitted.input).toMatchObject({ event: { occurredAt: minutesLater(4) } })
   })
+})
+
+describe("an account's start", () => {
+  const minutes = Schema.Int.check(Schema.isBetween({ minimum: -8 * 24 * 60, maximum: 60 }))
+
+  prop.prop(
+    "refuses an event from before an account was made, past a clock's drift, and changes nothing else",
+    [minutes, minutes],
+    ([occurred, made]) => {
+      const event = commit("a", minutesLater(occurred))
+      const since = minutesLater(made)
+      const unbounded = admit(event, start)
+      const bounded = admit(event, start, since)
+      const isBefore = Date.parse(event.occurredAt) < Date.parse(since) - maxAhead
+      if (unbounded.kind === "admitted" && isBefore) {
+        expect(bounded).toEqual({ kind: "rejected", result: { id: event.id, status: "rejected", reason: "before_account" } })
+      } else {
+        expect(bounded).toEqual(unbounded)
+      }
+      // Nothing admitted happened before the account, and nothing past the window counts either way.
+      if (bounded.kind === "admitted") expect(Date.parse(event.occurredAt)).toBeGreaterThanOrEqual(Date.parse(since) - maxAhead)
+      if (Date.parse(event.occurredAt) < Date.parse(start) - maxAge) expect(bounded).toEqual(unbounded)
+    },
+  )
 })
 
 describe("naturalKey", () => {

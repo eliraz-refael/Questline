@@ -1,7 +1,7 @@
 import type { SignInResponse } from '@pathofdev/schema'
 import type { HttpInit, HttpResponse } from 'claude-code'
 import type { Target } from './server'
-import { failureOf, headersOf, isRecord, originOf, parsed } from './server'
+import { argsOf, failureOf, headersOf, isRecord, originOf, parsed, printable } from './server'
 
 // Signing in to the online server: `/pathofdev login` runs GitHub's device flow straight against github.com, with the
 // game's public client id and no scopes (no secret anywhere), then trades the GitHub token for a game token at the
@@ -48,7 +48,7 @@ export const accountUsage =
   'Sign-in: /pathofdev login signs you in to the online server with GitHub, and /pathofdev logout signs you out.'
 
 export const accountAskOf = (args: string): AccountAsk | string | null => {
-  const [head, ...rest] = args.trim().split(/\s+/)
+  const [head, ...rest] = argsOf(args)
   if (head !== 'login' && head !== 'logout') return null
   return rest.length > 0 ? accountUsage : { kind: head }
 }
@@ -245,12 +245,12 @@ export const signInOf = (response: Pick<HttpResponse, 'ok' | 'status' | 'text'>)
   const failure = failureOf(response)
   const body = parsed(response.text)
   if (failure === 'signedOut') {
-    const message = isRecord(body) ? filled(body['message']) : null
-    return { kind: 'refused', message: message === null ? null : message.replace(/[^ -~]/g, '').slice(0, 120) }
+    const message = isRecord(body) ? printable(body['message'], 120) : ''
+    return { kind: 'refused', message: message === '' ? null : message }
   }
   if (failure === 'unavailable') return { kind: 'unavailable' }
   if (failure === 'unexpected' || !isSignIn(body)) return { kind: 'unexpected', status: response.status }
   // Shown to the player in a toast: printable ASCII only, like a refusal's message.
-  const login = filled(body.player.githubLogin)?.replace(/[^ -~]/g, '').slice(0, 64) ?? ''
+  const login = printable(body.player.githubLogin, 64)
   return { kind: 'signedIn', token: body.token, login: login === '' ? null : login }
 }

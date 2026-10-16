@@ -1,5 +1,6 @@
 import type { ConfigRow } from 'claude-code'
 import type { Target } from './server'
+import { argsOf } from './server'
 
 // Switching servers from the prompt: `/pathofdev server` says where the mod plays, and `server play|dev|online` (or
 // `dev off`, the way back from dev mode) moves it. The choice is the `server` option itself, written as the player
@@ -34,7 +35,7 @@ const names: ReadonlyMap<string, ServerName> = new Map([
  * line when they don't parse.
  */
 export const serverAskOf = (args: string): ServerAsk | string | null => {
-  const words = args.trim().split(/\s+/)
+  const words = argsOf(args)
   if (words.length === 2 && words[0] === 'dev' && words[1] === 'off') return { kind: 'switch', to: 'default' }
   if (words[0] !== 'server') return null
   if (words.length === 1) return { kind: 'where' }

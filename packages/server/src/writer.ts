@@ -7,7 +7,7 @@ import {
   ServerBehind,
   ServerEvent as ServerEventSchema,
 } from "@pathofdev/schema"
-import { Context, Effect, Layer, Option, Result, Schema } from "effect"
+import { Context, Data, Effect, Layer, Option, Result, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
 import type { Admitted } from "./edge.ts"
@@ -28,6 +28,15 @@ import { ServerRandom } from "./random.ts"
 //          ├─ the engine fails on it ────────────────────▶ rejected: logged, and kept in quarantine
 //          └─ stepped ───────────────────────────────────▶ accepted: logged, its server events and rolls written
 //     └─▶ player_state moves ─▶ commit ─▶ StreamHub.notify, when there are new events
+//
+// Every read of the player's head goes through `headOf`, so a player whose rows are gone, deleted while a request for
+// them was on its way, is one typed `PlayerGone`, never a defect, and the routes answer it 401. The lock `apply` takes
+// is the delete's first lock too (`lockPlayer`), so a delete waits for an apply in flight, and an apply after it finds
+// no head:
+//
+//   apply ── lockPlayer(player_state FOR UPDATE) ─▶ … ─▶ commit
+//   erase ──────────── waits ───────────────────────────────▶ lockPlayer ─▶ players FOR UPDATE ─▶ DELETE … ─▶ commit
+//   apply, after ─▶ headOf: no row ─▶ PlayerGone ─▶ 401
 
 /** What happened to one input. */
 export interface Applied {
@@ -54,6 +63,23 @@ const Head = Schema.Struct({
   engine_version: Count,
   roll_seed: Schema.String,
 })
+
+/** The player's rows are gone: their account was deleted while a request for them was on its way. Nothing was written. */
+export class PlayerGone extends Data.TaggedError("PlayerGone")<{ readonly playerId: string }> {}
+
+/**
+ * The player's head, their state row held until the transaction ends when `isLocked`: every change to a player takes
+ * this lock first, the delete too, so they run one at a time.
+ */
+const headQuery = (sql: SqlClient.SqlClient, playerId: string, isLocked: boolean) => sql`
+  SELECT s.state, s.log_seq, s.server_seq, s.engine_version, p.roll_seed
+  FROM player_state s JOIN players p ON p.id = s.player_id
+  WHERE s.player_id = ${playerId}
+  ${isLocked ? sql`FOR UPDATE OF s` : sql``}
+`
+
+/** Holds the player's state row until the transaction ends, as `apply` does: the delete's first lock. */
+export const lockPlayer = (sql: SqlClient.SqlClient, playerId: string) => headQuery(sql, playerId, true)
 
 /** Whether a save last written by engine `saved` is newer than this build's engine, which must then leave it alone. */
 const isBehind = (saved: number): boolean => saved > engineVersion
@@ -93,16 +119,18 @@ const make = (stepper: Stepper) =>
     const devMode = yield* DevMode
     const questPacks = yield* QuestPacks
 
-    const lock = SqlSchema.findOne({
-      Request: Schema.String,
+    const readHead = SqlSchema.findOneOption({
+      Request: Schema.Struct({ playerId: Schema.String, isLocked: Schema.Boolean }),
       Result: Head,
-      execute: (playerId) => sql`
-        SELECT s.state, s.log_seq, s.server_seq, s.engine_version, p.roll_seed
-        FROM player_state s JOIN players p ON p.id = s.player_id
-        WHERE s.player_id = ${playerId}
-        FOR UPDATE OF s
-      `,
+      execute: ({ playerId, isLocked }) => headQuery(sql, playerId, isLocked),
     })
+
+    /** The player's head, held when `isLocked`; `PlayerGone` when their rows are gone. */
+    const headOf = (playerId: string, isLocked = false) =>
+      Effect.flatMap(
+        Effect.orDie(readHead({ playerId, isLocked })),
+        Option.match({ onNone: () => Effect.fail(new PlayerGone({ playerId })), onSome: Effect.succeed }),
+      )
 
     const findById = SqlSchema.findOneOption({
       Request: Schema.Struct({ playerId: Schema.String, id: Schema.String }),
@@ -159,7 +187,7 @@ const make = (stepper: Stepper) =>
 
     const apply = (playerId: string, now: string, inputs: ReadonlyArray<Admitted>) =>
       Effect.gen(function* () {
-        const head = yield* lock(playerId).pipe(Effect.orDie)
+        const head = yield* headOf(playerId, true)
         yield* guard(head.engine_version)
         let state = yield* decodeState(head.state)
         let logSeq = head.log_seq
@@ -252,15 +280,9 @@ const make = (stepper: Stepper) =>
         Effect.map(({ applied }) => applied),
       )
 
-    const current = SqlSchema.findOne({
-      Request: Schema.String,
-      Result: Schema.Struct({ state: Schema.Unknown, engine_version: Count }),
-      execute: (playerId) => sql`SELECT state, engine_version FROM player_state WHERE player_id = ${playerId}`,
-    })
-
     const refreshQuests = (playerId: string, now: string) =>
       Effect.gen(function* () {
-        const row = yield* current(playerId).pipe(Effect.orDie)
+        const row = yield* headOf(playerId)
         yield* guard(row.engine_version)
         const state = yield* decodeState(row.state)
         if (!questsDue(state, now)) return []
@@ -271,13 +293,7 @@ const make = (stepper: Stepper) =>
         return yield* apply(playerId, now, [{ id, input, naturalKey }])
       })
 
-    const savedBy = SqlSchema.findOne({
-      Request: Schema.String,
-      Result: Schema.Struct({ engine_version: Count }),
-      execute: (playerId) => sql`SELECT engine_version FROM player_state WHERE player_id = ${playerId}`,
-    })
-
-    const check = (playerId: string) => Effect.flatMap(Effect.orDie(savedBy(playerId)), (row) => guard(row.engine_version))
+    const check = (playerId: string) => Effect.flatMap(headOf(playerId), (row) => guard(row.engine_version))
 
     return PlayerWriter.of({ apply, refreshQuests, guard: check })
   })
@@ -287,13 +303,13 @@ export class PlayerWriter extends Context.Service<
   {
     /**
      * Applies the inputs in order, as received at `now`, and answers for each one. Fails with `ServerBehind`, having
-     * written nothing, when a newer build of the server last saved the player.
+     * written nothing, when a newer build of the server last saved the player, and `PlayerGone` when they were deleted.
      */
     readonly apply: (
       playerId: string,
       now: string,
       inputs: ReadonlyArray<Admitted>,
-    ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError | ServerBehind>
+    ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError | ServerBehind | PlayerGone>
     /**
      * Rolls the missions of a local day or week begun since the player's last step, as `now`, so a session opened on
      * a new day shows its missions before any event arrives. Does nothing when none is due.
@@ -301,12 +317,12 @@ export class PlayerWriter extends Context.Service<
     readonly refreshQuests: (
       playerId: string,
       now: string,
-    ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError | ServerBehind>
+    ) => Effect.Effect<ReadonlyArray<Applied>, SqlError | Schema.SchemaError | ServerBehind | PlayerGone>
     /**
      * Fails with `ServerBehind` when a newer build of the server last saved the player, as `apply` would: for a write
      * outside the log, such as a session's row, made before the input it goes with.
      */
-    readonly guard: (playerId: string) => Effect.Effect<void, SqlError | Schema.SchemaError | ServerBehind>
+    readonly guard: (playerId: string) => Effect.Effect<void, SqlError | Schema.SchemaError | ServerBehind | PlayerGone>
   }
 >()("pathofdev/PlayerWriter") {
   static readonly make = (stepper: Stepper) => Layer.effect(PlayerWriter, make(stepper))

@@ -3,6 +3,7 @@ import type { PluginOptions } from 'claude-code'
 import type { BandView, Tier } from '../types'
 import { tierOf } from './celebrate'
 import { capitalised } from './frames'
+import { argsOf } from './server'
 
 // Dev mode, for trying the game out: which server the mod talks to, what `/pathofdev dev …` asks for, the commands
 // a dev server takes, and the stand-in events a celebration preview plays. Only a dev server runs the commands; the
@@ -53,7 +54,7 @@ const wholeOf = (text: string | undefined, least: number): number | null => {
  * parse.
  */
 export const devAskOf = (args: string): DevAsk | string | null => {
-  const [head, what, value, ...rest] = args.trim().split(/\s+/)
+  const [head, what, value, ...rest] = argsOf(args)
   if (head !== 'dev') return null
   if (rest.length > 0) return devUsage
   switch (what) {

@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
 import type { Redacted } from "effect"
-import { Layer } from "effect"
+import { Layer, Predicate } from "effect"
 import type { SqlClient } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
 
@@ -39,3 +39,12 @@ export const sqlLayer = (database: Database): Layer.Layer<SqlClient.SqlClient, S
       })
   }
 }
+
+/**
+ * Whether a statement failed for a row that names one gone, Postgres's 23503: an insert for a player deleted since
+ * the request named them. PGlite and Postgres both keep the code on the error's cause.
+ */
+export const isForeignKeyViolation = (error: SqlError): boolean =>
+  error.reason._tag === "ConstraintError" &&
+  Predicate.hasProperty(error.reason.cause, "code") &&
+  error.reason.cause.code === "23503"

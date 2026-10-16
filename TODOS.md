@@ -18,7 +18,8 @@ the work is, why it matters, where things stand and what it waits on.
   Cloudflare's published ranges (configure Traefik's `trustedIPs` to match), otherwise use the socket address. Never
   take the leftmost `X-Forwarded-For` entry, which the client controls. Properties: the number allowed in any window is
   at most capacity plus refill × window; a forged header from an untrusted peer never changes the key.
-- **Depends on:** the public server entry (PR 5).
+- **Depends on:** the public server entry (PR 5). Profile pages send `no-store` and render a snapshot per view with
+  no cache (PR 6, decision 12A), so `/u/*` per client IP matters as soon as they are linked anywhere.
 
 ### Open signup
 
@@ -67,27 +68,39 @@ the work is, why it matters, where things stand and what it waits on.
   commit and wake waiters early. Notify has to move after the outer commit. Found in the review of PR #32; a single
   replica makes the window small.
 
-### Purge Cloudflare's cache when a profile changes
+### Re-check logins against GitHub
 
-- **What:** when a player hides a section, makes their profile private or deletes their account, purge
-  `pathof.dev/u/<login>` from Cloudflare's cache through its API.
-- **Why:** profile pages are cached for 60 seconds (`s-maxage=60`), so a hidden section or a deleted account can still
-  be served for up to a minute, without any sign of it.
-- **Context:** needs a Cloudflare API token scoped to cache purge on the pathof.dev zone, stored as a server secret.
-  Purge after the settings transaction commits; a failed purge only logs, because the TTL still bounds staleness.
-- **Depends on:** profiles and account settings (PR 6).
-
-### Decide where the landing page lives
-
-- **What:** decide whether `site/` stays its own static Coolify app beside the server's `pathof.dev/u` route, or moves
-  into the server app so one app owns `pathof.dev`.
-- **Why:** two apps share the apex today through Traefik path routing (the server takes `PathPrefix(/u)`). If profile
-  pages need the site's styles, navigation or shared assets, keeping them in two apps gets awkward.
-- **Context:** the plan picked `pathof.dev/u/:login` with a routing spike in PR 5 and `u.pathof.dev` as the fallback.
-  Moving the site into the server ties landing-page deploys to server deploys, but gives one origin and one template.
-- **Depends on:** the `/u` routing spike (PR 5). Decide before designing the profile page in PR 6.
+- **What:** stop `pathof.dev/u/<login>` showing a former holder of a login after a GitHub rename, or after GitHub
+  hands a freed login to someone else.
+- **Why:** a player's row keeps the login it last signed in with until another account signs in under it
+  (`findOrCreate` clears it then). Meanwhile the old holder's page answers for the login (PR 6, decision 3A).
+- **Context:** nothing private leaks: only what the old holder made public, under a name they no longer hold. The
+  options are a periodic `GET /user/{id}` for public players, which takes one GitHub call per public player, or showing
+  a page only for a sign-in within some recent window.
+- **Depends on:** open signup.
 
 ## Later features
+
+### XP history on profiles
+
+- **What:** a per-day XP chart on the profile page, as a hideable `history` section that starts hidden
+  (`defaultShown: false` in `schema/profile.ts`).
+- **Why:** v1 profiles show only where a player stands, not how they got there.
+- **Context:** the partial index `server_events_progress` (migration 0012) serves the query, and
+  `xp.granted.totalAfter` gives each local day's last total. Carried XP (migration 0009) writes no server event, and a
+  prestige lowers the total, so the series must not claim to equal the state's XP.
+- **Depends on:** profiles in use (PR 6b).
+
+### Cache profile pages at Cloudflare, with purge
+
+- **What:** a Cloudflare cache rule on `pathof.dev/u/*` with `s-maxage=60`, plus an API purge of
+  `pathof.dev/u/<login>` after a privacy change or a delete commits.
+- **Why:** v1 sends `Cache-Control: no-store` (PR 6), so a hide or a delete takes effect at once, but every view
+  renders. That is fine for a closed beta, not for real traffic.
+- **Context:** needs a Cloudflare API token scoped to cache purge on the pathof.dev zone, as a server secret. Ship the
+  rule and the purge together, never the rule alone: a cache without purge shows a hidden section or a deleted account
+  for up to a minute. A failed purge only logs, as the TTL still bounds staleness.
+- **Depends on:** open signup.
 
 ### Link a local save to an online account
 

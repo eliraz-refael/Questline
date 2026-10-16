@@ -141,3 +141,49 @@ export const ApiError = Schema.Struct({
   retryAfterMs: Schema.optionalKey(Count),
 })
 export interface ApiError extends Schema.Schema.Type<typeof ApiError> {}
+
+// ── the account, on the public server ────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What an export holds besides the head, each a part of its own, read a page at a time: the inputs the server logged,
+ * the events it sent back, the loot rolls, the inputs it quarantined, and the sessions it heard from.
+ */
+export const exportParts = ["events", "serverEvents", "rolls", "quarantine", "sessions"] as const
+export const ExportPart = Schema.Literals(exportParts)
+export type ExportPart = typeof ExportPart.Type
+
+/** One part as the head counts it: `upto` bounds the rows the export takes, null for a part that changes (sessions). */
+export const ExportPartHead = Schema.Struct({ part: ExportPart, rows: Count, upto: Schema.NullOr(Count) })
+export interface ExportPartHead extends Schema.Schema.Type<typeof ExportPartHead> {}
+
+/**
+ * `GET /v1/account/export`: everything kept of the player that fits in a row, read in one transaction, and how many
+ * rows each part has up to where the head was read. The rows are the tables' own, as JSON: the player's row without
+ * its roll seed (which would predict their loot), their save as stored, and each token's creation time only.
+ */
+export const ExportHead = Schema.Struct({
+  format: Schema.Literal(1),
+  exportedAt: Schema.String,
+  player: Schema.Unknown,
+  state: Schema.Unknown,
+  tokens: Schema.Array(Schema.Unknown),
+  /** Whether the beta still lets this GitHub account in: kept by the admins, it outlives a delete. */
+  onBetaList: Schema.Boolean,
+  parts: Schema.Array(ExportPartHead),
+})
+export interface ExportHead extends Schema.Schema.Type<typeof ExportHead> {}
+
+/**
+ * `GET /v1/account/export/{part}?after=<next>&upto=<upto>`: the part's rows after `after`, in key order, a page at most
+ * a mebibyte of JSON (or one row past it); `next` is the `after` of the next page, null once the part has ended.
+ */
+export const ExportPage = Schema.Struct({ rows: Schema.Array(Schema.Unknown), next: Schema.NullOr(Schema.String) })
+export interface ExportPage extends Schema.Schema.Type<typeof ExportPage> {}
+
+/** `POST /v1/account/delete`: the GitHub login of the account, typed by the player to say they mean it. */
+export const DeleteRequest = Schema.Struct({ login: Schema.String })
+export interface DeleteRequest extends Schema.Schema.Type<typeof DeleteRequest> {}
+
+/** The account is gone, every row of it; whether the beta still lets the GitHub account in, to start afresh. */
+export const Deleted = Schema.Struct({ deleted: Schema.Literal(true), onBetaList: Schema.Boolean })
+export interface Deleted extends Schema.Schema.Type<typeof Deleted> {}

@@ -59,6 +59,33 @@ INSERT INTO beta_logins (login, added_by, added_at)
 VALUES ('octocat', <your id>, to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
 ```
 
+## Accounts: privacy, export and delete
+
+A signed-in player manages their own account from the mod, as [privacy.md](privacy.md) describes:
+`/pathofdev profile …`, `/pathofdev account export` and `/pathofdev account delete <login>`. These routes take the
+player's game token alone, without the beta list, so a player the admins took off the beta can still export and delete
+while their mod is signed in. Taking a player off the beta revokes no tokens and deletes nothing.
+
+If a player asks for a delete and can't run it (their mod is signed out, and the beta no longer lets them sign in),
+add them back with `/pathofdev beta add <login>` so they can sign in and run it. Otherwise delete their rows with
+`psql`, in one transaction, in the order the server does:
+
+```sql
+BEGIN;
+-- the player's id: SELECT id FROM players WHERE lower(github_login) = lower('<login>');
+DELETE FROM api_tokens    WHERE player_id = '<id>';
+DELETE FROM sessions      WHERE player_id = '<id>';
+DELETE FROM quarantine    WHERE player_id = '<id>';
+DELETE FROM rolls         WHERE player_id = '<id>';
+DELETE FROM server_events WHERE player_id = '<id>';
+DELETE FROM event_log     WHERE player_id = '<id>';
+DELETE FROM player_state  WHERE player_id = '<id>';
+DELETE FROM players       WHERE id = '<id>';
+COMMIT;
+```
+
+Backups keep a deleted account for up to 14 days (step 4 below keeps 14 daily backups).
+
 ## What is left to do by hand
 
 Each step is done once, in Coolify, Cloudflare or GitHub. The Postgres resource `pathofdev-db` (postgres:18-alpine,
@@ -125,6 +152,8 @@ gh secret set R2_BUCKET             # pathofdev-backups
 
 Then run the drill once by hand, after the first backup exists: `gh workflow run restore-drill.yml`.
 
-### Later (PR 6)
+### Later (PR 6b)
 
-The `pathof.dev/u` profile routing (Traefik `PathPrefix(/u)` to this app, or `u.pathof.dev`) comes with profiles.
+The profile pages at `pathof.dev/u/<login>`: add `https://pathof.dev/u` to this app's domains in Coolify with **Strip
+Prefixes off**, so `PathPrefix(/u)` reaches the server and every other path still goes to the landing page. The
+fallback is `u.pathof.dev`, with `PROFILE_ORIGIN=https://u.pathof.dev`.

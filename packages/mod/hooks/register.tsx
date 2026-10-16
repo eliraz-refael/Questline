@@ -1,6 +1,14 @@
 import type { ClientEvent, Command, ServerEvent, Slot } from '@pathofdev/schema'
 import { atom, read, update } from 'claude-code'
-import type { ElementConstructor, EngineInterface, PluginOptions, Register, TextProps, Timer } from 'claude-code'
+import type {
+  ElementConstructor,
+  EngineInterface,
+  HttpResponse,
+  PluginOptions,
+  Register,
+  TextProps,
+  Timer,
+} from 'claude-code'
 import type {
   BandLook,
   BandSlot,
@@ -35,6 +43,20 @@ import {
   scoresOf,
   wordsOf,
 } from './grade'
+import type { DataAsk } from './account'
+import {
+  dataAskOf,
+  deleteRouteOf,
+  deleteTextOf,
+  deleteWarning,
+  exportsDirOf,
+  exportStart,
+  exportStep,
+  exportTextOf,
+  keysAfterDelete,
+  stampOf,
+} from './account'
+import type { ExportStep } from './account'
 import type { BetaAsk } from './beta'
 import { betaAskOf, betaRouteOf, betaTextOf } from './beta'
 import { isSecret, newSecret, ulid } from './ids'
@@ -74,6 +96,7 @@ import {
   isEvents,
   isSession,
   isStream,
+  notSignedIn,
   queueAfter,
   requestOf,
   ServerDown,
@@ -85,12 +108,14 @@ import {
   targetOf,
   tokenOf,
 } from './server'
-import type { Route, Target } from './server'
+import type { Online, Route, Target } from './server'
 import { loops as isLooping, ownedLooks, ratesOf, wornLooks } from './looks'
 import type { MissionEntry } from './missions'
 import { knowsTogether, missionChip, missionsLayout, missionsViewOf, roomBeside } from './missions'
 import type { Choice } from './pane'
 import { brand, headerGap, headerOf, lookSections, otherItems, paneId, renamedNote, tabBarOf, tabOf } from './pane'
+import type { ProfileAsk } from './profile'
+import { profileAskOf, profileRouteOf, profileTextOf } from './profile'
 import type { ShopAction, ShopEntry } from './shop'
 import { careViewOf, eggCardLayout, petCardLayout, shopLayout, shopViewOf } from './shop'
 import type { SigilChoice } from './sigils'
@@ -1093,22 +1118,106 @@ const logout = async ($: EngineInterface): Promise<string> => {
 }
 
 /**
- * `/pathofdev beta list|add|remove`: the online server's beta list, which only its admins keep. The ask goes to the
- * origin the mod plays on, with the game token, and the server's answer is shown as it comes.
+ * An ask of the online server's alone, from the prompt: on any other server the player hears that it `has` none of
+ * it; signed out, that they are, with nothing sent. Else the ask goes to the origin the mod plays on, with the game
+ * token, and `textOf` reads the answer (null: none came); a 401 there signs the band out, as any request's does.
  */
-const keepBeta = async ($: EngineInterface, ask: BetaAsk): Promise<string> => {
-  if (target.kind !== 'online')
-    return (
-      `You play on ${placeOf(target, named)}, which has no beta list. /pathofdev server online switches to the ` +
-      'online server.'
-    )
-  const to = target
-  const token = tokenOf(await $.store.get(storeKey(to, 'token')))
-  if (token === null) return `You're not signed in to ${to.origin}: /pathofdev login signs you in.`
-  const { url, init } = requestOf(to, betaRouteOf(ask), { socketPath: '', token })
+const askOnline = async (
+  $: EngineInterface,
+  has: string,
+  route: Route,
+  textOf: (response: HttpResponse | null, to: Online) => string | Promise<string>,
+): Promise<string> => {
+  const online = await signedInOnline($, has)
+  if (typeof online === 'string') return online
+  return textOf(await sendOnline($, online, route), online.to)
+}
+
+/** Sends `route` to the online target with its token: null when no answer came; a 401 signs the band out. */
+const sendOnline = async (
+  $: EngineInterface,
+  { to, token }: { to: Online; token: string },
+  route: Route,
+): Promise<HttpResponse | null> => {
+  const { url, init } = requestOf(to, route, { socketPath: '', token })
   const response = await $.http.fetch(url, init).catch(() => null)
   if (response !== null && failureOf(response) === 'signedOut') noteSignedOut($, to, true)
-  return betaTextOf(ask, response, to.origin)
+  return response
+}
+
+/** The online target and the game token held for it, or what the player hears instead (see `askOnline`). */
+const signedInOnline = async ($: EngineInterface, has: string): Promise<{ to: Online; token: string } | string> => {
+  if (target.kind !== 'online')
+    return `You play on ${placeOf(target, named)}, which has ${has}. /pathofdev server online switches to the online server.`
+  const to = target
+  const token = tokenOf(await $.store.get(storeKey(to, 'token')))
+  return token === null ? notSignedIn(to.origin) : { to, token }
+}
+
+/** `/pathofdev beta list|add|remove`: the online server's beta list, which only its admins keep. */
+const keepBeta = ($: EngineInterface, ask: BetaAsk): Promise<string> =>
+  askOnline($, 'no beta list', betaRouteOf(ask), (response, to) => betaTextOf(ask, response, to.origin))
+
+/** `/pathofdev profile …`: what the player's public page shows, on the online server. */
+const keepProfile = ($: EngineInterface, ask: ProfileAsk): Promise<string> =>
+  askOnline($, 'no public profile', profileRouteOf(ask), (response, to) => profileTextOf(ask, response, to.origin))
+
+/** What a local server has instead of an account to export or delete. */
+const noAccount = 'no account to export or delete: its save is on your own disk'
+
+/**
+ * `/pathofdev account export`: runs the export's steps (account.ts) against the online origin, writing each file as
+ * its answer comes, until it ends; a file that can't be written stops it there.
+ */
+const exportAccount = async ($: EngineInterface): Promise<string> => {
+  const online = await signedInOnline($, noAccount)
+  if (typeof online === 'string') return online
+  const base = exportsDirOf(named, await $.env.get('HOME'))
+  if (base === null) return 'There is no home folder to export to: set PATHOFDEV_HOME to the folder exports go under.'
+  const run = async (step: ExportStep): Promise<string> => {
+    for (const { path, text } of step.writes) {
+      const isWritten = await $.fs.write(path, text).then(() => true, () => false)
+      if (!isWritten) return `The export stopped part way: ${path} could not be written, so complete.json is missing.`
+    }
+    if (step.ask === null) return exportTextOf(step.state)
+    return run(exportStep(step.state, await sendOnline($, online, step.ask), online.to.origin))
+  }
+  return run(exportStart(base, stampOf(await $.clock.now())))
+}
+
+/**
+ * `/pathofdev account delete <login>`: the server deletes the account when the login is the account's. Once it says
+ * so, the mod forgets what it kept for that server and is signed out; a 401 says only the token is dead; with no
+ * answer it keeps everything, to run it again.
+ */
+const deleteAccount = async ($: EngineInterface, ask: Extract<DataAsk, { kind: 'delete' }>): Promise<string> => {
+  const online = await signedInOnline($, noAccount)
+  if (typeof online === 'string') return online
+  const { login } = ask
+  if (login === null) return deleteWarning
+  const { to, token } = online
+  const response = await sendOnline($, online, deleteRouteOf(login))
+  // Only the token this delete was sent with: a sign-in that landed meanwhile stays.
+  const forgetToken = async () => {
+    const key = storeKey(to, 'token')
+    if (tokenOf(await $.store.get(key)) === token) await $.store.delete(key)
+  }
+  if (response !== null && response.ok) {
+    const queueKey = storeKey(to, 'queue')
+    for (const key of keysAfterDelete(to.origin)) {
+      if (key === storeKey(to, 'token')) await forgetToken()
+      // Through the queue's own lock, so an enqueue in flight never writes the old queue back.
+      else if (key === queueKey) await changeQueue(() => $.store.delete(key))
+      else await $.store.delete(key)
+    }
+    if (target === to) {
+      isSignedOut = true
+      await update($, link, () => 'offline')
+    }
+  } else if (response?.status === 401) {
+    await forgetToken()
+  }
+  return deleteTextOf(response, to.origin)
 }
 
 /** A dev button in the pane: a toast says why, when it did nothing. */
@@ -1263,8 +1372,8 @@ const draftStep = async ($: EngineInterface, change: Partial<Pick<Wizard, 'name'
 }
 
 /**
- * What `/pathofdev <args>` answers: the pane opened, the welcome, a sign-in or out, the beta list, the servers' answer,
- * or dev mode's to `dev …`.
+ * What `/pathofdev <args>` answers: the pane opened, the welcome, a sign-in or out, the beta list, the profile, the
+ * account's export or delete, the servers' answer, or dev mode's to `dev …`.
  */
 const runCommandLine = async ($: EngineInterface, args: string): Promise<string> => {
   if (args.trim() === 'welcome') return openWelcome($)
@@ -1272,6 +1381,13 @@ const runCommandLine = async ($: EngineInterface, args: string): Promise<string>
   if (account !== null) return typeof account === 'string' ? account : account.kind === 'login' ? login($) : logout($)
   const beta = betaAskOf(args)
   if (beta !== null) return typeof beta === 'string' ? beta : keepBeta($, beta)
+  const profile = profileAskOf(args)
+  if (profile !== null) return typeof profile === 'string' ? profile : keepProfile($, profile)
+  const data = dataAskOf(args)
+  if (data !== null) {
+    if (typeof data === 'string') return data
+    return data.kind === 'export' ? exportAccount($) : deleteAccount($, data)
+  }
   const servers = serverAskOf(args)
   if (servers !== null) {
     if (typeof servers === 'string') return servers
@@ -1407,7 +1523,8 @@ export const register: Register = (on, options) => {
         description:
           'Open the Path of Dev pane: your inventory, the shop, stats and missions (`welcome` for the first-run ' +
           'guide, `server` to say or switch which server you play on, `login` and `logout` for the online server, ' +
-          '`beta list|add|remove` for its admins, `dev …` on the dev server)',
+          '`profile public|private|hide|show` for your public page there, `account export|delete` for your data ' +
+          'there, `beta list|add|remove` for its admins, `dev …` on the dev server)',
       })
       .catch(() => undefined)
     await $.command

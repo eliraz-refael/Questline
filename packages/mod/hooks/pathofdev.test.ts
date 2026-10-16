@@ -52,6 +52,8 @@ type Accounts = {
   logout?: number
   /** The beta list: the tokens of the server's admins, and the logins added, by their lower case. */
   beta?: { admins: Set<string>; logins: Map<string, string> }
+  /** The player's account: their privacy, the export's parts and their rows, and whether it was deleted. */
+  account?: { isPublic: boolean; hidden: Array<string>; parts: Record<string, number>; deleted: boolean; deleteStatus?: number }
 }
 
 /** What the player owns in the fake server: entries, their definitions, and what is equipped where. */
@@ -346,6 +348,40 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
         return reply(200, { signedOut: true })
       }
       if (!accounts.tokens.has(token)) return reply(401, signInAgain)
+      const account = accounts.account
+      if (account !== undefined && path.startsWith('/v1/account/')) {
+        const sections = ['pet', 'streak', 'stats']
+        const settings = () => ({ isPublic: account.isPublic, hidden: sections.filter((one) => account.hidden.includes(one)), sections, url: null })
+        if (path === '/v1/account/profile' && method === 'GET') return reply(200, settings())
+        if (path === '/v1/account/profile') {
+          const kind = isRecord(body) ? body['kind'] : undefined
+          const section = isRecord(body) ? body['section'] : undefined
+          if (kind === 'public' || kind === 'private') account.isPublic = kind === 'public'
+          else if ((kind === 'hide' || kind === 'show') && typeof section === 'string' && sections.includes(section)) {
+            account.hidden = kind === 'hide' ? [...account.hidden, section] : account.hidden.filter((one) => one !== section)
+          } else return reply(400, { _tag: 'InvalidSection', message: 'That names no section to hide or show: the sections are pet, streak, stats' })
+          return reply(200, settings())
+        }
+        if (path === '/v1/account/export') {
+          const parts = Object.entries(account.parts).map(([part, rows]) => ({ part, rows, upto: part === 'sessions' ? null : 9 }))
+          return reply(200, { format: 1, exportedAt: '2026-10-09T08:00:00.000Z', player: { github_login: accounts.login }, state: {}, tokens: [], onBetaList: true, parts })
+        }
+        if (path.startsWith('/v1/account/export/')) {
+          const part = path.slice('/v1/account/export/'.length)
+          const after = Number(new URLSearchParams(new URL(e.url).search).get('after') ?? '0')
+          const rows = Array.from({ length: Math.min(2, (account.parts[part] ?? 0) - after) }, (_, i) => ({ n: after + i + 1 }))
+          const end = after + rows.length
+          return reply(200, { rows, next: end < (account.parts[part] ?? 0) ? String(end) : null })
+        }
+        if (path === '/v1/account/delete') {
+          if (account.deleteStatus !== undefined) return reply(account.deleteStatus, {})
+          if (!isRecord(body) || String(body['login']).toLowerCase() !== accounts.login.toLowerCase())
+            return reply(400, { _tag: 'ConfirmMismatch', message: "That isn't this account's GitHub login: type the login you sign in with to delete it. Nothing was deleted" })
+          account.deleted = true
+          accounts.tokens.clear()
+          return reply(200, { deleted: true, onBetaList: true })
+        }
+      }
       const beta = accounts.beta
       if (beta !== undefined && path.startsWith('/v1/beta')) {
         if (!beta.admins.has(token))
@@ -4264,5 +4300,137 @@ describe('the beta list', () => {
       'You play on your own save (~/.pathofdev), which has no beta list. /pathofdev server online switches to the ' +
         'online server.',
     )
+  })
+})
+
+describe('the account', () => {
+  const run = ($: Parameters<TestBody>[0], args: string) =>
+    $.command.run({ command: 'pathofdev', args, origin: composer, presentation })
+  const origin = 'https://api.pathof.dev'
+  const t0 = Date.parse('2026-10-09T08:00:00Z')
+
+  /** A session on the online server, holding `token` (none when null), with the account `account`. */
+  const online = async ($: Parameters<TestBody>[0], on: On, token: string | null, account: NonNullable<Accounts['account']>) => {
+    const clock = mock.clock(on, { now: t0 })
+    const kept = new Map<string, unknown>([[`explored@${origin}`, ['acme/widgets']], ['queue', ['local-event']]])
+    if (token !== null) kept.set(`token@${origin}`, token)
+    on('store.get', ($, e) => ({ value: kept.get(e.key) }))
+    on('store.set', ($, e) => {
+      kept.set(e.key, e.value)
+      return { value: undefined }
+    })
+    on('store.delete', ($, e) => {
+      kept.delete(e.key)
+      return { value: undefined }
+    })
+    const written: Array<{ path: string; text: string }> = []
+    on('fs.write', ($, e) => {
+      written.push({ path: e.path, text: e.text })
+      return { value: undefined }
+    })
+    mock.env(on, { HOME: '/home/player' })
+    const accounts: Accounts = { tokens: new Set(['pod_player']), githubToken: 'gho_unused', issue: 'pod_issued', login: 'Octocat', account }
+    const server = fakeServer(on, clock, { level: 4, accounts })
+    await $.session.start(start)
+    await until(clock, async () => /offline|Lv 4/.test((await band($).catch(() => ({ all: '' }))).all))
+    const asked = () => server.sent.filter((one) => one.path.startsWith('/v1/account'))
+    return { clock, kept, written, accounts, asked, ...server }
+  }
+  const fresh = (): NonNullable<Accounts['account']> => ({ isPublic: false, hidden: [], parts: { events: 3, sessions: 1 }, deleted: false })
+
+  test('shows the profile, makes it public, and hides and shows a section', { options: { server: 'online' } }, async ($, on) => {
+    const { asked } = await online($, on, 'pod_player', fresh())
+    expect((await run($, 'profile')).text).toBe(
+      'Your profile is private: nobody sees it. /pathofdev profile public shows your level, pet, streak and stats. ' +
+        'Sections: pet, streak, stats.',
+    )
+    expect((await run($, 'profile public')).text).toBe(
+      'Your profile is public: your page shows your level, pet, streak and stats. Sections: pet, streak, stats.',
+    )
+    expect((await run($, 'profile hide pet')).text).toBe(
+      'Your profile is public: your page shows your level, streak and stats. Hidden: pet. Sections: pet, streak, stats.',
+    )
+    expect((await run($, 'profile hide hat')).text).toBe(
+      'That names no section to hide or show: the sections are pet, streak, stats. Your public profile, on the online ' +
+        'server: /pathofdev profile | public | private | hide <section> | show <section>.',
+    )
+    expect(asked().map((one) => [one.method, one.body, one.authorization])).toEqual([
+      ['GET', undefined, 'Bearer pod_player'],
+      ['POST', { kind: 'public' }, 'Bearer pod_player'],
+      ['POST', { kind: 'hide', section: 'pet' }, 'Bearer pod_player'],
+      ['POST', { kind: 'hide', section: 'hat' }, 'Bearer pod_player'],
+    ])
+  })
+
+  test('exports every part a page at a time under ~/.pathofdev/exports, complete.json last', { options: { server: 'online' } }, async ($, on) => {
+    const { written, asked } = await online($, on, 'pod_player', fresh())
+    const dir = '/home/player/.pathofdev/exports/Octocat-2026-10-09T08-00-00Z'
+    expect((await run($, 'account export')).text).toBe(`Exported your account to ${dir}: 5 files, complete.json last.`)
+    expect(written.map((one) => one.path)).toEqual(
+      ['head.json', 'events-0001.json', 'events-0002.json', 'sessions-0001.json', 'complete.json'].map((name) => `${dir}/${name}`),
+    )
+    expect(JSON.parse(written.at(-1)!.text)).toEqual({
+      parts: [{ part: 'events', rows: 3, atHead: 3 }, { part: 'sessions', rows: 1, atHead: 1 }],
+    })
+    expect(asked().map((one) => `${one.path}${one.query}`)).toEqual([
+      '/v1/account/export',
+      '/v1/account/export/events?upto=9',
+      '/v1/account/export/events?after=2&upto=9',
+      '/v1/account/export/sessions',
+    ])
+  })
+
+  test('a delete with no login only warns, and a wrong one deletes nothing', { options: { server: 'online' } }, async ($, on) => {
+    const { asked, kept, accounts } = await online($, on, 'pod_player', fresh())
+    expect((await run($, 'account delete')).text).toBe(
+      'This deletes your account on the online server for good: your character, pet, items and history. Export it ' +
+        'first with /pathofdev account export. To go on, type /pathofdev account delete <your-github-login>.',
+    )
+    expect(asked()).toEqual([])
+    expect((await run($, 'account delete mona')).text).toBe(
+      "That isn't this account's GitHub login: type the login you sign in with to delete it. Nothing was deleted.",
+    )
+    expect(accounts.account?.deleted).toBe(false)
+    expect(kept.get(`token@${origin}`)).toBe('pod_player')
+  })
+
+  test("a delete forgets this server's token, queue and explored repos, and keeps the local save's", { options: { server: 'online' } }, async ($, on) => {
+    const { kept, accounts } = await online($, on, 'pod_player', fresh())
+    kept.set(`queue@${origin}`, ['online-event'])
+    expect((await run($, 'account delete octocat')).text).toBe(
+      `Your account on ${origin} is deleted, and this mod is signed out of it. /pathofdev login starts a new one, if you like.`,
+    )
+    expect(accounts.account?.deleted).toBe(true)
+    expect([...kept.keys()].filter((key) => key.endsWith(`@${origin}`))).toEqual([])
+    expect(kept.get('queue')).toEqual(['local-event'])
+  })
+
+  test('a delete with no clear answer keeps everything, to run again', { options: { server: 'online' } }, async ($, on) => {
+    const { kept } = await online($, on, 'pod_player', { ...fresh(), deleteStatus: 502 })
+    expect((await run($, 'account delete octocat')).text).toBe(
+      `The server at ${origin} didn't say whether the account was deleted: run it again, or sign in to check.`,
+    )
+    expect(kept.get(`token@${origin}`)).toBe('pod_player')
+    expect(kept.get(`explored@${origin}`)).toEqual(['acme/widgets'])
+  })
+
+  test('signed out, each says to sign in, and asks the server nothing', { options: { server: 'online' } }, async ($, on) => {
+    const { asked } = await online($, on, null, fresh())
+    for (const args of ['profile', 'account export', 'account delete octocat'])
+      expect((await run($, args)).text).toBe(`You're not signed in to ${origin}: /pathofdev login signs you in.`)
+    expect(asked()).toEqual([])
+  })
+
+  test('on a local server, there is no profile or account to keep', async ($, on) => {
+    await streaming($, on, ownedOf())
+    expect((await run($, 'profile public')).text).toBe(
+      'You play on your own save (~/.pathofdev), which has no public profile. /pathofdev server online switches to ' +
+        'the online server.',
+    )
+    for (const args of ['account export', 'account delete octocat'])
+      expect((await run($, args)).text).toBe(
+        'You play on your own save (~/.pathofdev), which has no account to export or delete: its save is on your own ' +
+          'disk. /pathofdev server online switches to the online server.',
+      )
   })
 })
