@@ -1,4 +1,5 @@
 import { NodeHttpServer } from "@effect/platform-node"
+import { AccountData } from "./account.ts"
 import { Config, ConfigProvider, Data, Duration, Effect, Layer, Redacted } from "effect"
 import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/http"
 import { SqlClient } from "effect/sql"
@@ -19,7 +20,7 @@ import { core } from "./services.ts"
 //
 //   env ─▶ publicConfigOf ─▶ PublicConfig (a var missing or bad stops the boot, named)
 //     DATABASE_URL ──────────────▶ core("online"), dev mode off: Postgres, migrated; Players, PlayerWriter, Presence
-//     ALLOWED_LOGINS ────────────▶ accounts: Tokens, Allowlist (beside the beta_logins table), BearerAuth
+//     ALLOWED_LOGINS ────────────▶ accounts: Tokens, Allowlist (beside the beta_logins table), BearerAuth, AccountAuth
 //     ADMIN_GITHUB_IDS ──────────▶   the admins, by GitHub user id: always in, and they keep the beta list
 //     GITHUB_CLIENT_ID, _SECRET ─▶ GitHub: the token check, asked as the app
 //       └─▶ publicServices ─▶ PublicRoutes (OnlineRoutes, Healthz, RetryAfter) ─▶ node http on PORT
@@ -31,8 +32,11 @@ import { core } from "./services.ts"
 //     ├─ POST /v1/auth/github ──────▶ GitHub.user ─▶ Allowlist ─▶ Players.findOrCreate ─▶ Tokens.mint
 //     ├─ POST /v1/auth/logout ──────▶ Tokens.revoke
 //     ├─ /v1/beta ──────────────────▶ BearerAuth ─▶ an admin? ─▶ Allowlist: the table, and its copy in memory
+//     ├─ /v1/account/* ─────────────▶ AccountAuth (token ─▶ player; no allowlist) ─▶ AccountHandlers ─▶ AccountData:
+//     │                                 privacy, the export's head and pages, the delete (one transaction)
 //     └─ /v1/sessions, /v1/events, /v1/commands, /v1/stream
 //          └─▶ BearerAuth (token ─▶ player ─▶ allowlist) ─▶ ModHandlers ─▶ PlayerWriter (version guard) ─▶ Postgres
+//                 a player deleted under the request ─▶ PlayerGone ─▶ 401
 //   every 503 leaves with Retry-After
 //
 // The log has each response's method, path (no query) and status, never a header, a body or a client address: the
@@ -168,7 +172,7 @@ export const RetryAfter = HttpRouter.middleware(
   { global: true },
 )
 
-/** The public server's routes: the mod's, signing in and out, the beta list, and the health check. */
+/** The public server's routes: the mod's, signing in and out, the beta list, the account, and the health check. */
 export const PublicRoutes = Layer.mergeAll(OnlineRoutes, Healthz, RetryAfter)
 
 /**
@@ -176,7 +180,7 @@ export const PublicRoutes = Layer.mergeAll(OnlineRoutes, Healthz, RetryAfter)
  * accounts, on the logins and admins `beta` names and the table; and `github`, which checks a sign-in.
  */
 export const publicServices = <E>(database: Database, beta: BetaConfig, github: Layer.Layer<GitHub, E>) =>
-  Layer.mergeAll(accounts(beta), github).pipe(Layer.provideMerge(core("online", database)))
+  Layer.mergeAll(accounts(beta), AccountData.layer, github).pipe(Layer.provideMerge(core("online", database)))
 
 /** The public server, listening on `config.port` until the scope closes. */
 export const publicServer = (config: PublicConfig) =>

@@ -2,9 +2,10 @@ import type { ServerBehind, SystemEvent } from "@pathofdev/schema"
 import { Context, Duration, Effect, Layer, Option, Schema, Semaphore } from "effect"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
+import { isForeignKeyViolation } from "./db.ts"
 import { nowIso } from "./game.ts"
 import { ServerRandom } from "./random.ts"
-import { PlayerWriter } from "./writer.ts"
+import { PlayerGone, PlayerWriter } from "./writer.ts"
 
 // Presence: which of a player's sessions are live. A mod that keeps its session live opens it with `POST /v1/sessions`,
 // names it on every stream poll (the heartbeat) and closes it with `DELETE /v1/sessions/{id}` when the session ends.
@@ -12,14 +13,19 @@ import { PlayerWriter } from "./writer.ts"
 // reaches the engine are the changes, as inputs through the write path: `session.opened`, and `session.closed` when
 // the mod closes it (`ended`) or the sweep finds it unheard for too long (`lapsed`, stamped at its last-heard time).
 // A save that a newer build of the server wrote is left alone: the write path's guard is asked before the table
-// changes, so the session stays as it was too.
+// changes, so the session stays as it was too. A player deleted meanwhile is `PlayerGone`, from the guard, or from the
+// insert of a session's row, which runs outside the writer's lock and finds no player to name:
+//
+//   open ─▶ guard ── PlayerGone ─────────────────────────────▶ 401
+//            └─▶ INSERT INTO sessions ── no player (23503) ───▶ PlayerGone ─▶ 401
+//                 └─▶ record session.opened ── PlayerGone ────▶ 401
 
 /** A session not heard from for this long has gone: a killed terminal never sends its end. */
 export const lapseAfter = Duration.minutes(2)
 /** How often the sweep looks for sessions that lapsed. */
 export const sweepEvery = Duration.seconds(30)
 
-type Failure = SqlError | Schema.SchemaError | ServerBehind
+type Failure = SqlError | Schema.SchemaError | ServerBehind | PlayerGone
 
 const Row = Schema.Struct({
   player_id: Schema.String,
@@ -92,7 +98,9 @@ const make = Effect.gen(function* () {
           INSERT INTO sessions (
             player_id, session_id, client_version, opened_at, last_heard_at, closed_at, close_reason
           ) VALUES (${playerId}, ${sessionId}, ${clientVersion}, ${now}, ${now}, NULL, NULL)
-        `
+        `.pipe(
+          Effect.catchIf(isForeignKeyViolation, () => Effect.fail(new PlayerGone({ playerId }))),
+        )
       } else if (row.value.close_reason === "lapsed") {
         yield* sql`
           UPDATE sessions
@@ -141,9 +149,10 @@ const make = Effect.gen(function* () {
       const now = yield* nowIso
       return yield* lock.withPermits(1)(
         Effect.gen(function* () {
+          // The guard first: a player deleted meanwhile is told so, even for a session the delete took with them.
+          yield* writer.guard(playerId)
           const row = yield* find({ playerId, sessionId })
           if (Option.isNone(row) || row.value.close_reason === "ended") return false
-          yield* writer.guard(playerId)
           // A lapsed one was closed already, at its last-heard time: it is only marked ended, so it never reopens.
           yield* sql`
             UPDATE sessions
@@ -172,13 +181,14 @@ const make = Effect.gen(function* () {
             at: row.last_heard_at,
           }
           // A save a newer build wrote is that build's to close: the session stays open until one runs again. One
-          // written between the guard and the record fails only this row, never the rest of the sweep.
+          // written between the guard and the record fails only this row, never the rest of the sweep; so does a
+          // player deleted since the look, whose rows are gone.
           const isClosed = yield* Effect.gen(function* () {
             yield* writer.guard(row.player_id)
             if (!(yield* lapse(row).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) return false
             yield* record(row.player_id, now, event)
             return true
-          }).pipe(Effect.catchTag("ServerBehind", () => Effect.succeed(false)))
+          }).pipe(Effect.catchTags({ ServerBehind: () => Effect.succeed(false), PlayerGone: () => Effect.succeed(false) }))
           if (isClosed) closed += 1
         }
         return closed

@@ -7,6 +7,7 @@ import type { SqlError } from "effect/sql/SqlError"
 import { catalog, DevMode, minClientVersion, nowIso, rules } from "./game.ts"
 import { QuestPacks } from "./quest-packs.ts"
 import { ServerRandom } from "./random.ts"
+import { PlayerGone } from "./writer.ts"
 
 // Who the players are, and reads of a player that never change one: the snapshot the mod draws, and the stream after
 // a cursor. A player is made here, with their state; every later write goes through the PlayerWriter. Which player a
@@ -56,9 +57,10 @@ export class Players extends Context.Service<
     readonly findOrCreate: (
       player: NewPlayer & { readonly github: GithubIdentity },
     ) => Effect.Effect<PlayerType, Failure>
-    readonly snapshot: (player: PlayerType) => Effect.Effect<Snapshot, Failure>
-    /** The stream after `after`, answered from what is committed now. */
-    readonly streamAfter: (playerId: string, after: number) => Effect.Effect<StreamResponse, Failure>
+    /** What the mod draws of the player; `PlayerGone` once they were deleted. */
+    readonly snapshot: (player: PlayerType) => Effect.Effect<Snapshot, Failure | PlayerGone>
+    /** The stream after `after`, answered from what is committed now; `PlayerGone` once the player was deleted. */
+    readonly streamAfter: (playerId: string, after: number) => Effect.Effect<StreamResponse, Failure | PlayerGone>
   }
 >()("pathofdev/Players") {
   /** The players of a `kind` server. */
@@ -95,11 +97,17 @@ const make = (kind: ServerKind) =>
       execute: (userId) => sql`SELECT ${columns} FROM players WHERE github_user_id = ${userId}`,
     })
 
-    const head = SqlSchema.findOne({
+    const readHead = SqlSchema.findOneOption({
       Request: Schema.String,
       Result: Schema.Struct({ state: PlayerState, server_seq: Count, stream_epoch: Count }),
       execute: (playerId) => sql`SELECT state, server_seq, stream_epoch FROM player_state WHERE player_id = ${playerId}`,
     })
+
+    const head = (playerId: string) =>
+      Effect.flatMap(
+        Effect.orDie(readHead(playerId)),
+        Option.match({ onNone: () => Effect.fail(new PlayerGone({ playerId })), onSome: Effect.succeed }),
+      )
 
     const eventsAfter = SqlSchema.findAll({
       Request: Schema.Struct({ playerId: Schema.String, after: Count }),
@@ -191,7 +199,7 @@ const make = (kind: ServerKind) =>
 
     const snapshot = (player: PlayerType) =>
       Effect.gen(function* () {
-        const row = yield* head(player.id).pipe(Effect.orDie)
+        const row = yield* head(player.id)
         const now = yield* nowIso
         return project(
           row.state,
@@ -208,7 +216,7 @@ const make = (kind: ServerKind) =>
 
     const streamAfter = (playerId: string, after: number) =>
       Effect.gen(function* () {
-        const row = yield* head(playerId).pipe(Effect.orDie)
+        const row = yield* head(playerId)
         const base = { rulesVersion: rules.version, minClientVersion }
         // Ahead of this stream (another server, a reset) or too far behind: reload the snapshot.
         if (after > row.server_seq || row.server_seq - after > maxBehind) {

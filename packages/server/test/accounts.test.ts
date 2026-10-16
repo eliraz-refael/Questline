@@ -5,6 +5,8 @@ import { SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
 import type { GithubUser } from "../src/index.ts"
 import {
+  AccountAuth,
+  AccountData,
   Allowlist,
   BearerAuth,
   bytesOf,
@@ -52,7 +54,7 @@ const withAccounts = (accounts: ReadonlyMap<string, GithubUser>, allowed: string
     effect.pipe(
       Effect.provide(
         testOnlineServices(
-          BearerAuth.pipe(
+          Layer.mergeAll(BearerAuth, AccountAuth, AccountData.layer).pipe(
             Layer.provideMerge(Tokens.layer),
             Layer.provideMerge(Allowlist.layer({ allowedLogins: allowed, adminGithubIds: [] })),
             Layer.provideMerge(FakeGitHub(accounts)),
@@ -275,7 +277,19 @@ describe("signing in", () => {
 })
 
 describe("a request on the public server", () => {
-  const Endpoint = Schema.Literals(["openSession", "closeSession", "sendEvents", "runCommand", "stream", "signOut"])
+  const Endpoint = Schema.Literals([
+    "openSession",
+    "closeSession",
+    "sendEvents",
+    "runCommand",
+    "stream",
+    "signOut",
+    "profileSettings",
+    "changeProfile",
+    "exportHead",
+    "exportPage",
+    "deleteAccount",
+  ])
   /** What a request may carry that names no player: no header, another scheme, a stranger, a token of nobody's. */
   const BadIdentity = Schema.Union([
     Schema.Struct({ kind: Schema.Literal("none") }),
@@ -299,6 +313,16 @@ describe("a request on the public server", () => {
         return request("/v1/stream?after=0", "GET", authorization)
       case "signOut":
         return request("/v1/auth/logout", "POST", authorization)
+      case "profileSettings":
+        return request("/v1/account/profile", "GET", authorization)
+      case "changeProfile":
+        return request("/v1/account/profile", "POST", authorization, { kind: "public" })
+      case "exportHead":
+        return request("/v1/account/export", "GET", authorization)
+      case "exportPage":
+        return request("/v1/account/export/events?after=0", "GET", authorization)
+      case "deleteAccount":
+        return request("/v1/account/delete", "POST", authorization, { login: "Ada" })
     }
   }
 

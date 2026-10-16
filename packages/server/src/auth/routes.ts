@@ -1,6 +1,7 @@
 import { OnlineApi, Unauthorized } from "@pathofdev/schema"
 import { Effect, Layer, Option, Redacted } from "effect"
 import { HttpApiBuilder, HttpApiSecurity } from "effect/http-api"
+import { AccountHandlers } from "../account.ts"
 import { ModHandlers } from "../http.ts"
 import type { GithubIdentity, NewPlayer } from "../players.ts"
 import { Players } from "../players.ts"
@@ -69,7 +70,7 @@ export const AuthHandlers = HttpApiBuilder.group(
   }),
 )
 
-/** The public server's routes with their handlers: the mod's, signing in and out, and the beta list. */
+/** The public server's routes with their handlers: the mod's, signing in and out, the beta list, and the account. */
 export const OnlineRoutes = HttpApiBuilder.layer(OnlineApi).pipe(
-  Layer.provide([ModHandlers, AuthHandlers, BetaHandlers]),
+  Layer.provide([ModHandlers, AuthHandlers, BetaHandlers, AccountHandlers]),
 )
