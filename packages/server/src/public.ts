@@ -11,6 +11,7 @@ import { adminIdsOf } from "./auth/allowlist.ts"
 import { accounts } from "./auth/middleware.ts"
 import { OnlineRoutes } from "./auth/routes.ts"
 import type { Database } from "./db.ts"
+import { defaultProfileOrigin, ProfileOrigin, ProfilePages, profileOriginOf, Profiles } from "./profile.ts"
 import { core } from "./services.ts"
 
 // The public server, api.pathof.dev: the same server build as the local one, wired for players who sign in. Postgres
@@ -23,12 +24,14 @@ import { core } from "./services.ts"
 //     ALLOWED_LOGINS ────────────▶ accounts: Tokens, Allowlist (beside the beta_logins table), BearerAuth, AccountAuth
 //     ADMIN_GITHUB_IDS ──────────▶   the admins, by GitHub user id: always in, and they keep the beta list
 //     GITHUB_CLIENT_ID, _SECRET ─▶ GitHub: the token check, asked as the app
-//       └─▶ publicServices ─▶ PublicRoutes (OnlineRoutes, Healthz, RetryAfter) ─▶ node http on PORT
+//     PROFILE_ORIGIN ────────────▶ where the public pages live: https://pathof.dev/u/<login> unless it says otherwise
+//       └─▶ publicServices ─▶ PublicRoutes (OnlineRoutes, ProfilePages, Healthz, RetryAfter) ─▶ node http on PORT
 //
-// A request, from the mod over HTTPS:
+// A request, from the mod or a browser over HTTPS:
 //
-//   Cloudflare (TLS; rate rule on /v1/auth/*) ─▶ Traefik (Coolify) ─▶ :PORT ─▶ HttpRouter
+//   Cloudflare (TLS; rate rule on /v1/auth/*) ─▶ Traefik (Coolify): api.pathof.dev, and pathof.dev/u ─▶ :PORT
 //     ├─ GET  /healthz ─────────────▶ SELECT 1 ─▶ 200, or 503 while the database doesn't answer
+//     ├─ GET  /u/:login ────────────▶ ProfilePages (profile.ts): a public player's page, else the one 404; no-store
 //     ├─ POST /v1/auth/github ──────▶ GitHub.user ─▶ Allowlist ─▶ Players.findOrCreate ─▶ Tokens.mint
 //     ├─ POST /v1/auth/logout ──────▶ Tokens.revoke
 //     ├─ /v1/beta ──────────────────▶ BearerAuth ─▶ an admin? ─▶ Allowlist: the table, and its copy in memory
@@ -55,6 +58,8 @@ export interface PublicConfig {
   readonly port: number
   /** Path of Dev's OAuth app, which the server checks every GitHub token was issued to. */
   readonly github: GitHubApp
+  /** Where the public pages live, from `PROFILE_ORIGIN`: `${profileOrigin}/u/<login>`. */
+  readonly profileOrigin: string
 }
 
 /** The env vars the public server reads, by name. */
@@ -65,6 +70,7 @@ export type PublicVar =
   | "PORT"
   | "GITHUB_CLIENT_ID"
   | "GITHUB_CLIENT_SECRET"
+  | "PROFILE_ORIGIN"
 
 export const defaultPort = 3000
 
@@ -77,6 +83,8 @@ const vars = {
   PORT: Config.Port("PORT").pipe(Config.withDefault(defaultPort)),
   GITHUB_CLIENT_ID: Config.NonEmptyString("GITHUB_CLIENT_ID").pipe(Config.withDefault(publicClientId)),
   GITHUB_CLIENT_SECRET: Config.Redacted("GITHUB_CLIENT_SECRET"),
+  // Read as text, then as an origin by `profileOriginOf`.
+  PROFILE_ORIGIN: Config.String("PROFILE_ORIGIN").pipe(Config.withDefault(defaultProfileOrigin)),
 } satisfies Record<PublicVar, Config.Config<unknown>>
 
 export class BadConfig extends Data.TaggedError("BadConfig")<{
@@ -105,6 +113,8 @@ export const publicConfigOf = (env: Readonly<Record<string, string | undefined>>
     const allowedLogins = yield* read("ALLOWED_LOGINS", vars.ALLOWED_LOGINS)
     const adminGithubIds = adminIdsOf(yield* read("ADMIN_GITHUB_IDS", vars.ADMIN_GITHUB_IDS))
     if (adminGithubIds === null) return yield* new BadConfig({ variable: "ADMIN_GITHUB_IDS", isMissing: false })
+    const profileOrigin = profileOriginOf(yield* read("PROFILE_ORIGIN", vars.PROFILE_ORIGIN))
+    if (profileOrigin === null) return yield* new BadConfig({ variable: "PROFILE_ORIGIN", isMissing: false })
     const config: PublicConfig = {
       databaseUrl,
       allowedLogins,
@@ -114,6 +124,7 @@ export const publicConfigOf = (env: Readonly<Record<string, string | undefined>>
         clientId: yield* read("GITHUB_CLIENT_ID", vars.GITHUB_CLIENT_ID),
         clientSecret: yield* read("GITHUB_CLIENT_SECRET", vars.GITHUB_CLIENT_SECRET),
       },
+      profileOrigin,
     }
     return config
   })
@@ -127,6 +138,7 @@ export const publicEnvOf = (config: PublicConfig): Record<PublicVar, string> => 
   PORT: String(config.port),
   GITHUB_CLIENT_ID: config.github.clientId,
   GITHUB_CLIENT_SECRET: Redacted.value(config.github.clientSecret),
+  PROFILE_ORIGIN: config.profileOrigin,
 })
 
 /** How long the database has to answer a health check. */
@@ -172,15 +184,27 @@ export const RetryAfter = HttpRouter.middleware(
   { global: true },
 )
 
-/** The public server's routes: the mod's, signing in and out, the beta list, the account, and the health check. */
-export const PublicRoutes = Layer.mergeAll(OnlineRoutes, Healthz, RetryAfter)
+/**
+ * The public server's routes: the mod's, signing in and out, the beta list, the account, the public pages, and the
+ * health check.
+ */
+export const PublicRoutes = Layer.mergeAll(OnlineRoutes, ProfilePages, Healthz, RetryAfter)
+
+/** What the public server's services read from its settings: the beta, and where the public pages live. */
+export interface PublicSettings extends BetaConfig {
+  readonly profileOrigin: string
+}
 
 /**
  * Everything behind the public server's routes, over `database`: the core, online and never in dev mode; the beta's
- * accounts, on the logins and admins `beta` names and the table; and `github`, which checks a sign-in.
+ * accounts, on the logins and admins `settings` names and the table; the public pages, at its origin; and `github`,
+ * which checks a sign-in.
  */
-export const publicServices = <E>(database: Database, beta: BetaConfig, github: Layer.Layer<GitHub, E>) =>
-  Layer.mergeAll(accounts(beta), AccountData.layer, github).pipe(Layer.provideMerge(core("online", database)))
+export const publicServices = <E>(database: Database, settings: PublicSettings, github: Layer.Layer<GitHub, E>) =>
+  Layer.mergeAll(accounts(settings), AccountData.layer, Profiles.layer, github).pipe(
+    Layer.provideMerge(ProfileOrigin.layer(settings.profileOrigin)),
+    Layer.provideMerge(core("online", database)),
+  )
 
 /** The public server, listening on `config.port` until the scope closes. */
 export const publicServer = (config: PublicConfig) =>

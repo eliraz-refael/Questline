@@ -8,6 +8,7 @@ import {
   OnlineApi,
   patchOf,
   privacyOf,
+  profileUrlOf,
   sectionsText,
   settingsOf,
   Unauthorized,
@@ -21,6 +22,7 @@ import { Allowlist } from "./auth/allowlist.ts"
 import { nowIso } from "./game.ts"
 import { goneAsUnauthorized } from "./http.ts"
 import { StreamHub } from "./hub.ts"
+import { ProfileOrigin } from "./profile.ts"
 import { lockPlayer, PlayerGone } from "./writer.ts"
 
 // The player's own account on the public server, from the mod: what their public page shows, an export of everything
@@ -31,9 +33,9 @@ import { lockPlayer, PlayerGone } from "./writer.ts"
 // Privacy: one statement, so two machines hiding two sections at once both stick.
 //
 //   POST /v1/account/profile {kind, section?} ─▶ changeOf ── names no section ─▶ 400, "the sections are …"
-//     └─▶ UPDATE players SET profile = (profile, or {} when junk) || patchOf(change) RETURNING profile
+//     └─▶ UPDATE players SET profile = (profile, or {} when junk) || patchOf(change) RETURNING profile, github_login
 //           ├─ no row ─▶ PlayerGone ─▶ 401
-//           └─▶ privacyOf ─▶ settingsOf ─▶ 200 ProfileSettings
+//           └─▶ privacyOf ─▶ settingsOf, with the page's address (ProfileOrigin + login) ─▶ 200 ProfileSettings
 //
 // Export: a head in one transaction, then each part a page at a time. The head says how far each part goes (`upto`):
 // the append-only tables never change at or below it, so pages read later still add up to the head's counts without
@@ -270,6 +272,7 @@ export class AccountData extends Context.Service<
     AccountData,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
+      const { origin } = yield* ProfileOrigin
 
       const columnsOf = (table: PlayerTable) => sql.csv(table.exported.map((column) => sql`${sql(column)}`))
 
@@ -304,28 +307,32 @@ export class AccountData extends Context.Service<
         Effect.flatMap(jsonRows(headTableOf("player"), playerId), (rows) =>
           rows[0] === undefined ? Effect.fail(new PlayerGone({ playerId })) : Effect.succeed(parse(rows[0].json)))
 
+      /** What a players row's profile says, with the address of their page; `PlayerGone` for no row. */
+      const settingsOfRows = (playerId: string, rows: ReadonlyArray<{ profile: unknown; login: string | null }>) =>
+        rows[0] === undefined
+          ? Effect.fail(new PlayerGone({ playerId }))
+          : Effect.succeed(
+            settingsOf(privacyOf(rows[0].profile), rows[0].login === null ? null : profileUrlOf(origin, rows[0].login)),
+          )
+
       const settings = (playerId: string) =>
         Effect.flatMap(
-          sql<{ profile: unknown }>`SELECT profile FROM players WHERE id = ${playerId}`,
-          (rows) =>
-            rows[0] === undefined
-              ? Effect.fail(new PlayerGone({ playerId }))
-              : Effect.succeed(settingsOf(privacyOf(rows[0].profile), null)),
+          sql<{ profile: unknown; login: string | null }>`
+            SELECT profile, github_login AS login FROM players WHERE id = ${playerId}
+          `,
+          (rows) => settingsOfRows(playerId, rows),
         )
 
       const change = (playerId: string, patch: object) =>
         Effect.flatMap(
-          sql<{ profile: unknown }>`
+          sql<{ profile: unknown; login: string | null }>`
             UPDATE players
             SET profile = (CASE WHEN jsonb_typeof(profile) = 'object' THEN profile ELSE '{}'::jsonb END)
               || ${JSON.stringify(patch)}::jsonb
             WHERE id = ${playerId}
-            RETURNING profile
+            RETURNING profile, github_login AS login
           `,
-          (rows) =>
-            rows[0] === undefined
-              ? Effect.fail(new PlayerGone({ playerId }))
-              : Effect.succeed(settingsOf(privacyOf(rows[0].profile), null)),
+          (rows) => settingsOfRows(playerId, rows),
         )
 
       const head = (playerId: string) =>

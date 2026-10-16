@@ -30,13 +30,23 @@ Your profile is private until you make it public:
 /pathofdev profile                  # what it shows, and the sections there are
 /pathofdev profile public           # anyone can see it
 /pathofdev profile private          # nobody can
-/pathofdev profile hide <section>   # leave a section out: pet, streak or stats
+/pathofdev profile hide <section>   # leave a section out: badges, pet, streak or stats
 /pathofdev profile show <section>
 ```
 
-A public profile shows your login, character name, level, title and XP, plus each section you haven't hidden. It never
-shows your name on GitHub, your stats' command names, your items or your gold. The pages at `pathof.dev/u/<login>` go
-live in a coming release; until then the setting only says what they will show.
+Your page is at `https://pathof.dev/u/<your-github-login>`, in any case. A public profile shows your login, character
+name, level, title, prestige and XP, plus each section you haven't hidden:
+
+| Section | What it shows |
+| --- | --- |
+| `badges` | Each badge you have earned, and when |
+| `pet` | Your pet's name, species, form and mood (hidden, your level's glyph takes its place) |
+| `streak` | Your streak, your best, and your rest days left this week |
+| `stats` | Prompts graded, your average and best grade, each quality's average, your average context peak |
+
+It never shows your name on GitHub, your stats' command names, your regretted prompts, your items or your gold. A
+private page, one that was deleted and a login nobody plays under all answer the same "No profile here" page, so the
+page doesn't tell them apart. Pages are never cached: making yours private or hiding a section shows on the next view.
 
 ## Export
 

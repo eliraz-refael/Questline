@@ -40,7 +40,8 @@ profiles at pathof.dev/u/:login, deployed on Coolify behind CI. Local PGlite pla
    {githubToken, timezone}: GitHub's app token check (ours? whose?) -> allowlist -> findOrCreate -> mint game token;
    GitHub token discarded.
 2A profiles at pathof.dev/u via Traefik PathPrefix(/u) (Coolify strip-prefix OFF), spike in PR5, fallback u.pathof.dev.
-   Open: maybe move site/ into the server app later.
+   Built in PR 6b: Coolify's domain `https://pathof.dev/u` on the server app (docs/deploy.md step 6). site/ stays its
+   own static app (decided in PR 6): moving it in would tie landing-page edits to server restarts and outages.
 3A Coolify Postgres daily backups to Cloudflare R2, keep 14.
 4A game token stored in mod $.store; never log Authorization; logout revokes; document in privacy note.
 5A schema/sprites.ts = sprite source (the landing-page 14x12 pet); site copy guarded by site.test.ts; mod later gets
@@ -63,7 +64,7 @@ profiles at pathof.dev/u/:login, deployed on Coolify behind CI. Local PGlite pla
 ```
 mod (server=online, queue:online, token:online) --HTTPS+Bearer--> Cloudflare --> Traefik
   api.pathof.dev  -> public server (same build) -> Postgres 18 (Coolify) -> R2 daily
-  pathof.dev/u/*  -> public server (profiles, s-maxage=60, CF cache rule)
+  pathof.dev/u/*  -> public server (profiles, Cache-Control: no-store; no CF cache rule in v1, see TODOS.md)
   pathof.dev/*    -> static site/ (nginx)
 mod --device flow--> github.com (client_id only) ; server --POST /applications/{client_id}/token--> api.github.com
 local: mod --Unix socket--> local server (PGlite), unchanged
@@ -131,5 +132,5 @@ allowlist), writer.ts (apply branches + version guard), profile/view.ts (privacy
 local.ts single-player comments, hub.ts:5, site level path.
 
 ## Unresolved (user deferred)
-- Where site/ lives (own app vs inside the server app) — decide before PR 6's page design.
+- ~~Where site/ lives (own app vs inside the server app)~~ — decided in PR 6: its own app.
 - Dev mode in the prod build — config-off in v1; TODO to remove.

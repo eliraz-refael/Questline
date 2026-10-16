@@ -13,15 +13,16 @@ import { Predicate, Schema } from "effect"
 // The header (login, character name, level, title, glyph, XP, prestige) is the page itself: hiding it is `private`.
 
 /** The sections a player can hide or show, in the order the page draws them: the one list. */
-export const profileSections = ["pet", "streak", "stats"] as const
+export const profileSections = ["badges", "pet", "streak", "stats"] as const
 
 export const ProfileSection = Schema.Literals(profileSections)
 export type ProfileSection = typeof ProfileSection.Type
 
 /** What a section with no key in the jsonb shows: a later section may start hidden. */
-export const defaultShown: Readonly<Record<ProfileSection, boolean>> = { pet: true, streak: true, stats: true }
+export const defaultShown: Readonly<Record<ProfileSection, boolean>> = { badges: true, pet: true, streak: true, stats: true }
 
 const sectionFields = {
+  badges: Schema.optionalKey(Schema.Boolean),
   pet: Schema.optionalKey(Schema.Boolean),
   streak: Schema.optionalKey(Schema.Boolean),
   stats: Schema.optionalKey(Schema.Boolean),

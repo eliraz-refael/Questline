@@ -5,7 +5,15 @@ import { Effect, Exit, Layer, Option, Redacted, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { describe, expect } from "vitest"
 import type { GithubUser, PublicConfig, PublicVar } from "../src/index.ts"
-import { BadConfig, defaultPort, GitHub, publicClientId, publicConfigOf, publicEnvOf } from "../src/index.ts"
+import {
+  BadConfig,
+  defaultPort,
+  defaultProfileOrigin,
+  GitHub,
+  publicClientId,
+  publicConfigOf,
+  publicEnvOf,
+} from "../src/index.ts"
 import { dump, hatch, prompt, publicWebHandler, session, testPublicServices } from "./fixtures.ts"
 
 // The public server as its entry wires it: its settings from the environment, and its routes over the core, online,
@@ -29,6 +37,7 @@ const Config = Schema.Struct({
   port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
   clientId: Text,
   clientSecret: Text,
+  profileOrigin: Schema.String.check(Schema.isPattern(/^https?:\/\/[a-z][a-z0-9]{0,20}(\.[a-z]{2,6}){0,2}$/)),
 })
 
 const configOf = (drawn: typeof Config.Type): PublicConfig => ({
@@ -37,6 +46,7 @@ const configOf = (drawn: typeof Config.Type): PublicConfig => ({
   adminGithubIds: drawn.adminGithubIds,
   port: drawn.port,
   github: { clientId: drawn.clientId, clientSecret: Redacted.make(drawn.clientSecret) },
+  profileOrigin: drawn.profileOrigin,
 })
 
 /** A config with its secrets read out, so two can be compared. */
@@ -88,11 +98,26 @@ describe("the public server's settings", () => {
       delete env.PORT
       delete env.GITHUB_CLIENT_ID
       delete env.ADMIN_GITHUB_IDS
+      delete env.PROFILE_ORIGIN
       const config = yield* publicConfigOf(env)
       expect(config.port).toBe(defaultPort)
       expect(config.github.clientId).toBe(publicClientId)
       expect(config.adminGithubIds).toEqual([])
+      expect(config.profileOrigin).toBe(defaultProfileOrigin)
     }))
+
+  it.effect.prop(
+    "stop the boot on a profile origin that is not one: a path, a trailing slash, another scheme, not a URL",
+    [Config, Schema.Literals(["/u", "/", "/u/"]), Schema.Literals(["ftp://pathof.dev", "pathof.dev", "https://", "u"])],
+    ([drawn, path, junk]) =>
+      Effect.gen(function* () {
+        const env = publicEnvOf(configOf(drawn))
+        for (const bad of [`${drawn.profileOrigin}${path}`, junk]) {
+          const exit = yield* Effect.exit(publicConfigOf({ ...env, PROFILE_ORIGIN: bad }))
+          expect(exit).toEqual(Exit.fail(new BadConfig({ variable: "PROFILE_ORIGIN", isMissing: false })))
+        }
+      }),
+  )
 
   it.effect.prop(
     "read admins separated by commas or spaces, and stop the boot on one that is no GitHub user id, naming it",

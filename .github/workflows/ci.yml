@@ -120,6 +120,13 @@ jobs:
             --header 'content-type: application/json' --data '{"events":[]}' http://127.0.0.1:3000/v1/events)
           echo
           test "$status" = 401 || { echo "::error::POST /v1/events with no token answered $status"; exit 1; }
+      - name: A profile page nobody has is the 404, never cached
+        run: |
+          headers=$(curl --silent --output /dev/null --dump-header - http://127.0.0.1:3000/u/nobody)
+          echo "$headers"
+          echo "$headers" | grep --quiet '^HTTP/1.1 404' || { echo "::error::/u/nobody did not answer 404"; exit 1; }
+          echo "$headers" | grep --quiet --ignore-case '^cache-control: no-store' || { echo "::error::/u/nobody is cacheable"; exit 1; }
+          echo "$headers" | grep --quiet --ignore-case '^content-type: text/html' || { echo "::error::/u/nobody is not a page"; exit 1; }
       - name: The image's own health check passes
         run: |
           # Docker runs the first check one interval (30 seconds) after the start.
