@@ -116,11 +116,8 @@ export interface EventsRequest extends Schema.Schema.Type<typeof EventsRequest> 
 export const EventResult = Schema.Struct({
   id: Schema.String,
   status: Schema.Literals(["accepted", "duplicate", "rejected"]),
-  /**
-   * unknown_type stays queued in the mod for a newer server. before_account: it happened before the account it was
-   * sent to was made, as another machine's queue does after the account was deleted and made again.
-   */
-  reason: Schema.optionalKey(Schema.Literals(["invalid", "unknown_type", "too_old", "before_account", "internal"])),
+  /** unknown_type stays queued in the mod for a newer server. */
+  reason: Schema.optionalKey(Schema.Literals(["invalid", "unknown_type", "too_old", "internal"])),
   /** duplicate: the id of the event it repeats. */
   original: Schema.optionalKey(Ulid),
 })

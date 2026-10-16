@@ -123,15 +123,15 @@ describe('/pathofdev account', () => {
     if (response === null || response.status >= 500) expect(text).toContain("didn't say whether")
   })
 
-  prop.prop("forgets only its own server's keys: the token, the queue and the explored repos", [Login, Login], ([one, other]) => {
+  prop.prop("forgets only its own server's keys: the token, the queue, the explored repos and the player", [Login, Login], ([one, other]) => {
     const target = { kind: 'online', origin: `https://${one.toLowerCase()}.test` } as const
     const keys = keysAfterDelete(target.origin)
-    expect(keys).toEqual(['token', 'queue', 'explored'].map((name) => storeKey(target, name)))
+    expect(keys).toEqual(['token', 'queue', 'explored', 'player'].map((name) => storeKey(target, name)))
     if (one.toLowerCase() !== other.toLowerCase()) {
       for (const key of keysAfterDelete(`https://${other.toLowerCase()}.test`)) expect(keys).not.toContain(key)
     }
     // The player's own local save keeps its keys.
-    for (const key of keys) expect(['token', 'queue', 'explored']).not.toContain(key)
+    for (const key of keys) expect(['token', 'queue', 'explored', 'player']).not.toContain(key)
   })
 
   prop.prop('exports under the server home or ~/.pathofdev, never the working directory', [Schema.UndefinedOr(Schema.String), Schema.UndefinedOr(Schema.String)], ([named, home]) => {

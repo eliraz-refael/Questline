@@ -12,6 +12,7 @@ import {
   minIntervalMs,
   nextPoll,
   pollAnswerOf,
+  queueAfterSignIn,
   signInOf,
   signInRequestOf,
   slowDownMs,
@@ -22,8 +23,8 @@ import { originOf } from '../hooks/server'
 import { github } from './github'
 
 // Signing in, as properties: GitHub's answers read whatever they hold, the device flow's poll only ever slows, ends
-// for good and never outlives its code, and a token goes only where it may. The recorded GitHub answers pin the
-// decoders to what GitHub really sends.
+// for good and never outlives its code, a token goes only where it may, and a queue goes only to the player it was
+// queued for. The recorded GitHub answers pin the decoders to what GitHub really sends.
 
 const decodedPoll = (text: string) => tokenAnswerOf(text)
 
@@ -109,6 +110,57 @@ describe('the decoders are total', () => {
       expect(pollAnswerOf({ status, text: raw }) === null).toBe(status >= 500 || status === 429)
     }
   })
+})
+
+/** A sign-in's answer shaped like the server's, with a token and a player id of every kind, right or wrong. */
+const Id = Schema.Union([Schema.String, Schema.Literal('01K6ZQ8W3J5V7XKQ2M4N6P8R9T'), Schema.Number, Schema.Null])
+const SignInBody = Schema.Struct({
+  token: Schema.Union([Schema.String, Schema.Literal('pod_issued'), Schema.Number]),
+  player: Schema.Union([Schema.Struct({ id: Schema.optionalKey(Id), githubLogin: Schema.optionalKey(Leaf) }), Leaf]),
+})
+
+describe('a sign-in', () => {
+  prop.prop(
+    "is signed in only with a printable token and a printable player id, and carries the id as it came",
+    [Status, SignInBody],
+    ([status, body]) => {
+      const ok = status >= 200 && status < 300
+      const signIn = signInOf({ status, ok, text: JSON.stringify(body) })
+      const player = body.player
+      const id = typeof player === 'object' && player !== null && 'id' in player ? player.id : undefined
+      const isValid =
+        typeof body.token === 'string' && /^[!-~]{1,512}$/.test(body.token) && typeof id === 'string' && /^[!-~]{1,64}$/.test(id)
+      expect(signIn.kind === 'signedIn').toBe(ok && isValid)
+      if (signIn.kind === 'signedIn') {
+        expect(signIn.playerId).toBe(id)
+        expect(signIn.token).toBe(body.token)
+        if (signIn.login !== null) expect(signIn.login).toMatch(/^[ -~]{1,64}$/)
+      }
+    },
+  )
+
+  prop.prop(
+    'keeps the queue when nobody signed in before or the same player did, and drops it for anyone else',
+    [Schema.String, Schema.String, Schema.Union([Schema.Undefined, Schema.Null, Schema.Number, Schema.Boolean])],
+    ([one, other, nobody]) => {
+      // Nobody before: a first sign-in here, or a store from before owners.
+      expect(queueAfterSignIn(nobody, one)).toBe('keep')
+      expect(queueAfterSignIn(one, one)).toBe('keep')
+      if (one !== other) expect(queueAfterSignIn(other, one)).toBe('drop')
+    },
+  )
+
+  prop.prop(
+    'over any run of sign-ins, keeps a queue only for the player who left it',
+    [Schema.Array(Schema.Literals(['a', 'b', 'c'])).check(Schema.isMinLength(1), Schema.isMaxLength(8))],
+    ([players]) => {
+      // Each sign-in stores its player as the owner; the queue survives a sign-in only within a run of one player.
+      players.reduce<string | undefined>((owner, player) => {
+        expect(queueAfterSignIn(owner, player)).toBe(owner === undefined || owner === player ? 'keep' : 'drop')
+        return player
+      }, undefined)
+    },
+  )
 })
 
 const Answer = Schema.Union([

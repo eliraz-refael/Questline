@@ -9,13 +9,11 @@ import { Predicate, Result, Schema } from "effect"
 //            │    └─ malformed, or a moment that doesn't exist ──▶ rejected invalid
 //            └─▶ occurredAt
 //                 ├─ more than 7 days before receipt ────────────▶ rejected too_old
-//                 ├─ before the account was made (`since`) ──────▶ rejected before_account
 //                 ├─ more than 5 minutes after receipt ──────────▶ admitted, pulled back to receipt + 5 minutes
 //                 └─ else ───────────────────────────────────────▶ admitted, with its natural key
 //
-// An account signed in with GitHub can be deleted and made again, which another machine's queue must not pour into:
-// its `since` is when it was made, less the same 5 minutes a client's clock may be off by. The local save is never
-// deleted, so what was queued before it was made still counts there.
+// Work queued before an account was made counts: a new player plays signed out until their first sign-in. What an
+// earlier account left in a machine's queue never comes here, as the mod drops it at a sign-in as someone else.
 
 /** An input the write path takes, with the key that makes a repeat of the same work count once. */
 export interface Admitted {
@@ -45,14 +43,8 @@ const isUnknownType = (raw: unknown): boolean =>
   typeof raw.type === "string" &&
   !clientEventTypes.some((type) => type === raw.type)
 
-/** Whether an event at `occurred` (ms) happened before an account made at `since`, past any clock's drift. */
-export const isBeforeAccount = (occurred: number, since: string): boolean => occurred < Date.parse(since) - maxAhead
-
-/**
- * Decodes one client event and fits it to the time window, as of `now`, the batch's receipt time, for an account
- * made at `since` (null: one that counts what happened before it, the local save).
- */
-export const admit = (raw: unknown, now: string, since: string | null = null): Admission => {
+/** Decodes one client event and fits it to the time window, as of `now`, the batch's receipt time. */
+export const admit = (raw: unknown, now: string): Admission => {
   const decoded = decode(raw)
   if (Result.isFailure(decoded)) {
     // An unknown type stays queued in the mod for a newer server; anything else malformed is dropped.
@@ -65,9 +57,6 @@ export const admit = (raw: unknown, now: string, since: string | null = null): A
   // The pattern lets through dates that don't exist, like month 13; those parse to NaN and would pass every check.
   if (Number.isNaN(occurred)) return { kind: "rejected", result: { id: event.id, status: "rejected", reason: "invalid" } }
   if (occurred < receipt - maxAge) return { kind: "rejected", result: { id: event.id, status: "rejected", reason: "too_old" } }
-  if (since !== null && isBeforeAccount(occurred, since)) {
-    return { kind: "rejected", result: { id: event.id, status: "rejected", reason: "before_account" } }
-  }
   const clamped: ClientEvent =
     occurred > receipt + maxAhead ? { ...event, occurredAt: new Date(receipt + maxAhead).toISOString() } : event
   return { kind: "admitted", admitted: { id: event.id, input: { kind: "client", event: clamped }, naturalKey: naturalKey(clamped) } }

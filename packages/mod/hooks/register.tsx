@@ -69,6 +69,7 @@ import {
   firstPoll,
   nextPoll,
   pollAnswerOf,
+  queueAfterSignIn,
   signInOf,
   signInRequestOf,
   timeZoneOf,
@@ -212,6 +213,8 @@ let named: string | undefined
  * nothing it brings back is shown or settled here.
  */
 let generation = 0
+/** Moves on at each sign-in that drops a queue another player left: what was read before it is theirs. */
+let ownerEpoch = 0
 /** A switch of server is under way: a second one meanwhile is turned away. */
 let isSwitching = false
 /** The online server said the player is signed out (a 401, or no token to send): the band says to sign in. */
@@ -272,11 +275,15 @@ async function call<A>(
   is: (value: unknown) => value is A,
   body?: unknown,
   method?: 'DELETE',
+  owner?: number,
 ): Promise<A> {
   const route: Route = { path, ...(body === undefined ? {} : { body }), ...(method === undefined ? {} : { method }) }
   // The target as the call set out: a switch of server during the token's read must not send this one elsewhere.
   const to = target
   const token = to.kind === 'online' ? tokenOf(await $.store.get(storeKey(to, 'token'))) : null
+  // What was read for another player (a flush's batch, as of `owner`) never goes with a token read since a sign-in
+  // as someone else: that token is theirs.
+  if (owner !== undefined && owner !== ownerEpoch) throw new ServerDown(`${path}: the player changed`)
   // With no token the online server can only answer 401: don't knock every few seconds to hear it.
   if (to.kind === 'online' && token === null) {
     noteSignedOut($, to, false)
@@ -334,7 +341,9 @@ const openSession = ($: EngineInterface) => call($, '/v1/sessions', isSession, {
 /** Closes a session, so the server stops counting it live; a server from before presence answers 404. */
 const closeSession = ($: EngineInterface, id: string) =>
   call($, `/v1/sessions/${encodeURIComponent(id)}`, isClosed, undefined, 'DELETE')
-const sendEvents = ($: EngineInterface, events: ReadonlyArray<unknown>) => call($, '/v1/events', isEvents, { events })
+/** Sends a batch read as of `owner` (see `ownerEpoch`), which a sign-in as another player since then stops. */
+const sendEvents = ($: EngineInterface, events: ReadonlyArray<unknown>, owner?: number) =>
+  call($, '/v1/events', isEvents, { events }, undefined, owner)
 const runCommand = ($: EngineInterface, command: Command) => call($, '/v1/commands', isCommand, command)
 /** Answers once the stream moves past `after`, or after 25 seconds with nothing; each poll keeps the session live. */
 const stream = ($: EngineInterface, after: number) => call($, streamPathOf(after, sessionId), isStream)
@@ -353,6 +362,9 @@ const changeQueue = <A,>(change: () => Promise<A>): Promise<A> => {
   return run
 }
 
+/** Drops the queue at `to`, through the queue's own lock, so an enqueue in flight never writes the old queue back. */
+const forgetQueue = ($: EngineInterface, to: Target) => changeQueue(() => $.store.delete(storeKey(to, 'queue')))
+
 const enqueue = ($: EngineInterface, event: ClientEvent) =>
   changeQueue(async () => {
     await $.store.set(storeKey(target, 'queue'), [...(await queued($)), event].slice(-maxQueued))
@@ -369,6 +381,7 @@ const flush = async ($: EngineInterface): Promise<void> => {
   isFlushing = true
   // The queue of the server this flush set out for: a switch of server stops it before its next batch.
   const at = generation
+  const owner = ownerEpoch
   const key = storeKey(target, 'queue')
   // What this flush has sent and must leave queued (an unknown type waits for a newer server): the next batch
   // reads past it, so a run of such events never holds back the ones behind it.
@@ -378,7 +391,7 @@ const flush = async ($: EngineInterface): Promise<void> => {
       const batch = (await queued($, key)).filter((event) => !waiting.has(idOf(event) ?? '')).slice(0, batchSize)
       if (batch.length === 0 || at !== generation) return
       // A failure throws past here, so it settles nothing: a signed-out or offline server keeps every event.
-      const done = settledBy(await sendEvents($, batch))
+      const done = settledBy(await sendEvents($, batch, owner))
       for (const event of batch) if (!done.has(idOf(event) ?? '')) waiting.add(idOf(event) ?? '')
       if (done.size > 0)
         await changeQueue(async () => {
@@ -574,12 +587,23 @@ const tickLoop = async ($: EngineInterface, rate: number) => {
   await update($, loops, loopsNow)
 }
 
+/**
+ * The player the online server answers for, kept as the queue's owner when none is: a mod from before owners signed in
+ * without keeping one, and its next sign-in would take whatever is queued for anyone's.
+ */
+const learnOwner = async ($: EngineInterface, playerId: unknown) => {
+  if (target.kind !== 'online' || typeof playerId !== 'string') return
+  const key = storeKey(target, 'player')
+  if (typeof (await $.store.get(key)) !== 'string') await $.store.set(key, playerId)
+}
+
 /** Reloads the character from the server; `fromScratch` also moves the cursor to the snapshot's. */
 const refresh = async ($: EngineInterface, fromScratch: boolean) => {
   const at = generation
   const opened = await openSession($)
   // The last server's snapshot, after a switch: the band shows only the server the mod plays on now.
   if (at !== generation) return
+  await learnOwner($, opened.snapshot.character.playerId)
   if (fromScratch) cursor = opened.snapshot.cursor
   const next = viewOf(opened.snapshot)
   // An older server's answer carries no rules: it deals in no sigils, and the pane shows none.
@@ -1041,8 +1065,9 @@ const revokeOf = (to: Target, token: string) =>
 
 /**
  * Trades the GitHub token for a game token at `origin`, the server the sign-in was started for, and drops it: kept
- * nowhere, sent nowhere else. The game token goes in the store; a sign-in turned down or unchecked leaves the sign-in
- * as it was. A token it replaces is revoked, so none is left working that nobody holds.
+ * nowhere, sent nowhere else. The game token goes in the store, with the player it is for; a sign-in turned down or
+ * unchecked leaves the sign-in as it was. A token it replaces is revoked, so none is left working that nobody holds.
+ * A queue another player left there is dropped first (`queueAfterSignIn`), before anything can send it.
  */
 const trade = async ($: EngineInterface, flow: SigningIn, githubToken: string) => {
   const { origin } = flow
@@ -1071,6 +1096,14 @@ const trade = async ($: EngineInterface, flow: SigningIn, githubToken: string) =
     return
   }
   signingIn = null
+  const ownerKey = storeKey(to, 'player')
+  if (queueAfterSignIn(await $.store.get(ownerKey), signIn.playerId) === 'drop') {
+    // A batch a flush already read is the last player's: it must not go with the token stored below.
+    ownerEpoch += 1
+    await forgetQueue($, to)
+    await $.store.delete(storeKey(to, 'explored'))
+  }
+  await $.store.set(ownerKey, signIn.playerId)
   const key = storeKey(to, 'token')
   const replaced = tokenOf(await $.store.get(key))
   await $.store.set(key, signIn.token)
@@ -1089,7 +1122,8 @@ const trade = async ($: EngineInterface, flow: SigningIn, githubToken: string) =
 /**
  * `/pathofdev logout`: the server revokes the game token and the mod forgets it; a 401 means it was gone already, so
  * the mod forgets it then too. A server that doesn't answer leaves the player signed in, to try again, rather than
- * leave a token working that nobody holds to revoke. What waits in the queue stays for the next sign-in.
+ * leave a token working that nobody holds to revoke. What waits in the queue stays for the next sign-in as the same
+ * player; a sign-in as anyone else drops it.
  */
 const logout = async ($: EngineInterface): Promise<string> => {
   const stopped = stopSignIn() ? 'The sign-in under way is stopped. ' : ''
@@ -1196,6 +1230,8 @@ const deleteAccount = async ($: EngineInterface, ask: Extract<DataAsk, { kind: '
   const { login } = ask
   if (login === null) return deleteWarning
   const { to, token } = online
+  const ownerKey = storeKey(to, 'player')
+  const owner = await $.store.get(ownerKey)
   const response = await sendOnline($, online, deleteRouteOf(login))
   // Only the token this delete was sent with: a sign-in that landed meanwhile stays.
   const forgetToken = async () => {
@@ -1203,11 +1239,12 @@ const deleteAccount = async ($: EngineInterface, ask: Extract<DataAsk, { kind: '
     if (tokenOf(await $.store.get(key)) === token) await $.store.delete(key)
   }
   if (response !== null && response.ok) {
-    const queueKey = storeKey(to, 'queue')
+    // Only what the player this delete was for left: a sign-in as someone else meanwhile keeps its queue and owner.
+    const isOwnerStill = (await $.store.get(ownerKey)) === owner
     for (const key of keysAfterDelete(to.origin)) {
       if (key === storeKey(to, 'token')) await forgetToken()
-      // Through the queue's own lock, so an enqueue in flight never writes the old queue back.
-      else if (key === queueKey) await changeQueue(() => $.store.delete(key))
+      else if (!isOwnerStill) continue
+      else if (key === storeKey(to, 'queue')) await forgetQueue($, to)
       else await $.store.delete(key)
     }
     if (target === to) {

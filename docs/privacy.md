@@ -61,8 +61,8 @@ Two things are left out: the loot seed, which would let anyone predict your drop
 ```
 
 This deletes every row of yours from the tables above, in one transaction, so it either all goes or none of it does.
-Your tokens stop working, and the mod forgets its token, its queue and its explored repos for that server. Typing your
-login is how the server knows you mean it. A wrong login deletes nothing.
+Your tokens stop working, and the mod forgets its token, its queue, its explored repos and which account it played as,
+for that server. Typing your login is how the server knows you mean it. A wrong login deletes nothing.
 
 What stays:
 

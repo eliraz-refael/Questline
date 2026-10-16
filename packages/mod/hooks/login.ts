@@ -25,10 +25,18 @@ import { argsOf, failureOf, headersOf, isRecord, originOf, parsed, printable } f
 //                            └─ access_token ────────────────────────────▶ signedIn┘
 //                                                                            │
 //   POST <origin>/v1/auth/github { githubToken, timezone }  (https, its own origin, no Authorization) ◀─┘
-//     ├─ 200 { token, player } ─▶ the game token in $.store under token@<origin>; the GitHub token is dropped
+//     ├─ 200 { token, player } ─▶ the queue's owner checked (below); the game token in $.store under token@<origin>,
+//     │                            the player's id under player@<origin>; the GitHub token is dropped
 //     ├─ 401 ───────────────────▶ refused: GitHub said no, or not in the beta; the sign-in stays as it was
 //     ├─ 503 (429/502/504) ─────▶ unavailable: GitHub or the server couldn't check it; try again, the sign-in stays as it was
 //     └─ anything else ─────────▶ unexpected
+//
+// The queue at an origin is the work of the player last signed in there. At a sign-in, before the queue is sent:
+//
+//   player@<origin> ─┬─ none (a first sign-in on this machine) ─────▶ keep: what was queued signed out is theirs
+//                    ├─ this player's id (a logout, then back in) ───▶ keep
+//                    └─ another id (another GitHub account, or the ──▶ drop the queue and explored@<origin>: they
+//                       account deleted and made again)                 were the earlier account's, not this one's
 
 /** Path of Dev's GitHub app, as the device flow names it: public, with no secret. */
 export const clientId = 'Ov23liaxznq5Qln0tRis'
@@ -228,17 +236,20 @@ export const signInRequestOf = (
 
 /** What the server made of a sign-in. */
 export type SignIn =
-  | { readonly kind: 'signedIn'; readonly token: string; readonly login: string | null }
+  | { readonly kind: 'signedIn'; readonly token: string; readonly playerId: string; readonly login: string | null }
   | { readonly kind: 'refused'; readonly message: string | null }
   | { readonly kind: 'unavailable' }
   | { readonly kind: 'unexpected'; readonly status: number }
 
-// The token rides in a header from now on: printable ASCII with no spaces, or it is no token.
+// The token rides in a header from now on: printable ASCII with no spaces, or it is no token. The player's id is
+// kept to tell whose the queue is: printable and short, or the answer is not the server's.
 const isSignIn = (value: unknown): value is SignInResponse =>
   isRecord(value) &&
   typeof value['token'] === 'string' &&
   /^[!-~]{1,512}$/.test(value['token']) &&
-  isRecord(value['player'])
+  isRecord(value['player']) &&
+  typeof value['player']['id'] === 'string' &&
+  /^[!-~]{1,64}$/.test(value['player']['id'])
 
 /** The server's answer to a sign-in, from any response: a 401 says why when its body does, in a line at most. */
 export const signInOf = (response: Pick<HttpResponse, 'ok' | 'status' | 'text'>): SignIn => {
@@ -252,5 +263,13 @@ export const signInOf = (response: Pick<HttpResponse, 'ok' | 'status' | 'text'>)
   if (failure === 'unexpected' || !isSignIn(body)) return { kind: 'unexpected', status: response.status }
   // Shown to the player in a toast: printable ASCII only, like a refusal's message.
   const login = printable(body.player.githubLogin, 64)
-  return { kind: 'signedIn', token: body.token, login: login === '' ? null : login }
+  return { kind: 'signedIn', token: body.token, playerId: body.player.id, login: login === '' ? null : login }
 }
+
+/**
+ * What a sign-in as `playerId` does to the queue at its origin, from the owner `stored` under player@<origin>: kept
+ * when nobody signed in there before (anything but a string, as a store from before owners holds) or the same player
+ * did; dropped when another player did, as their work must not count for this one.
+ */
+export const queueAfterSignIn = (stored: unknown, playerId: string): 'keep' | 'drop' =>
+  typeof stored !== 'string' || stored === playerId ? 'keep' : 'drop'

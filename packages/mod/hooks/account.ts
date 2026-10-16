@@ -46,9 +46,12 @@ export const deleteWarning =
 /** The route a delete is sent on: a POST, as it carries the login. */
 export const deleteRouteOf = (login: string): Route => ({ path: '/v1/account/delete', body: { login } })
 
-/** The keys the mod keeps for an online origin that a delete leaves nothing behind for. */
+/**
+ * The keys the mod keeps for an online origin that a delete leaves nothing behind for: the token, the queue, the
+ * repos explored, and which player it played as, so the next sign-in there is a first one.
+ */
 export const keysAfterDelete = (origin: string): ReadonlyArray<string> =>
-  ['token', 'queue', 'explored'].map((name) => `${name}@${origin}`)
+  ['token', 'queue', 'explored', 'player'].map((name) => `${name}@${origin}`)
 
 /** What the server made of a delete; `response` null: no answer at all, so it may have gone through. */
 export const deleteTextOf = (response: Pick<HttpResponse, 'ok' | 'status' | 'text'> | null, origin: string): string => {
