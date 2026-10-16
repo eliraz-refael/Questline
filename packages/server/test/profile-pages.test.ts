@@ -76,8 +76,8 @@ const recased = (text: string, flips: ReadonlyArray<boolean>) =>
 const Flips = Schema.Array(Schema.Boolean).check(Schema.isMaxLength(6))
 
 /**
- * Paths that name no page shown: a private player, one off the beta, nobody, and things that are no login at all. A
- * bare `..` never gets here: the URL resolves it before the request leaves.
+ * Paths that name no page shown: a private player, one off the beta, nobody, things that are no login at all, and
+ * deeper paths under /u. A bare `..` never gets here: the URL resolves it before the request leaves.
  */
 const Hidden = Schema.Literals([
   "bob",
@@ -91,6 +91,8 @@ const Hidden = Schema.Literals([
   "ad%C3%A9",
   "ada%20",
   "ada%2Fx",
+  "ada/extra",
+  "x/ada/",
 ])
 
 const Hostile = Schema.Array(Schema.Literals(["<", ">", "&", '"', "'", "a", "</style>", "<script>", " onload=", "🐉"])).check(

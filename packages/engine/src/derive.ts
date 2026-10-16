@@ -35,3 +35,7 @@ export const formFor = (rules: RulesConfig, level: number): number => rules.pet.
 /** Mood decayed from its stored value to `now`. */
 export const moodNow = (pet: OwnedPet, rules: RulesConfig, now: string): number =>
   Math.min(100, Math.max(0, pet.mood.value - rules.pet.moodDecayPerDay * daysBetween(pet.mood.at, now)))
+
+/** The XP bonus, in percent, a pet at `mood` adds: `happyXpBonusPct` while it is happy, else 0. */
+export const happyBonusPct = (mood: number, rules: RulesConfig): number =>
+  mood > rules.pet.happyAbove ? rules.pet.happyXpBonusPct : 0

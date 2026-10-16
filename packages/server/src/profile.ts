@@ -1,6 +1,7 @@
 import type { Player as PlayerType, Privacy, ProfileSection, QualityDimension, Snapshot } from "@pathofdev/schema"
+import { happyBonusPct } from "@pathofdev/engine"
 import { isGithubLogin, isShown, Player, privacyOf, profileUrlOf } from "@pathofdev/schema"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Cause, Context, Effect, Layer, Option, Schema } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
 import { SqlClient, SqlSchema } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
@@ -12,6 +13,7 @@ import { playerColumns, Players } from "./players.ts"
 // A player's public page, `pathof.dev/u/<login>`: read-only, no sign-in, rendered from their snapshot. Traefik sends
 // `/u/*` on pathof.dev to the public server, its prefix kept; everything else there is the landing page.
 //
+//   GET /u/<anything deeper> ────────────────────▶ 404
 //   GET /u/:login
 //     ├─ not a GitHub login ─────────────────────▶ 404
 //     ├─ Profiles.byLogin: no player holds it ───▶ 404   one query, on lower(github_login)
@@ -101,7 +103,7 @@ export const profileOf = (login: string, snapshot: Snapshot, privacy: Privacy): 
           species: speciesName(pet.species),
           form: pet.form,
           mood: pet.mood,
-          xpBonusPct: pet.mood > rules.pet.happyAbove ? rules.pet.happyXpBonusPct : 0,
+          xpBonusPct: happyBonusPct(pet.mood, rules),
         },
       }
       : {}),
@@ -182,11 +184,16 @@ export const ProfilePages = HttpRouter.use((router) =>
         return page(profilePage(profileOf(login, snapshot, privacy), profileUrlOf(origin, login)), 200)
       }).pipe(
         Effect.catchTag("PlayerGone", () => Effect.succeed(notFound)),
+        // A request cut short (the viewer left, the server stopping) stays interrupted: no 503, nothing logged.
         Effect.catchCause((cause) =>
-          Effect.as(Effect.logWarning("A profile page could not be read", cause), page(unavailablePage, 503))
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.as(Effect.logWarning("A profile page could not be read", cause), page(unavailablePage, 503))
         ),
       )
 
     yield* router.add("GET", "/u/:login", Effect.flatMap(HttpRouter.params, ({ login }) => pageOf(login ?? "")))
+    // Any other path under /u (`/u`, `/u/a/b`) is the same 404 page, not the router's bare one.
+    yield* router.add("GET", "/u/*", Effect.succeed(notFound))
   })
 )

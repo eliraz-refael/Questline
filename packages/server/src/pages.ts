@@ -205,7 +205,7 @@ const side = (view: PublicProfile): Html => {
     ...(view.stats === undefined ? [] : [["Best grade", grade(view.stats.best)] as const]),
   ]
   return html`<aside class="side">
-<div class="portrait">${pet === null ? html`<span class="glyph" aria-hidden="true">${character.glyph}</span>` : spriteSvg(petSprite, `${pet.name}, a ${pet.species.toLowerCase()}`)}</div>
+<div class="portrait">${pet === null ? html`<span class="glyph" aria-hidden="true">${character.glyph}</span>` : spriteSvg(petSprite, `${pet.name}, the ${pet.species.toLowerCase()}`)}</div>
 <h1 class="name">${character.name}</h1>
 <p class="login"><a href="https://github.com/${encodeURIComponent(view.login)}">@${view.login}</a></p>
 <p class="rank"><span class="lv">Level ${character.level}</span> · ${character.title} <span aria-hidden="true">${character.glyph}</span>${character.prestige > 0 ? html` <span class="prestige">Prestige ${character.prestige}</span>` : ""}</p>
