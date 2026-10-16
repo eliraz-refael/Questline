@@ -40,14 +40,16 @@ type Sent = { path: string; body: unknown; method: string; query: string; socket
 type GitHubFake = { device: string | number; polls: Array<string | number>; seen: Array<{ url: string; at: number; init: unknown }> }
 
 /**
- * The online server's accounts: the game tokens it takes, and the GitHub token it trades for `issue`. An https request
- * without a token it takes is answered 401; a sign-in or a logout answers `signIn` or `logout` when set.
+ * The online server's accounts: the game tokens it takes, and the GitHub token it trades for `issue`, as the player
+ * `player` (one id when unset). An https request without a token it takes is answered 401; a sign-in or a logout
+ * answers `signIn` or `logout` when set.
  */
 type Accounts = {
   tokens: Set<string>
   githubToken: string
   issue: string
   login: string
+  player?: string
   signIn?: { status: number; body: unknown }
   logout?: number
   /** The beta list: the tokens of the server's admins, and the logins added, by their lower case. */
@@ -339,7 +341,7 @@ const fakeServer = (on: On, clock: Clock, options: ServerOptions = {}) => {
         if (!isRecord(body) || body['githubToken'] !== accounts.githubToken)
           return reply(401, { _tag: 'Unauthorized', message: 'GitHub did not accept this sign-in: sign in again' })
         accounts.tokens.add(accounts.issue)
-        const player = { id: '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', githubUserId: 1, githubLogin: accounts.login, displayName: 'Mona', createdAt: '2026-10-09T08:00:00.000Z' }
+        const player = { id: accounts.player ?? '01K6ZQ8W3J5V7XKQ2M4N6P8R9T', githubUserId: 1, githubLogin: accounts.login, displayName: 'Mona', createdAt: '2026-10-09T08:00:00.000Z' }
         return reply(200, { token: accounts.issue, player })
       }
       if (path === '/v1/auth/logout') {
@@ -3931,6 +3933,8 @@ describe('signing in', () => {
   const origin = 'https://api.pathof.dev'
   const tokenKey = `token@${origin}`
   const queueKey = `queue@${origin}`
+  const playerKey = `player@${origin}`
+  const exploredKey = `explored@${origin}`
   const githubToken = 'gho_16C7e42F292c6912E7710c838347Ae178B4a'
   const messages: Array<SessionMessage> = [{ role: 'user', text: 'Fix the parser', toolUses: [] }]
   const t0 = Date.parse('2026-10-09T08:00:00Z')
@@ -3964,6 +3968,12 @@ describe('signing in', () => {
   /** The polls GitHub got, as ms after the session started. */
   const pollsOf = (github: GitHubFake) =>
     github.seen.filter((one) => one.url.endsWith('/access_token')).map((one) => one.at - t0)
+
+  /** Events queued before, of a type the fake server accepts. */
+  const waiting = futureEvents(3).map((event) => ({ ...event, type: 'session.cleared' }))
+  /** The ids of the events sent with the token the sign-in issued. */
+  const sentSignedIn = (sent: ReadonlyArray<Sent>) =>
+    eventsOf(sent.filter((one) => one.authorization === 'Bearer pod_issued')).map((event) => event['id'])
 
   /** A session on the online server, with the store, GitHub and the server's accounts as given. */
   const online = async (
@@ -4023,8 +4033,9 @@ describe('signing in', () => {
       expect(signIn?.body).toMatchObject({ githubToken })
       const zone = isRecord(signIn?.body) ? signIn.body['timezone'] : undefined
       expect(typeof zone === 'string' && zone !== '').toBe(true)
-      // The GitHub token is kept nowhere.
+      // The GitHub token is kept nowhere; the player it signed in as is.
       expect(JSON.stringify([...kept.values()])).not.toContain('gho_')
+      expect(kept.get(playerKey)).toBe('01K6ZQ8W3J5V7XKQ2M4N6P8R9T')
       expect(toasts).toContain('Signed in to https://api.pathof.dev as octocat.')
       // The mod plays on at once: a session opens with the game token, and what waited goes.
       await until(clock, () => eventsOf(sent).some((event) => event['type'] === 'session.compacted'))
@@ -4118,7 +4129,6 @@ describe('signing in', () => {
   })
 
   test('a 401 keeps every event queued, says to sign in, and knocks only once a minute', { options: { server: 'online' } }, async ($, on) => {
-    const waiting = futureEvents(3).map((event) => ({ ...event, type: 'session.cleared' }))
     const entries = { [tokenKey]: 'pod_revoked', [queueKey]: waiting }
     const { clock, kept, sent, toasts } = await online($, on, entries, { accounts: accountsOf() })
     await $.session.compact({ trigger: 'manual', messages })
@@ -4155,6 +4165,59 @@ describe('signing in', () => {
     expect(JSON.stringify(kept.get(queueKey))).toContain('session.compacted')
     expect((await band($)).all).toContain('offline · sign in with /pathofdev login')
     expect((await run($, 'logout')).text).toBe("You're not signed in to https://api.pathof.dev.")
+  })
+
+  test("a first sign-in keeps what was queued signed out before it, and sends it", { options: { server: 'online' } }, async ($, on) => {
+    const github = githubOf([recorded.success])
+    const { clock, kept, sent } = await online($, on, { [queueKey]: waiting }, { github, accounts: accountsOf() })
+    await run($, 'login')
+    await clock.advance(5_000)
+    await until(clock, () => sentSignedIn(sent).length === 3)
+    expect(sentSignedIn(sent)).toEqual(waiting.map((event) => event.id))
+    expect(kept.get(queueKey)).toEqual([])
+    expect(kept.get(exploredKey)).toEqual(['acme/widgets'])
+    expect(kept.get(playerKey)).toBe('01K6ZQ8W3J5V7XKQ2M4N6P8R9T')
+  })
+
+  test(
+    "a sign-in as another player drops the queue and the explored repos the last one left, before any of it is sent",
+    { options: { server: 'online' } },
+    async ($, on) => {
+      const github = githubOf([recorded.success])
+      const entries = { [queueKey]: waiting, [playerKey]: '01K6ZQ8W3J5V7XKQ2M4N6P8OLD' }
+      const { clock, kept, sent, toasts } = await online($, on, entries, { github, accounts: accountsOf() })
+      await run($, 'login')
+      await clock.advance(5_000)
+      await until(clock, () => toasts.includes('Signed in to https://api.pathof.dev as octocat.'))
+      // Connected as the new player, with nothing of the last one's sent.
+      await until(clock, () => sent.some((one) => one.path === '/v1/stream' && one.authorization === 'Bearer pod_issued'))
+      expect(sentSignedIn(sent)).toEqual([])
+      expect(kept.get(queueKey)).toBeUndefined()
+      expect(kept.has(exploredKey)).toBe(false)
+      expect(kept.get(playerKey)).toBe('01K6ZQ8W3J5V7XKQ2M4N6P8R9T')
+      // What the new player does from here is theirs, and goes with the next flush.
+      await $.session.compact({ trigger: 'manual', messages })
+      await clock.advance(30_000)
+      await until(clock, () => eventsOf(sent).some((event) => event['type'] === 'session.compacted'))
+    },
+  )
+
+  test('a logout and a sign-in as the same player keeps the queue, and sends it', { options: { server: 'online' } }, async ($, on) => {
+    const github = githubOf([recorded.success])
+    const accounts = accountsOf('pod_live')
+    const entries = { [tokenKey]: 'pod_live', [playerKey]: '01K6ZQ8W3J5V7XKQ2M4N6P8R9T' }
+    const { clock, kept, sent } = await online($, on, entries, { github, accounts })
+    await run($, 'logout')
+    await $.session.compact({ trigger: 'manual', messages })
+    expect(JSON.stringify(kept.get(queueKey))).toContain('session.compacted')
+    await run($, 'login')
+    await clock.advance(5_000)
+    await until(clock, () =>
+      eventsOf(sent.filter((one) => one.authorization === 'Bearer pod_issued')).some((event) => event['type'] === 'session.compacted'),
+    )
+    expect(kept.get(queueKey)).toEqual([])
+    expect(kept.get(exploredKey)).toEqual(['acme/widgets'])
+    expect(kept.get(playerKey)).toBe('01K6ZQ8W3J5V7XKQ2M4N6P8R9T')
   })
 
   test('logout forgets a token the server answers 401, and keeps one it could not revoke', { options: { server: 'online' } }, async ($, on) => {
@@ -4394,9 +4457,10 @@ describe('the account', () => {
     expect(kept.get(`token@${origin}`)).toBe('pod_player')
   })
 
-  test("a delete forgets this server's token, queue and explored repos, and keeps the local save's", { options: { server: 'online' } }, async ($, on) => {
+  test("a delete forgets this server's token, queue, explored repos and player, and keeps the local save's", { options: { server: 'online' } }, async ($, on) => {
     const { kept, accounts } = await online($, on, 'pod_player', fresh())
     kept.set(`queue@${origin}`, ['online-event'])
+    kept.set(`player@${origin}`, '01K6ZQ8W3J5V7XKQ2M4N6P8R9T')
     expect((await run($, 'account delete octocat')).text).toBe(
       `Your account on ${origin} is deleted, and this mod is signed out of it. /pathofdev login starts a new one, if you like.`,
     )

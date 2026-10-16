@@ -79,9 +79,7 @@ export const ModHandlers = HttpApiBuilder.group(
         Effect.gen(function* () {
           const player = yield* CurrentPlayer
           const now = yield* nowIso
-          // A GitHub account's player can be deleted and made again; the local one counts what came before it.
-          const since = player.githubUserId === null ? null : player.createdAt
-          const admissions = payload.events.map((raw) => admit(raw, now, since))
+          const admissions = payload.events.map((raw) => admit(raw, now))
           const admitted = admissions.flatMap((one): Array<Admitted> => (one.kind === "admitted" ? [one.admitted] : []))
           const applied = yield* writer.apply(player.id, now, admitted)
           // Answer in the order sent: rejected events in place, the rest as the write path applied them.

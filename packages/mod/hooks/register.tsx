@@ -69,6 +69,7 @@ import {
   firstPoll,
   nextPoll,
   pollAnswerOf,
+  queueAfterSignIn,
   signInOf,
   signInRequestOf,
   timeZoneOf,
@@ -1041,8 +1042,9 @@ const revokeOf = (to: Target, token: string) =>
 
 /**
  * Trades the GitHub token for a game token at `origin`, the server the sign-in was started for, and drops it: kept
- * nowhere, sent nowhere else. The game token goes in the store; a sign-in turned down or unchecked leaves the sign-in
- * as it was. A token it replaces is revoked, so none is left working that nobody holds.
+ * nowhere, sent nowhere else. The game token goes in the store, with the player it is for; a sign-in turned down or
+ * unchecked leaves the sign-in as it was. A token it replaces is revoked, so none is left working that nobody holds.
+ * A queue another player left there is dropped first (`queueAfterSignIn`), before anything can send it.
  */
 const trade = async ($: EngineInterface, flow: SigningIn, githubToken: string) => {
   const { origin } = flow
@@ -1071,6 +1073,14 @@ const trade = async ($: EngineInterface, flow: SigningIn, githubToken: string) =
     return
   }
   signingIn = null
+  const ownerKey = storeKey(to, 'player')
+  if (queueAfterSignIn(await $.store.get(ownerKey), signIn.playerId) === 'drop') {
+    // Through the queue's own lock, so an enqueue in flight never writes the old queue back.
+    const queueKey = storeKey(to, 'queue')
+    await changeQueue(() => $.store.delete(queueKey))
+    await $.store.delete(storeKey(to, 'explored'))
+  }
+  await $.store.set(ownerKey, signIn.playerId)
   const key = storeKey(to, 'token')
   const replaced = tokenOf(await $.store.get(key))
   await $.store.set(key, signIn.token)
@@ -1089,7 +1099,8 @@ const trade = async ($: EngineInterface, flow: SigningIn, githubToken: string) =
 /**
  * `/pathofdev logout`: the server revokes the game token and the mod forgets it; a 401 means it was gone already, so
  * the mod forgets it then too. A server that doesn't answer leaves the player signed in, to try again, rather than
- * leave a token working that nobody holds to revoke. What waits in the queue stays for the next sign-in.
+ * leave a token working that nobody holds to revoke. What waits in the queue stays for the next sign-in as the same
+ * player; a sign-in as anyone else drops it.
  */
 const logout = async ($: EngineInterface): Promise<string> => {
   const stopped = stopSignIn() ? 'The sign-in under way is stopped. ' : ''
@@ -1196,6 +1207,8 @@ const deleteAccount = async ($: EngineInterface, ask: Extract<DataAsk, { kind: '
   const { login } = ask
   if (login === null) return deleteWarning
   const { to, token } = online
+  const ownerKey = storeKey(to, 'player')
+  const owner = await $.store.get(ownerKey)
   const response = await sendOnline($, online, deleteRouteOf(login))
   // Only the token this delete was sent with: a sign-in that landed meanwhile stays.
   const forgetToken = async () => {
@@ -1208,7 +1221,10 @@ const deleteAccount = async ($: EngineInterface, ask: Extract<DataAsk, { kind: '
       if (key === storeKey(to, 'token')) await forgetToken()
       // Through the queue's own lock, so an enqueue in flight never writes the old queue back.
       else if (key === queueKey) await changeQueue(() => $.store.delete(key))
-      else await $.store.delete(key)
+      // Likewise only the player this delete was for: a sign-in as someone else meanwhile stays theirs.
+      else if (key === ownerKey) {
+        if ((await $.store.get(key)) === owner) await $.store.delete(key)
+      } else await $.store.delete(key)
     }
     if (target === to) {
       isSignedOut = true

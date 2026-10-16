@@ -427,9 +427,9 @@ Where the code differs from the plan above, and why:
 - `POST /v1/account/profile` takes `{kind, section?}` flat (`ProfileChangeRequest`), and `changeOf` checks the section
   in the handler, so an unknown one gets a 400 (`InvalidSection`) whose message lists the sections, not the HttpApi's
   generic decode error.
-- `before_account` applies only to GitHub accounts (`githubUserId !== null`), with the same 5-minute slack as a future
+- `before_account` applied only to GitHub accounts (`githubUserId !== null`), with the same 5-minute slack as a future
   event. The local save is never deleted, so a queue filled before its first start still counts. Without the slack, a
-  client clock a minute behind would lose its first minute of play after sign-in.
+  client clock a minute behind would lose its first minute of play after sign-in. (Removed since: see the follow-up.)
 - `Presence.close` runs the guard before it looks for the session, so a close for a deleted player is a 401 like every
   other route (it used to answer `closed: false` for an unknown session before any read of the player).
 - `Players.snapshot` and `streamAfter` answer `PlayerGone` too, not only the writer's reads: the held poll a delete
@@ -441,3 +441,19 @@ Where the code differs from the plan above, and why:
   (`next`), and the server reads them by the part's key type (`cursorOf`, 400 `InvalidCursor` otherwise).
 - Delete's statement timeout is `SET LOCAL statement_timeout = '60s'`, and covers lock waits.
 - Plugin version 0.3.0.
+
+## Follow-up: the queue's owner (0.3.1)
+4A moved into the mod, and the server's `before_account` rule is gone (`isBeforeAccount`, `admit`'s `since`, the
+literal in `EventResult.reason`). Why:
+- It lost a new player's first work: what they queued signed out more than 5 minutes before their first sign-in was
+  older than the account, so it was turned away.
+- It didn't cover a queue kept across a logout: signing in as another GitHub account sent account A's queue to B.
+
+Now the mod keeps the player id a sign-in answers under `player@<origin>`, and `queueAfterSignIn` (login.ts) decides
+at each sign-in, before `connect` flushes: no owner stored (a first sign-in here, or a store from before 0.3.1) or the
+same id keeps the queue; another id (another account, or the account deleted and made again) drops the queue, through
+`changeQueue`, and `explored@<origin>`. `signInOf` turns an answer without a printable player id away as unexpected. A
+delete forgets `player@<origin>` too (only the owner it was sent for, like the token), so the next sign-in there is a
+first one, with an empty queue. Another machine's old queue meets the same check when that machine signs in again: its
+stored owner is the deleted account's id.
+- Plugin version 0.3.1.
