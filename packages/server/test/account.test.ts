@@ -22,6 +22,7 @@ import {
   AccountData,
   Allowlist,
   cursorOf,
+  defaultProfileOrigin,
   maxInt,
   GitHub,
   isForeignKeyViolation,
@@ -32,14 +33,20 @@ import {
   pageRows,
   Players,
   playerTables,
+  ProfileOrigin,
 } from "../src/index.ts"
+import type { Handle } from "./fixtures.ts"
 import {
   dump,
+  fakeGitHub,
   hatch,
+  json,
   onlineWebHandler,
   prompt,
   publicWebHandler,
+  request,
   session,
+  signIn,
   testOnlineServices,
   testPublicServices,
   webHandler,
@@ -61,41 +68,9 @@ const ada: GithubUser = { id: 1, login: "Ada", name: "Ada Lovelace" }
 const bob: GithubUser = { id: 2, login: "bob", name: null }
 const accounts = [ada, bob] as const
 
-/** GitHub as the test fills it: each account signs in with the token `<login>@<id>`. */
-const FakeGitHub = (users: ReadonlyArray<GithubUser>) =>
-  Layer.succeed(
-    GitHub,
-    GitHub.of({
-      user: (token) =>
-        Effect.succeed(Option.fromNullishOr(users.find((user) => `${user.login}@${user.id}` === Redacted.value(token)))),
-    }),
-  )
-
 const withPublic = (allowedLogins = "ada,bob") =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.provide(testPublicServices({ allowedLogins, adminGithubIds: [] }, FakeGitHub(accounts))))
-
-type Handle = (request: Request) => Effect.Effect<Response>
-
-const request = (path: string, method: string, authorization: string | null, body?: unknown) =>
-  new Request(`http://pathofdev.test${path}`, {
-    method,
-    headers: { "content-type": "application/json", ...(authorization === null ? {} : { authorization }) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  })
-
-const json = (response: Response) => Effect.promise(() => response.json() as Promise<any>)
-
-/** `account` signed in: their game token, as the Authorization header, and their player. */
-const signIn = (handle: Handle, account: GithubUser) =>
-  Effect.gen(function* () {
-    const response = yield* handle(
-      request("/v1/auth/github", "POST", null, { githubToken: `${account.login}@${account.id}`, timezone: "UTC" }),
-    )
-    expect({ login: account.login, status: response.status }).toEqual({ login: account.login, status: 200 })
-    const body = (yield* json(response)) as { token: string; player: PlayerType }
-    return { bearer: `Bearer ${body.token}`, player: body.player }
-  })
+    effect.pipe(Effect.provide(testPublicServices({ allowedLogins, adminGithubIds: [] }, fakeGitHub(accounts))))
 
 const openSession = (handle: Handle, bearer: string) =>
   handle(request("/v1/sessions", "POST", bearer, { sessionId: session, presence: true }))
@@ -318,7 +293,9 @@ describe("the privacy endpoint", () => {
             }
             if (change !== null) model[step.who] = applyChange(model[step.who]!, change)
             expect({ step, status: response.status }).toEqual({ step, status: 200 })
-            expect(body).toEqual(settingsOf(model[step.who]!, null))
+            // The page's address is the player's login, lower-cased, at the default origin.
+            const url = `https://pathof.dev/u/${players[step.who]!.player.githubLogin!.toLowerCase()}`
+            expect(body).toEqual(settingsOf(model[step.who]!, url))
             for (const who of [0, 1] as const) {
               expect((yield* storedPrivacy(players[who]!.player.id)).privacy).toEqual(model[who])
             }
@@ -342,7 +319,10 @@ describe("the privacy endpoint", () => {
           { concurrency: "unbounded" },
         )
         expect(answers.map((answer) => answer.status)).toEqual(answers.map(() => 200))
-        expect((yield* storedPrivacy(player.id)).privacy).toEqual({ public: true, pet: false, streak: false, stats: false })
+        expect((yield* storedPrivacy(player.id)).privacy).toEqual({
+          public: true,
+          ...Object.fromEntries(profileSections.map((section) => [section, false])),
+        })
       }),
     ), serverRuns.timeout)
 
@@ -659,10 +639,10 @@ const Stale = (player: PlayerType) =>
       AccountAuthentication,
       AccountAuthentication.of({ bearer: (handler) => Effect.provideService(handler, CurrentPlayer, player) }),
     ),
-    AccountData.layer,
+    AccountData.layer.pipe(Layer.provide(ProfileOrigin.layer(defaultProfileOrigin))),
     Tokens.layer,
     Allowlist.layer({ allowedLogins: "ada", adminGithubIds: [] }),
-    FakeGitHub([]),
+    fakeGitHub([]),
   )
 
 const gone: PlayerType = {

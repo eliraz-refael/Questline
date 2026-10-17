@@ -91,6 +91,19 @@ the work is, why it matters, where things stand and what it waits on.
   prestige lowers the total, so the series must not claim to equal the state's XP.
 - **Depends on:** profiles in use (PR 6b).
 
+### Achievements, shown as badges
+
+- **What:** achievement definitions (a name, what earns it, a rarity, a mark to draw) in the rules, the engine
+  unlocking them, and the profile page's `badges` section drawing each from its definition.
+- **Why:** players want a profile to show off what they've done. The page has a `badges` section (PR 6b), but the
+  engine never unlocks an achievement, so every page says "No badges yet".
+- **Context:** `holdings.achievements` (`{id, unlockedAt}`) and the `achievement.unlocked` server event already exist.
+  `profileOf` (server/profile.ts) copies `snapshot.achievements` into the page, and `badgesCard` (server/pages.ts) draws
+  each as a hexagon with the id's first letter, in the common colour, under the id. With definitions it should draw
+  the name, what it was for, and the rarity's colour (the mockup had one per rarity), and show "N of M". The mod could
+  show them too.
+- **Depends on:** which achievements there are: a design question.
+
 ### Cache profile pages at Cloudflare, with purge
 
 - **What:** a Cloudflare cache rule on `pathof.dev/u/*` with `s-maxage=60`, plus an API purge of

@@ -1,9 +1,11 @@
+import { petSprite } from "@pathofdev/schema"
 import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { starterRules as rules, titleFor, xpForLevel } from "../src/index.ts"
 
 // The landing page hard-codes the rules' numbers in plain HTML, so a change to the rules has to reach it too. Each
-// test reads the numbers back out of site/index.html and checks them against the starter rules.
+// test reads the numbers back out of site/index.html and checks them against the starter rules. The pet it draws is
+// the profile pages' too, so its sprite is checked against the schema's.
 
 const site = readFileSync(new URL("../../../site/index.html", import.meta.url), "utf8")
 
@@ -141,5 +143,14 @@ describe("the landing page's pet facts", () => {
     ])
     expect(one(/<b>−(\d+)<\/b><span>mood for every day/g)[1]).toBe(String(rules.pet.moodDecayPerDay))
     expect(one(/<b>(\d+)<\/b><span>rest day a week/g)[1]).toBe(String(rules.streak.restDaysPerWeek))
+  })
+})
+
+describe("the landing page's pet", () => {
+  it("draws the schema's sprite, in its colours", () => {
+    const [, rows] = one(/const sprite = \[\n([^\]]*)\];/g)
+    const [, colors] = one(/const colors = (\{[^}]*\});/g)
+    expect(JSON.parse(`[${rows!.trim().replace(/,$/, "")}]`)).toEqual(petSprite.rows)
+    expect(JSON.parse(colors!.replace(/(\w+):/g, '"$1":'))).toEqual(petSprite.palette)
   })
 })

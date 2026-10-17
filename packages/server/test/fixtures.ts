@@ -7,21 +7,24 @@ import type {
   PromptGraded,
   TurnCompleted,
 } from "@pathofdev/schema"
-import type { ServerEvent } from "@pathofdev/schema"
+import type { Player as PlayerType, ServerEvent } from "@pathofdev/schema"
 import { PgClient } from "@effect/sql-pg"
 import { PathOfDevApi } from "@pathofdev/schema"
 import type { Scope } from "effect"
-import { Effect, Layer, Redacted } from "effect"
+import { Effect, Layer, Option, Redacted } from "effect"
 import { HttpEffect, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { HttpApiTest } from "effect/http-api"
 import { SqlClient } from "effect/sql"
 import type { SqlError } from "effect/sql/SqlError"
 import { TestClock } from "effect/testing"
 import { randomUUID } from "node:crypto"
-import type { BetaConfig, Database, GitHub, LocalProfile, Stepper } from "../src/index.ts"
+import { expect } from "vitest"
+import type { BetaConfig, Database, GithubUser, LocalProfile, Stepper } from "../src/index.ts"
 import {
   ApiRoutes,
   core,
+  defaultProfileOrigin,
+  GitHub,
   ModHandlers,
   OnlineRoutes,
   Players,
@@ -194,10 +197,16 @@ export const testOnlineServices = <A, E>(auth: Layer.Layer<A, E, SqlClient.SqlCl
  * The public server's services over a fresh database, as its entry wires them, with the clock at `start`: the beta's
  * logins and admins of `beta`, and `github` answering for GitHub.
  */
-export const testPublicServices = <E>(beta: BetaConfig, github: Layer.Layer<GitHub, E>) =>
+export const testPublicServices = <E>(
+  beta: BetaConfig & { readonly profileOrigin?: string },
+  github: Layer.Layer<GitHub, E>,
+) =>
   Layer.unwrap(
     Effect.map(freshDatabase, (database) =>
-      Layer.mergeAll(publicServices(database, beta, github), HttpServer.layerServices),
+      Layer.mergeAll(
+        publicServices(database, { profileOrigin: defaultProfileOrigin, ...beta }, github),
+        HttpServer.layerServices,
+      ),
     ),
   ).pipe(Layer.provideMerge(Layer.effectDiscard(TestClock.setTime(Date.parse(start)))))
 
@@ -218,7 +227,10 @@ export const webHandler = Effect.flatMap(HttpRouter.toHttpEffect(ApiRoutes), fet
 /** A Fetch handler for the public server's routes: the mod's, signing in and out, and the beta list. */
 export const onlineWebHandler = Effect.flatMap(HttpRouter.toHttpEffect(OnlineRoutes), fetchOf)
 
-/** A Fetch handler for the public server's routes as its entry serves them: the online ones, and the health check. */
+/**
+ * A Fetch handler for the public server's routes as its entry serves them: the online ones, the profile pages and the
+ * health check.
+ */
 export const publicWebHandler = Effect.flatMap(HttpRouter.toHttpEffect(PublicRoutes), fetchOf)
 
 /** The local server's one player, whom its `Authentication` names for every request. */
@@ -255,3 +267,37 @@ export const client = HttpApiTest.groups(PathOfDevApi, ["mod"])
  */
 export const withServer = <A, E, R>(effect: Effect.Effect<A, E, R>, stepper?: Stepper, dev = false, seed?: string) =>
   effect.pipe(Effect.provide(ModHandlers.pipe(Layer.provideMerge(testServices(stepper, dev, seed)))))
+
+// ── the public server, signed in ───────────────────────────────────────────────────────────────────────────────────────
+
+/** GitHub as the test fills it: each account signs in with the token `<login>@<id>`. */
+export const fakeGitHub = (users: ReadonlyArray<GithubUser>) =>
+  Layer.succeed(
+    GitHub,
+    GitHub.of({
+      user: (token) =>
+        Effect.succeed(Option.fromNullishOr(users.find((user) => `${user.login}@${user.id}` === Redacted.value(token)))),
+    }),
+  )
+
+export type Handle = (request: Request) => Effect.Effect<Response>
+
+export const request = (path: string, method: string, authorization: string | null, body?: unknown) =>
+  new Request(`http://pathofdev.test${path}`, {
+    method,
+    headers: { "content-type": "application/json", ...(authorization === null ? {} : { authorization }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+
+export const json = (response: Response) => Effect.promise(() => response.json() as Promise<any>)
+
+/** `account` signed in on the public server, as the mod does it: their game token, as the Authorization header, and their player. */
+export const signIn = (handle: Handle, account: GithubUser) =>
+  Effect.gen(function* () {
+    const response = yield* handle(
+      request("/v1/auth/github", "POST", null, { githubToken: `${account.login}@${account.id}`, timezone: "UTC" }),
+    )
+    expect({ login: account.login, status: response.status }).toEqual({ login: account.login, status: 200 })
+    const body = (yield* json(response)) as { token: string; player: PlayerType }
+    return { bearer: `Bearer ${body.token}`, player: body.player }
+  })

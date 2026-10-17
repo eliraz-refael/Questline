@@ -468,3 +468,25 @@ From the review of #37:
 - Mods older than 0.3.1 lose the server's `before_account` check. In the closed beta that is only the owner's own
   machines.
 - Plugin version 0.3.1.
+
+## As built (6b)
+Where the profile pages differ from the plan above, and why:
+- **Look.** The landing page's style didn't carry over. The page is a calm profile layout instead: the pet, name, level
+  and XP down the side, cards beside it, light and dark from the viewer's setting. Two mockups came first (one
+  published Artifact, three looks); the user picked this one.
+- **A fourth section, `badges`.** The user wants a profile to show off achievements. `profileSections` is now
+  `badges, pet, streak, stats` (`defaultShown` true). The page lists `snapshot.achievements` by id and date, and says
+  "No badges yet" until the game unlocks any: the engine has no achievement definitions yet (TODOS.md).
+- **Fonts.** The page loads Google Fonts as the landing page does, so the CSP allows `https://fonts.googleapis.com`
+  for styles and `https://fonts.gstatic.com` for fonts, beside the one inline style sheet's hash. Still no script, and
+  no inline `style` attributes: bars are SVG.
+- **Files.** `html.ts` holds only the boundary (`Html`, `html`, `raw`, `escapeHtml`, `spriteSvg`); the templates, the
+  style sheet and `pageHeaders` are in `pages.ts`, and `profile.ts` holds `ProfileOrigin`, `profileOf`, `Profiles` and
+  `ProfilePages`.
+- **A player deleted between the lookup and the snapshot** gets the 404, not a 503: the page is gone, and the 404 is
+  what any other deleted player gets.
+- **`ProfileSettings.url`** is filled for every player with a login, private ones too: it is where the page will be.
+- **The mod needed no change:** it already shows the server's url and section list.
+- The sign-in test helpers (`fakeGitHub`, `request`, `json`, `signIn`) moved from `account.test.ts` to `fixtures.ts`,
+  shared with `profile-pages.test.ts`.
+- CI's image job checks `/u/nobody` answers the 404, `no-store`, as HTML.

@@ -28,7 +28,7 @@ import type {
   XpRule,
 } from "@pathofdev/schema"
 import { addDays, isLater, localDay } from "./days.ts"
-import { formFor, formsFor, glyphFor, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
+import { formFor, formsFor, glyphFor, happyBonusPct, levelOf, moodNow, titleFor, totalXp } from "./derive.ts"
 import type { RarityWeights } from "./loot.ts"
 import { pityAfter, raiseRare, rarityRank, rollLoot } from "./loot.ts"
 import { nameIssue, tidyName } from "./names.ts"
@@ -387,7 +387,7 @@ const applySystem = (state: PlayerState, event: SystemEvent, context: Context): 
 const bonusPct = (run: Run): number => {
   const { rules, now } = run.context
   const pet = run.state.holdings.pet
-  const happy = pet !== null && moodNow(pet, rules, now) > rules.pet.happyAbove ? rules.pet.happyXpBonusPct : 0
+  const happy = pet === null ? 0 : happyBonusPct(moodNow(pet, rules, now), rules)
   const running = run.state.progress.boosts.filter((boost) => isLater(boost.endsAt, now))
   const strongest = (kind: Boost["kind"]): number =>
     Math.max(0, ...running.filter((boost) => boost.kind === kind).map((boost) => boost.xpBoostPct))

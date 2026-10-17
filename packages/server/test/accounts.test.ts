@@ -10,12 +10,14 @@ import {
   Allowlist,
   BearerAuth,
   bytesOf,
+  defaultProfileOrigin,
   GitHub,
   isAllowed,
   loginsOf,
   newPlayerOf,
   notInBeta,
   Players,
+  ProfileOrigin,
   tokenOf,
   tokenPrefix,
   Tokens,
@@ -55,6 +57,7 @@ const withAccounts = (accounts: ReadonlyMap<string, GithubUser>, allowed: string
       Effect.provide(
         testOnlineServices(
           Layer.mergeAll(BearerAuth, AccountAuth, AccountData.layer).pipe(
+            Layer.provideMerge(ProfileOrigin.layer(defaultProfileOrigin)),
             Layer.provideMerge(Tokens.layer),
             Layer.provideMerge(Allowlist.layer({ allowedLogins: allowed, adminGithubIds: [] })),
             Layer.provideMerge(FakeGitHub(accounts)),

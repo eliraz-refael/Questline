@@ -152,8 +152,23 @@ gh secret set R2_BUCKET             # pathofdev-backups
 
 Then run the drill once by hand, after the first backup exists: `gh workflow run restore-drill.yml`.
 
-### Later (PR 6b)
+### 6. The profile pages
 
-The profile pages at `pathof.dev/u/<login>`: add `https://pathof.dev/u` to this app's domains in Coolify with **Strip
-Prefixes off**, so `PathPrefix(/u)` reaches the server and every other path still goes to the landing page. The
-fallback is `u.pathof.dev`, with `PROFILE_ORIGIN=https://u.pathof.dev`.
+The public pages at `pathof.dev/u/<login>` come from this server, while every other path on `pathof.dev` stays the
+landing page:
+
+1. In Coolify, open the server app's **Domains** and add `https://pathof.dev/u` beside `https://api.pathof.dev`.
+2. Turn **Strip Prefixes** off for it, so the server sees `/u/<login>` as it was asked for. With it on, every
+   profile is the 404.
+3. Redeploy, then check the three answers below:
+
+```sh
+curl -sI https://pathof.dev/u/nobody | head -3       # 404, cache-control: no-store
+curl -sI https://pathof.dev/u/<a public login>       # 200, after `/pathofdev profile public`
+curl -sI https://pathof.dev/ | head -1               # 200, still the landing page
+```
+
+Pages are never cached (`no-store`), so no Cloudflare rule is needed; a hide, a private or a delete shows on the next
+view. `PROFILE_ORIGIN` (default `https://pathof.dev`) is where the server says the pages live, in
+`/pathofdev profile` and each page's canonical link. If the path route can't work, serve the server on
+`https://u.pathof.dev` as well and set `PROFILE_ORIGIN=https://u.pathof.dev`.
